@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "blockagent-testkit",
+  "version": "${version}",
+  "name": "BlockAgent Testkit(只在開發環境)",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-client-gametest": [
+      "blockagent.testkit.SmokeGameTest",
+      "blockagent.testkit.ChatGameTest",
+      "blockagent.testkit.RulesGameTest",
+      "blockagent.testkit.SessionGameTest",
+      "blockagent.testkit.ServerAndCreativeGameTest"
+    ]
+  },
+  "depends": {
+    "blockagent": "*",
+    "fabric-client-gametest-api-v1": "*"
+  },
+  "mixins": [
+    "blockagent-testkit.mixins.json"
+  ]
+}

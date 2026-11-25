@@ -1,0 +1,55 @@
+#!/bin/sh
+# 用 Codex 接上 BlockAgent(docs/SPEC.md S11.4)。
+# 使用專用的 CODEX_HOME，不讀使用者的 ~/.codex；關掉所有能碰檔案、執行程式、上網的內建工具。
+#   blockagent-codex            以互動模式啟動(A1.3)
+#   blockagent-codex --login    第一次使用時登入(在專用的 CODEX_HOME 下)
+#   blockagent-codex --dry-run  只印出要執行的指令和產生的設定檔
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
+
+export CODEX_HOME="$BA_HOME/codex-home"
+mkdir -p "$CODEX_HOME"
+chmod 700 "$CODEX_HOME"
+
+if [ "${1:-}" = "--login" ]; then
+	exec codex login
+fi
+DRY=0
+TEST_PROMPT=""
+case "${1:-}" in
+	--dry-run) DRY=1 ;;
+	# CLI 測試(T8、T9)用：設定跟正式啟動完全一樣，另外加上 BLOCKAGENT_TEST_PROVIDER_TOML(指向 stub 模型伺服器)，
+	# 並改用非互動的 codex exec。
+	--test-exec) TEST_PROMPT="${2:?}" ;;
+esac
+
+wait_runtime
+BLOCKAGENT_PLAN_TOKEN="$(plan_token)"
+export BLOCKAGENT_PLAN_TOKEN
+prepare_workdir
+umask 077
+"$BA_BIN/codex-config" "$BLOCKAGENT_PORT" "${BLOCKAGENT_TEST_PROVIDER_TOML:-}" > "$CODEX_HOME/config.toml"
+
+# 工具清單快照比對：Codex 改版後多出內建工具時拒絕啟動(S11.4)
+cd "$WORKDIR"
+if ! "$BA_BIN/codex-tools-check"; then
+	die "Codex 的內建工具和測試過的不一樣，為了安全不啟動。請先跑 ./gradlew cliTest，確認後更新 bin/codex-tools.snapshot。"
+fi
+
+# 遊戲重啟會換 token，共用 app-server 仍使用它啟動時收到的環境。
+set -- codex --no-daemon "$KICKOFF"
+if [ -n "$TEST_PROMPT" ]; then
+	if [ "${BLOCKAGENT_TEST_JSON:-}" = 1 ]; then
+		set -- codex --no-daemon exec --json --ephemeral --skip-git-repo-check "$TEST_PROMPT"
+	else
+		set -- codex --no-daemon exec --skip-git-repo-check "$TEST_PROMPT"
+	fi
+fi
+if [ "$DRY" = 1 ]; then
+	printf 'CODEX_HOME=%s\ncd %s\n' "$CODEX_HOME" "$WORKDIR"
+	printf '%s' "exec"; for a in "$@"; do printf " '%s'" "$a"; done; printf '\n'
+	printf '%s\n' "--- $CODEX_HOME/config.toml"; cat "$CODEX_HOME/config.toml"
+	exit 0
+fi
+
+check_version codex "$(codex --version 2>/dev/null || echo unknown)"
+exec "$@"

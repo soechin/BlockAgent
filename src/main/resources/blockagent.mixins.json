@@ -1,0 +1,25 @@
+{
+  "required": true,
+  "package": "blockagent.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "BlockItemInvoker",
+    "BuilderProcessMixin",
+    "CalculationContextMixin",
+    "ChatScreenMixin",
+    "ClientCommonPacketListenerMixin",
+    "ClientLevelMixin",
+    "ClientPacketListenerMixin",
+    "DialogAccessMixin",
+    "FishingHookAccessor",
+    "GuiMixin",
+    "MinecraftAccessor",
+    "MinecraftMixin",
+    "MouseHandlerMixin",
+    "MultiPlayerGameModeInvoker",
+    "MultiPlayerGameModeMixin",
+    "ScreenMixin",
+    "ToolSetMixin"
+  ],
+  "injectors": { "defaultRequire": 1 }
+}

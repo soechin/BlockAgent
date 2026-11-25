@@ -1,0 +1,7 @@
+{
+  "key.category.blockagent.main": "BlockAgent",
+  "key.blockagent.toggle": "Start / Pause AI",
+  "key.blockagent.hud": "Collapse AI Panel",
+  "key.blockagent.chat": "Toggle AI Chat",
+  "key.blockagent.cursor": "Grab / Release Cursor"
+}

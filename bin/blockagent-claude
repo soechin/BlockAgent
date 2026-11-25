@@ -1,0 +1,89 @@
+#!/bin/sh
+# 用 Claude Code 接上 BlockAgent(docs/SPEC.md S11.3)。
+# 只給模組的 MCP 工具：沒有任何內建工具(--tools "")，不載入使用者的設定、外掛、其他 MCP 伺服器。
+#   blockagent-claude            以互動模式啟動(A1.3)
+#   blockagent-claude --dry-run  只印出要執行的指令和產生的設定檔
+# 環境變數：
+#   BLOCKAGENT_CLAUDE_MODEL=haiku   指定模型(不指定就用 Claude Code 的預設)
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
+
+DRY=0
+TEST_PROMPT=""
+case "${1:-}" in
+	--dry-run) DRY=1 ;;
+	# CLI 測試(T8、T9)用：參數和設定跟正式啟動完全一樣，只改成非互動模式。
+	# 模型網址由呼叫端的 ANTHROPIC_BASE_URL 決定(指向本機的 stub 模型伺服器)。
+	--test-print) TEST_PROMPT="${2:?}" ;;
+esac
+
+wait_runtime
+prepare_workdir
+CONF="$BA_HOME/claude"
+mkdir -p "$CONF"
+chmod 700 "$CONF"
+
+# MCP 設定(token 直接寫進檔案，檔案權限 600)
+umask 077
+cat > "$CONF/mcp.json" <<JSON
+{ "mcpServers": { "blockagent": {
+    "type": "http",
+    "url": "http://127.0.0.1:$BLOCKAGENT_PORT/mcp",
+    "headers": { "Authorization": "Bearer $BLOCKAGENT_TOKEN" } } } }
+JSON
+
+# 第二道防線：就算 --tools "" 的行為改了，這些內建工具也會被拒絕。
+# Stop hook 的路徑可能有空白或引號：用 Python 先做 shell 引號再做 JSON 跳脫(L3)
+python3 -I -c 'import json, shlex, sys
+print(json.dumps({
+  "permissions": {
+    "allow": ["mcp__blockagent"],
+    "deny": ["Bash", "Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep",
+             "WebFetch", "WebSearch", "Agent", "Task", "Skill", "TodoWrite"],
+    "defaultMode": "dontAsk"
+  },
+  "hooks": {"Stop": [{"hooks": [{"type": "command", "command": shlex.quote(sys.argv[1])}]}]}
+}, indent=2, ensure_ascii=False))' "$BA_BIN/stop-hook" > "$CONF/settings.json"
+
+export MCP_TOOL_TIMEOUT=150000
+# 開場白放在最前面：--tools、--allowedTools 會吃掉後面所有不是選項的參數
+set -- claude
+if [ -z "$TEST_PROMPT" ]; then set -- "$@" "$KICKOFF"; fi
+set -- "$@" \
+	--tools "" \
+	--strict-mcp-config --mcp-config "$CONF/mcp.json" \
+	--setting-sources "" \
+	--settings "$CONF/settings.json" \
+	--allowedTools "mcp__blockagent" \
+	--permission-mode dontAsk \
+	--disable-slash-commands \
+	--no-chrome \
+	--append-system-prompt-file "$PROMPT_FILE"
+
+if [ -n "${BLOCKAGENT_CLAUDE_MODEL:-}" ]; then
+	set -- "$@" --model "$BLOCKAGENT_CLAUDE_MODEL"
+fi
+
+if [ -n "$TEST_PROMPT" ]; then
+	# BLOCKAGENT_TEST_STREAM=1：逐步輸出(stream-json)，看得到每一步的想法
+	if [ "${BLOCKAGENT_TEST_STREAM:-}" = 1 ]; then
+		set -- "$@" -p "$TEST_PROMPT" --output-format stream-json --verbose
+	else
+		set -- "$@" -p "$TEST_PROMPT" --output-format json
+	fi
+	# 非互動測試時，Stop hook 會在工作階段進行中一直叫它繼續，所以要設花費上限
+	if [ -n "${BLOCKAGENT_TEST_MAX_BUDGET_USD:-}" ]; then
+		set -- "$@" --max-budget-usd "$BLOCKAGENT_TEST_MAX_BUDGET_USD"
+	fi
+fi
+
+if [ "$DRY" = 1 ]; then
+	printf 'cd %s\n' "$WORKDIR"
+	printf '%s\n' "MCP_TOOL_TIMEOUT=$MCP_TOOL_TIMEOUT"
+	printf '%s' "exec"; for a in "$@"; do printf " '%s'" "$a"; done; printf '\n'
+	printf '%s\n' "--- $CONF/settings.json"; cat "$CONF/settings.json"
+	exit 0
+fi
+
+check_version claude "$(claude --version 2>/dev/null || echo unknown)"
+cd "$WORKDIR"
+exec "$@"

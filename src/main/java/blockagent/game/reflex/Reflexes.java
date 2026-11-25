@@ -1,0 +1,620 @@
+package blockagent.game.reflex;
+
+import baritone.api.pathing.goals.Goal;
+import baritone.api.pathing.goals.GoalBlock;
+import baritone.api.pathing.goals.GoalRunAway;
+import blockagent.core.CombatPolicy;
+import blockagent.core.Event;
+import blockagent.game.ActionLog;
+import blockagent.game.Agent;
+import blockagent.game.Bari;
+import blockagent.game.Inv;
+import blockagent.game.RuleGuard;
+import blockagent.game.UseKey;
+import blockagent.game.combat.Combat;
+import blockagent.game.combat.Threats;
+import blockagent.game.tasks.BreakTask;
+import blockagent.game.tasks.Moves;
+import blockagent.game.tasks.Task;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.tags.FluidTags;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.food.FoodProperties;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.EnumMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * 反射(docs/SPEC.md S9)：只看自己的狀態和環境，不看其他玩家(玩家只出現在「不要攻擊」的判斷)。
+ * 所有動作都經過守門員(MultiPlayerGameMode 的 Mixin)；暫停時完全不執行(S9.3a)。
+ */
+public final class Reflexes {
+	public static final float LOW_HEALTH = 6f;
+
+	/**
+	 * 依優先順序排列(S9.2)：保命 > 撤退 > 自衛 > 進食 > 脫困。岩漿排在著火前面：碰到岩漿一定也著火，
+	 * 著火反射只會原地找水，留在岩漿裡會燒死(docs/REVIEW.md C4)。
+	 */
+	public enum Kind {
+		DROWNING("survival", true), LAVA_AVOID("survival", true), ON_FIRE("survival", true), FALL("survival", true),
+		RETREAT("retreat", true), SELF_DEFENSE("defense", false), EAT("eat", false), UNSTUCK("unstuck", false);
+
+		final String type;
+		/** true：取消目前任務；false：暫停任務，結束後接著做。 */
+		final boolean cancelsTask;
+
+		Kind(String type, boolean cancelsTask) {
+			this.type = type;
+			this.cancelsTask = cancelsTask;
+		}
+
+		public String id() {
+			return name().toLowerCase(Locale.ROOT);
+		}
+
+		public static Kind byId(String id) {
+			for (Kind k : values()) if (k.id().equals(id)) return k;
+			return null;
+		}
+
+		boolean urgent() {
+			return type.equals("survival") || type.equals("retreat");
+		}
+	}
+
+	private static final Set<net.minecraft.world.item.Item> BAD_FOOD =
+		Set.of(Items.ROTTEN_FLESH, Items.SPIDER_EYE, Items.POISONOUS_POTATO, Items.PUFFERFISH, Items.CHORUS_FRUIT, Items.SUSPICIOUS_STEW);
+
+	private final Agent agent;
+	private final Map<Kind, Boolean> enabled = new EnumMap<>(Kind.class);
+	private Kind active;
+	private String activeReason;
+	private int activeTicks;
+	private boolean suspendedTask;
+	private String interruptedTask;
+	/** 自衛反射正在處理的怪物和戰術(S9.1b)。 */
+	private Combat combat;
+	private Combat.Threat pendingThreat;
+	/** 目前目標被挑中時的優先度(越小越危險)，換目標時比較用。 */
+	private int engagedPriority;
+	private boolean bucketPlaced;
+	/** fall：放水前身上的水桶數；落地的 tick(還沒落地是 -1)。 */
+	private int bucketsBefore;
+	private int landedAt;
+	private int unstuckAttempts;
+	/** unstuck：開始挖時鎖定的起點與目標格，避免中途被擠偏方向，且挖通後遠離起點 >= 3 格(大於 movedSinceUnstuck 的 2 格門檻)。 */
+	private BlockPos unstuckStart;
+	private BlockPos unstuckFront;
+	/** eat：實際在吃的食物和開始時的數量(C5)。 */
+	private net.minecraft.world.item.Item eatingFood;
+	private int eatStartCount;
+	/** retreat：上次重新規劃逃跑路線的 tick。 */
+	private int retreatPlannedAt;
+	/** 自衛反射收手後，同一隻怪物這段時間內不再觸發(除非冷卻開始後牠又打了自己)，免得隔牆反覆打斷任務(H8、P3-M2)。 */
+	private static final int DEFENSE_COOLDOWN_TICKS = 200;
+	private final CombatPolicy.DefenseCooldown defenseCooldown = new CombatPolicy.DefenseCooldown();
+	private final Deque<Vec3> history = new ArrayDeque<>();
+	/** 位置軌跡只算目前這個任務開始之後的(脫困判斷用)。 */
+	private Task historyTask;
+
+	public Reflexes(Agent agent) {
+		this.agent = agent;
+		resetEnabled();
+	}
+
+	public void resetEnabled() {
+		for (Kind k : Kind.values()) enabled.put(k, true);
+	}
+
+	public boolean isLocked(Kind k) {
+		return agent.config.lockedReflexes.contains(k.id());
+	}
+
+	/** 回傳 null 表示成功，否則是錯誤原因(S9.4)。要在 client thread 呼叫(會停下正在執行的反射，C3)。 */
+	public synchronized String set(Kind k, boolean on) {
+		if (!on && isLocked(k)) return "locked on by the user; cannot be turned off";
+		enabled.put(k, on);
+		if (!on && active == k) end(Minecraft.getInstance(), "turned_off");
+		return null;
+	}
+
+	/** 任務被換掉或取消時，舊任務的脫困反射也結束(不再恢復任何任務)。 */
+	public synchronized void dropUnstuck(Minecraft mc, String how) {
+		if (active != Kind.UNSTUCK) return;
+		suspendedTask = false;
+		interruptedTask = null;
+		end(mc, how);
+	}
+
+	public synchronized Map<Kind, Boolean> states() {
+		return new EnumMap<>(enabled);
+	}
+
+	public synchronized String summary() {
+		List<String> off = new ArrayList<>();
+		for (var e : enabled.entrySet()) if (!e.getValue()) off.add(e.getKey().id());
+		String s = off.isEmpty() ? "all_on" : "off=" + String.join(",", off);
+		LocalPlayer p = Minecraft.getInstance().player;
+		if (p != null && invulnerable(p)) s += " note=creative_only_unstuck_triggers";
+		return active == null ? s : s + " active=" + active.id();
+	}
+
+	public synchronized Kind active() {
+		return active;
+	}
+
+	// ---- tick ----
+
+	public synchronized void tick(Minecraft mc) {
+		LocalPlayer p = mc.player;
+		Task cur = agent.tasks.current();
+		if (cur != historyTask) {
+			history.clear();
+			historyTask = cur;
+			// 脫困失敗的次數只算同一個任務(H12)
+			if (active != Kind.UNSTUCK) unstuckAttempts = 0;
+		}
+		history.addLast(p.position());
+		while (history.size() > 200) history.removeFirst();
+
+		Kind trig = null;
+		String why = null;
+		for (Kind k : Kind.values()) {
+			if (!enabled.get(k)) continue;
+			why = trigger(mc, k);
+			if (why != null) {
+				trig = k;
+				break;
+			}
+		}
+		if (active != null) {
+			activeTicks++;
+			if (active != Kind.UNSTUCK && invulnerable(p)) {
+				end(mc, "not_needed_in_creative");
+			} else if (trig != null && trig.ordinal() < active.ordinal()) {
+				end(mc, "preempted_by_" + trig.id());
+				begin(mc, trig, why);
+			} else if (finished(mc)) {
+				end(mc, "done");
+			} else if (activeTicks > 20 * 30) {
+				end(mc, "gave_up_after_30s");
+			} else {
+				act(mc);
+			}
+			return;
+		}
+		if (trig != null) begin(mc, trig, why);
+	}
+
+	/** 威脅：敵對生物，加上生氣了或剛打過自己的中立生物(S9.1b)。 */
+	private List<Entity> hostiles(Minecraft mc, double r) {
+		LocalPlayer p = mc.player;
+		Entity attacker = agent.observation.recentAttacker(mc, 100);
+		return mc.level.getEntities(p, p.getBoundingBox().inflate(r), e -> Threats.isThreat(e, attacker));
+	}
+
+	private List<BlockPos> lavaNear(Minecraft mc, int r) {
+		List<BlockPos> out = new ArrayList<>();
+		BlockPos f = mc.player.blockPosition();
+		for (BlockPos b : BlockPos.betweenClosed(f.offset(-r, -1, -r), f.offset(r, 1, r))) {
+			if (mc.level.getFluidState(b).is(FluidTags.LAVA)) out.add(b.immutable());
+		}
+		return out;
+	}
+
+	/** 創造(或旁觀)模式不會受傷也不會餓：只留脫困，其他反射都不觸發(S9.1a)。 */
+	static boolean invulnerable(LocalPlayer p) {
+		return p.getAbilities().invulnerable;
+	}
+
+	/** 觸發條件；回傳 null 表示沒有觸發，否則是原因。 */
+	private String trigger(Minecraft mc, Kind k) {
+		LocalPlayer p = mc.player;
+		if (k != Kind.UNSTUCK && invulnerable(p)) return null;
+		switch (k) {
+			case DROWNING -> {
+				if (p.isEyeInFluid(FluidTags.WATER) && p.getAirSupply() < p.getMaxAirSupply() * 0.4) {
+					return "air=" + (100 * p.getAirSupply() / p.getMaxAirSupply()) + "%";
+				}
+			}
+			case ON_FIRE -> {
+				if (p.isOnFire() && !p.isInWater() && !p.isInLava() && !p.hasEffect(MobEffects.FIRE_RESISTANCE)) return "on_fire";
+			}
+			case LAVA_AVOID -> {
+				if (p.isInLava()) return "in_lava";
+				if (!lavaNear(mc, 1).isEmpty()) return "lava_adjacent";
+			}
+			case FALL -> {
+				if (!p.onGround() && p.fallDistance > 4 && p.getDeltaMovement().y < -0.5 && Inv.count(p, Items.WATER_BUCKET) > 0) {
+					return "falling=" + Math.round(p.fallDistance);
+				}
+			}
+			case RETREAT -> {
+				if (p.getHealth() <= LOW_HEALTH && !hostiles(mc, 12).isEmpty()) return "hp=" + Math.round(p.getHealth()) + " hostiles_near";
+			}
+			case SELF_DEFENSE -> {
+				Combat.Threat t = Combat.pickThreat(mc, agent, coolingDown(mc));
+				if (t != null) {
+					pendingThreat = t;
+					return t.why();
+				}
+			}
+			case EAT -> {
+				int food = p.getFoodData().getFoodLevel();
+				if (food <= 14 && hostiles(mc, 8).isEmpty() && bestFood(p, food) != null && !p.isUsingItem()) return "food=" + food;
+			}
+			case UNSTUCK -> {
+				Task t = agent.tasks.current();
+				// 站著不動但任務有進展(例如站在原地一直放方塊)不算卡住
+				if (t != null && t.moves() && !p.isPassenger() && t.ticksSinceProgress() >= 200 && history.size() >= 200
+					&& history.peekFirst().distanceTo(p.position()) < 0.5) {
+					return "stuck_10s";
+				}
+			}
+		}
+		return null;
+	}
+
+	private ItemStack bestFood(LocalPlayer p, int food) {
+		ItemStack best = null;
+		int bestN = -1;
+		for (int i = 0; i < Inv.MAIN_SIZE; i++) {
+			ItemStack s = p.getInventory().getItem(i);
+			FoodProperties fp = s.get(DataComponents.FOOD);
+			if (fp == null) continue;
+			if (BAD_FOOD.contains(s.getItem()) && food > 6) continue;
+			if (fp.nutrition() > bestN) {
+				bestN = fp.nutrition();
+				best = s;
+			}
+		}
+		return best;
+	}
+
+	/** 剛收手、還在冷卻的怪物；只有在冷卻開始之後又打了自己的才提早解除(H8、P3-M2)。 */
+	private java.util.function.Predicate<Entity> coolingDown(Minecraft mc) {
+		long now = agent.tick();
+		defenseCooldown.prune(now);
+		if (defenseCooldown.isEmpty()) return e -> false;
+		int attackerId = agent.observation.lastAttackerId();
+		long attackedAt = agent.observation.lastAttackedTick();
+		return e -> defenseCooldown.isCoolingDown(e.getId(), now, attackerId, attackedAt);
+	}
+
+	private void begin(Minecraft mc, Kind k, String why) {
+		active = k;
+		activeReason = why;
+		activeTicks = 0;
+		bucketPlaced = false;
+		landedAt = -1;
+		unstuckStart = null;
+		unstuckFront = null;
+		bucketsBefore = Inv.count(mc.player, Items.WATER_BUCKET);
+		retreatPlannedAt = 0;
+		interruptedTask = null;
+		suspendedTask = false;
+		Task t = agent.tasks.current();
+		if (t != null && k != Kind.UNSTUCK) {
+			interruptedTask = t.name() + " " + t.progress();
+			if (k.cancelsTask) agent.tasks.interrupt(k.id());
+			else suspendedTask = agent.tasks.suspend();
+		} else if (k == Kind.UNSTUCK && t != null) {
+			suspendedTask = agent.tasks.suspend();
+		}
+		agent.log.log(ActionLog.Source.reflex, k.id() + "_start", why);
+		switch (k) {
+			case DROWNING -> {
+				BlockPos air = findAirSpot(mc);
+				if (air != null) path(new GoalBlock(air));
+			}
+			case ON_FIRE -> {
+				List<BlockPos> water = Moves.scan(mc, List.of(Blocks.WATER), 8, 1, null);
+				if (!water.isEmpty()) path(new GoalBlock(water.getFirst()));
+				else path(new GoalRunAway(5, mc.player.blockPosition()));
+			}
+			case LAVA_AVOID -> {
+				List<BlockPos> lava = lavaNear(mc, 2);
+				path(new GoalRunAway(4, lava.isEmpty() ? new BlockPos[]{mc.player.blockPosition()} : lava.toArray(new BlockPos[0])));
+			}
+			case RETREAT -> planRetreat(mc);
+			case EAT -> {
+				ItemStack food = bestFood(mc.player, mc.player.getFoodData().getFoodLevel());
+				eatingFood = food == null ? null : food.getItem();
+				eatStartCount = food == null ? 0 : Inv.count(mc.player, food.getItem());
+				if (food != null && Inv.selectInHand(mc, s -> s.getItem() == eatingFood)) {
+					UseKey.startEating(mc);
+				}
+			}
+			case SELF_DEFENSE -> {
+				combat = new Combat(agent, ActionLog.Source.reflex, "self_defense", new Combat.Mover() {
+					@Override
+					public void path(Goal goal) {
+						Reflexes.this.path(goal);
+					}
+
+					@Override
+					public void stop() {
+						Bari.stopAll();
+					}
+				}, false);
+				if (pendingThreat != null) {
+					combat.engage(pendingThreat.entity());
+					engagedPriority = pendingThreat.priority();
+				}
+			}
+			case UNSTUCK -> unstuckAttempts++;
+			default -> {
+			}
+		}
+	}
+
+	private void planRetreat(Minecraft mc) {
+		List<BlockPos> from = new ArrayList<>();
+		for (Entity e : hostiles(mc, 16)) from.add(e.blockPosition());
+		if (from.isEmpty()) return;
+		retreatPlannedAt = activeTicks;
+		path(new GoalRunAway(20, from.toArray(new BlockPos[0])));
+	}
+
+	private void path(Goal g) {
+		Bari.b().getCustomGoalProcess().setGoalAndPath(g);
+	}
+
+	private BlockPos findAirSpot(Minecraft mc) {
+		BlockPos f = mc.player.blockPosition();
+		BlockPos best = null;
+		double bd = Double.MAX_VALUE;
+		for (BlockPos b : BlockPos.betweenClosed(f.offset(-6, -2, -6), f.offset(6, 8, 6))) {
+			BlockState s = mc.level.getBlockState(b), head = mc.level.getBlockState(b.above());
+			if (s.isAir() && head.isAir() && mc.level.getFluidState(b).isEmpty()) {
+				double d = b.distSqr(f);
+				if (d < bd) {
+					bd = d;
+					best = b.immutable();
+				}
+			}
+		}
+		return best;
+	}
+
+	private boolean finished(Minecraft mc) {
+		LocalPlayer p = mc.player;
+		return switch (active) {
+			// 頭一露出水面就結束的話，浮浮沉沉會一直重新觸發：等氧氣回滿(M14)
+			case DROWNING -> p.getAirSupply() >= p.getMaxAirSupply();
+			case ON_FIRE -> !p.isOnFire();
+			case LAVA_AVOID -> !p.isInLava() && lavaNear(mc, 3).isEmpty();
+			// 放了水就要舀回來(身上本來有幾桶水就回到幾桶)；落地 2 秒還舀不回來就算了(M14)
+			case FALL -> p.onGround() && (!bucketPlaced || Inv.count(p, Items.WATER_BUCKET) >= bucketsBefore
+				|| (landedAt >= 0 && activeTicks - landedAt > 40));
+			case RETREAT -> hostiles(mc, 16).isEmpty() || p.getHealth() > 10;
+			case SELF_DEFENSE -> combat == null || combat.finished(mc);
+			case EAT -> {
+				// 只看實際在吃的那種食物(C5：看「最好的食物」會換成別種，數量一比就誤判吃完了)
+				boolean ate = eatingFood == null || Inv.count(p, eatingFood) < eatStartCount;
+				yield ate || (!p.isUsingItem() && activeTicks > 5) || activeTicks > 60;
+			}
+			case UNSTUCK -> activeTicks > 30 && movedSinceUnstuck();
+		};
+	}
+
+	private boolean movedSinceUnstuck() {
+		return history.size() < 2 || history.peekLast().distanceTo(positionAgo(Math.min(activeTicks, 60))) > 2;
+	}
+
+	private Vec3 positionAgo(int ticks) {
+		int idx = Math.max(0, history.size() - 1 - ticks);
+		int i = 0;
+		for (Vec3 v : history) if (i++ == idx) return v;
+		return history.peekFirst();
+	}
+
+	private void act(Minecraft mc) {
+		LocalPlayer p = mc.player;
+		switch (active) {
+			case DROWNING -> {
+				if (!Bari.busy()) mc.options.keyJump.setDown(true);
+			}
+			case RETREAT -> {
+				// 怪物追上來就重新規劃(M14)：每 2 秒一次，有怪物貼到 4 格內時半秒一次
+				boolean close = !hostiles(mc, 4).isEmpty();
+				if (activeTicks - retreatPlannedAt >= (close ? 10 : 40)) planRetreat(mc);
+			}
+			case EAT -> UseKey.holdOff(mc);
+			case FALL -> {
+				if (p.onGround() && landedAt < 0) landedAt = activeTicks;
+				if (!bucketPlaced) {
+					BlockPos ground = null;
+					for (int i = 1; i <= 4; i++) {
+						BlockPos b = p.blockPosition().below(i);
+						if (!mc.level.getBlockState(b).isAir()) {
+							ground = b;
+							break;
+						}
+					}
+					if (ground != null && Inv.selectInHand(mc, s -> s.is(Items.WATER_BUCKET))) {
+						Moves.lookAt(p, Vec3.atCenterOf(ground).add(0, 0.5, 0));
+						p.setXRot(90f);
+						if (p.blockPosition().getY() - ground.getY() <= 3) {
+							mc.gameMode.useItem(p, InteractionHand.MAIN_HAND);
+							bucketPlaced = true;
+						}
+					}
+				} else if (p.onGround() && Inv.selectInHand(mc, s -> s.is(Items.BUCKET))) {
+					p.setXRot(90f);
+					mc.gameMode.useItem(p, InteractionHand.MAIN_HAND); // 把水舀回來
+				}
+			}
+			case SELF_DEFENSE -> {
+				if (combat == null) return;
+				// 每半秒重新看一次：更危險的(例如苦力怕摸過來)就先處理
+				if (activeTicks % 10 == 0) {
+					Combat.Threat t = Combat.pickThreat(mc, agent, coolingDown(mc));
+					if (t != null && t.entity() != combat.target()
+						&& (combat.target() == null || !combat.target().isAlive() || t.priority() < engagedPriority)) {
+						combat.engage(t.entity());
+						engagedPriority = t.priority();
+					}
+				}
+				combat.tick(mc);
+			}
+			case UNSTUCK -> {
+				// 0–9 tick 跳；第 10 tick 開始挖擋在頭前的可破壞天然固體方塊(鎖定起點與目標格並換最快的工具)，
+				// 挖通後遠離起點至少 3 格(> movedSinceUnstuck 的 2 格門檻)，不然往後退；
+				// 挖到第 50 tick 還沒開就放棄並遠離起點。第 70 tick 還沒移動就算這次失敗(H12、P3-M1)
+				if (activeTicks < 10) {
+					mc.options.keyJump.setDown(true);
+				} else if (activeTicks == 10) {
+					mc.options.keyJump.setDown(false);
+					unstuckStart = p.blockPosition().immutable();
+					BlockPos front = unstuckStart.relative(p.getDirection()).above();
+					BlockState st = mc.level.getBlockState(front);
+					boolean diggable = !st.isAir() && st.getFluidState().isEmpty() && st.getDestroySpeed(mc.level, front) >= 0
+						&& agent.guard.isNatural(st) && agent.guard.canBreak(mc.level, front).allowed();
+					// 只挖天然方塊：自己放的方塊(例如剛蓋的牆)也可以挖，但脫困時不該拆掉
+					if (diggable) {
+						BreakTask.equipBestTool(mc, st);
+						mc.gameMode.startDestroyBlock(front, Moves.faceToward(p, front));
+						unstuckFront = front;
+					} else {
+						path(new GoalRunAway(3, unstuckStart));
+					}
+				} else if (activeTicks < 50) {
+					if (unstuckFront != null) {
+						BlockState st = mc.level.getBlockState(unstuckFront);
+						boolean diggable = !st.isAir() && st.getFluidState().isEmpty() && st.getDestroySpeed(mc.level, unstuckFront) >= 0
+							&& agent.guard.isNatural(st) && agent.guard.canBreak(mc.level, unstuckFront).allowed();
+						if (diggable) {
+							mc.gameMode.continueDestroyBlock(unstuckFront, Moves.faceToward(p, unstuckFront));
+						} else {
+							// 已經挖通：停下挖掘並走離起點至少 3 格，讓 movedSinceUnstuck(> 2) 看得到成功脫困
+							mc.gameMode.stopDestroyBlock();
+							unstuckFront = null;
+							path(new GoalRunAway(3, unstuckStart != null ? unstuckStart : p.blockPosition()));
+						}
+					}
+				} else if (activeTicks == 50) {
+					if (unstuckFront != null) {
+						mc.gameMode.stopDestroyBlock();
+						unstuckFront = null;
+						path(new GoalRunAway(3, unstuckStart != null ? unstuckStart : p.blockPosition()));
+					}
+				} else if (activeTicks > 70) {
+					end(mc, "still_stuck");
+				}
+			}
+			default -> {
+			}
+		}
+	}
+
+	private void end(Minecraft mc, String how) {
+		Kind k = active;
+		if (k == null) return;
+		active = null;
+		if (mc.options != null) mc.options.keyJump.setDown(false);
+		if (k == Kind.EAT) {
+			UseKey.release(mc);
+		}
+		if (k == Kind.UNSTUCK && mc.gameMode != null) mc.gameMode.stopDestroyBlock();
+		unstuckStart = null;
+		unstuckFront = null;
+		if (k == Kind.SELF_DEFENSE && combat != null && combat.target() != null && combat.target().isAlive()) {
+			defenseCooldown.put(combat.target().getId(), agent.tick(), DEFENSE_COOLDOWN_TICKS, how.startsWith("preempted_by_"));
+		}
+		eatingFood = null;
+		String action = describeAction(k);
+		if (k == Kind.SELF_DEFENSE && combat != null) {
+			action += " tactics=" + combat.summary();
+			combat.release(mc);
+		}
+		combat = null;
+		pendingThreat = null;
+		if (k != Kind.SELF_DEFENSE && k != Kind.EAT) {
+			try {
+				Bari.stopAll();
+			} catch (RuntimeException ignored) {
+				// 斷線或離開世界時 Baritone 可能不可用
+			}
+		}
+		String text = "reflex=" + k.id() + " kind=" + k.type + " trigger=" + blockagent.mcp.Kv.quote(String.valueOf(activeReason))
+			+ " action=" + action + " result=" + how;
+		if (interruptedTask != null) {
+			text += (k.cancelsTask ? " task_cancelled=" : " task_resumed=") + blockagent.mcp.Kv.quote(interruptedTask);
+		}
+		if (k == Kind.UNSTUCK) {
+			boolean moved = history.size() >= 2 && movedSinceUnstuck();
+			if (moved) unstuckAttempts = 0;
+			else if (CombatPolicy.shouldReportUnstuckFailure(how, moved, unstuckAttempts)) {
+				unstuckAttempts = 0;
+				if (suspendedTask) {
+					agent.tasks.resume();
+					suspendedTask = false;
+				}
+				agent.tasks.interrupt("unstuck (failed 3 times; PATH_BLOCKED)");
+				text += " unstuck_failed=3 task_failed=true";
+			}
+			history.clear();
+		}
+		if (suspendedTask) agent.tasks.resume();
+		suspendedTask = false;
+		agent.log.log(ActionLog.Source.reflex, k.id() + "_end", how);
+		if (k.urgent()) agent.events.add("reflex", Event.Level.URGENT, text);
+		else agent.events.add(new Event("reflex", Event.Level.BATCH, text, "reflex", System.currentTimeMillis()));
+	}
+
+	private static String describeAction(Kind k) {
+		return switch (k) {
+			case DROWNING -> "swim_to_air";
+			case ON_FIRE -> "seek_water_or_leave_fire";
+			case LAVA_AVOID -> "move_away_from_lava";
+			case FALL -> "water_bucket_landing";
+			case RETREAT -> "retreat_from_hostiles";
+			case SELF_DEFENSE -> "fight_by_mob_type";
+			case EAT -> "eat";
+			case UNSTUCK -> "jump_dig_or_back_off";
+		};
+	}
+
+	/** 暫停時：反射全部停止，完全交給使用者(S9.3a)。 */
+	public synchronized void stopAll() {
+		Minecraft mc = Minecraft.getInstance();
+		if (active != null) {
+			if (active == Kind.UNSTUCK && mc.gameMode != null) mc.gameMode.stopDestroyBlock();
+			agent.log.log(ActionLog.Source.reflex, active.id() + "_stopped", "暫停");
+			active = null;
+		}
+		unstuckStart = null;
+		unstuckFront = null;
+		suspendedTask = false;
+		if (combat != null) combat.release(mc);
+		combat = null;
+		pendingThreat = null;
+		eatingFood = null;
+		history.clear();
+		defenseCooldown.clear();
+		unstuckAttempts = 0;
+		if (mc.options != null) {
+			mc.options.keyJump.setDown(false);
+			mc.options.keyUse.setDown(false);
+		}
+	}
+}

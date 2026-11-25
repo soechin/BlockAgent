@@ -1,0 +1,7 @@
+{
+  "key.category.blockagent.main": "BlockAgent",
+  "key.blockagent.toggle": "開始/暫停 AI",
+  "key.blockagent.hud": "收合 AI 面板",
+  "key.blockagent.chat": "切換 AI 聊天",
+  "key.blockagent.cursor": "抓住/放開游標"
+}

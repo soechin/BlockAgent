@@ -1,0 +1,7 @@
+{
+  "required": true,
+  "package": "blockagent.testkit.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": ["WindowInvoker", "PositionCorrectionCounter", "ActionCounter"],
+  "injectors": { "defaultRequire": 1 }
+}

@@ -1,0 +1,163 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+base {
+	archivesName = 'blockagent'
+}
+
+// 版本號=建置時的日期加時間(到分鐘)，例如 2026.11.22-1853。
+// 用 ValueSource 取時間：configuration cache 每次建置都會重新取值，時間變了就重新設定，不會沿用舊的版本號。
+abstract class BuildTime implements org.gradle.api.provider.ValueSource<String, org.gradle.api.provider.ValueSourceParameters.None> {
+	@Override
+	String obtain() {
+		java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern('yyyy.M.d-HHmm'))
+	}
+}
+version = providers.of(BuildTime) {}.get()
+
+repositories {
+	// Baritone 官方 release(GitHub)，docs/SPEC.md S1.3
+	ivy {
+		name = 'BaritoneReleases'
+		url = 'https://github.com/cabaletta/baritone/releases/download/'
+		patternLayout {
+			artifact 'v[revision]/[module]-[revision].[ext]'
+		}
+		metadataSources { artifact() }
+		content { includeGroup 'cabaletta' }
+	}
+	mavenCentral()
+}
+
+fabricApi {
+	configureTests {
+		createSourceSet = true
+		modId = 'blockagent-testkit'
+		enableGameTests = false
+		enableClientGameTests = true
+		// ServerAndCreativeGameTest 需要啟動專用伺服器；執行時加上 -Peula=true 表示同意 Minecraft EULA。
+		eula = providers.gradleProperty('eula').map { it.toBoolean() }.getOrElse(false)
+	}
+}
+
+loom {
+	runs {
+		configureEach {
+			// 測試與開發執行時，runtime.json 寫在 build 目錄，不蓋掉使用者真正在玩時的 ~/.blockagent。
+			// 遊戲測試用另一個資料夾，開著 runClient 時跑測試也不會蓋掉(或刪掉)它的 runtime.json。
+			def homeDir = name.toLowerCase().contains('gametest') ? 'blockagent-home-test' : 'blockagent-home'
+			vmArg "-Dblockagent.home=${project.layout.buildDirectory.dir(homeDir).get().asFile.absolutePath}"
+			// ./gradlew runClientGameTest -PtestOnly=ChatGameTest,RulesGameTest：只跑指定的遊戲測試
+			if (project.hasProperty('testOnly')) vmArg "-Dblockagent.test.only=${project.property('testOnly')}"
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// Baritone：編譯只用 API；開發環境執行用未混淆版(內部類別名稱不變，Mixin 才掛得上)
+	compileOnly "cabaletta:baritone-api-fabric:${project.baritone_version}"
+	runtimeOnly "cabaletta:baritone-unoptimized-fabric:${project.baritone_version}"
+
+	testImplementation "net.fabricmc:fabric-loader-junit:${project.loader_version}"
+	testImplementation platform('org.junit:junit-bom:5.13.4')
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+	testImplementation "cabaletta:baritone-api-fabric:${project.baritone_version}"
+}
+
+processResources {
+	def version = project.version
+	inputs.property 'version', version
+	filesMatching('fabric.mod.json') {
+		expand 'version': version
+	}
+	// MCP prompts/get 的玩法說明(docs/SPEC.md S11.2a)：跟專用 CLI 用的是同一份檔案
+	from(rootProject.file('prompts')) {
+		include 'how-to-play.md'
+		into 'blockagent/prompts'
+	}
+}
+
+// testkit 的 fabric.mod.json 也有 ${version}，跟正式版一樣展開(L4)
+tasks.named('processGametestResources') {
+	def version = project.version
+	inputs.property 'version', version
+	filesMatching('fabric.mod.json') {
+		expand 'version': version
+	}
+}
+
+// 檔名每次都不同，打包前先清掉 build/libs 裡舊版本的 jar，免得一起被放進 mods
+tasks.named('jar') {
+	def libs = layout.buildDirectory.dir('libs').get().asFile
+	def current = archiveFileName
+	doFirst {
+		libs.listFiles()?.findAll { it.name.startsWith('blockagent-') && it.name.endsWith('.jar') && it.name != current.get() }?.each { it.delete() }
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.encoding = 'UTF-8'
+}
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}
+
+test {
+	useJUnitPlatform {
+		excludeTags 'cli'
+	}
+	dependsOn 'pythonTest'
+}
+
+// 規劃服務(bin/blockagent-planner)的 Python 測試，跟著 ./gradlew test 一起跑(docs/REVIEW.md M16)。要 Python 3.11 以上(bin/python311 找)。
+tasks.register('pythonTest', Exec) {
+	inputs.dir('src/test/python')
+	inputs.files('bin/blockagent-planner', 'bin/codex-restrictions.toml', 'bin/python311')
+	outputs.upToDateWhen { false }
+	environment 'PYTHONDONTWRITEBYTECODE', '1'
+	commandLine 'sh', '-c', 'py="$(bin/python311)" && exec "$py" -m unittest discover -s src/test/python'
+}
+
+// T8、T9：用本機 stub 模型伺服器測 Claude Code 和 Codex 的權限限制(docs/SPEC.md S12)。需要本機裝有 claude 和 codex。
+tasks.register('cliTest', Test) {
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	useJUnitPlatform {
+		includeTags 'cli'
+	}
+	testLogging {
+		showStandardStreams = true
+		exceptionFormat = 'full'
+	}
+	outputs.upToDateWhen { false }
+}
+
+// docs/SPEC.md S10.2：正式 jar 不能包含測試功能
+def verifyReleaseJar = tasks.register('verifyReleaseJar') {
+	def jarFile = tasks.named('jar').flatMap { it.archiveFile }
+	inputs.file(jarFile)
+	doLast {
+		def bad = []
+		new java.util.zip.ZipFile(jarFile.get().asFile).withCloseable { zip ->
+			zip.entries().each { e ->
+				def n = e.name
+				if (n.startsWith('blockagent/testkit/') || n.contains('gametest') || n.contains('fabric-client-gametest') || n.contains('TestHooks')) {
+					bad << n
+				}
+			}
+		}
+		if (!bad.isEmpty()) {
+			throw new GradleException("正式 jar 含有測試功能：${bad.take(10)}")
+		}
+	}
+}
+tasks.named('build') { dependsOn verifyReleaseJar }

@@ -1,0 +1,23 @@
+.gradle/
+build/
+run/
+out/
+*.iml
+.idea/
+.vscode/
+.DS_Store
+# IDE 自動編譯輸出(和 bin/ 底下的啟動腳本放在一起)
+bin/main/
+bin/test/
+bin/gametest/
+bin/default/
+**/.claude/
+**/.cc-writes/
+.fabric/
+logs/
+# Python 快取與編輯器暫存檔
+__pycache__/
+*.swp
+
+# 工具清單快照不一致時寫出的實際清單(ToolsSnapshotTest、SmokeGameTest)
+src/test/resources/blockagent/tools-snapshot.actual.json

@@ -1,0 +1,1678 @@
+[
+  {
+    "name": "get_self",
+    "description": "Own status: pos, dimension, biome, facing, game mode, hp/food/air/xp, effects, held items (durability, enchantments, potion), armor, inventory, task, session, reflexes, time.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "get_surroundings",
+    "description": "Nearby summary: ground, light, terrain, biome directions, time, weather, notable blocks with owner, mobs per species (nearest id), vehicles, dropped items.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "radius": {
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 48,
+          "default": 16
+        },
+        "detail": {
+          "type": "boolean",
+          "description": "List more entries",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "inspect_area",
+    "description": "Read a box of blocks in the current dimension: per-block pos, state and owner, or a summary of block counts. Unloaded cells are marked.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Corner \"x,y,z\""
+        },
+        "to": {
+          "type": "string",
+          "description": "Opposite corner \"x,y,z\", inclusive"
+        },
+        "mode": {
+          "type": "string",
+          "description": "auto: per-block when small or filtered",
+          "enum": [
+            "auto",
+            "summary",
+            "blocks"
+          ],
+          "default": "auto"
+        },
+        "type": {
+          "type": "string",
+          "description": "Only this block id"
+        },
+        "offset": {
+          "type": "integer",
+          "description": "Per-block page start",
+          "minimum": 0,
+          "maximum": 32768,
+          "default": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32,
+          "default": 32
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "find_blocks",
+    "description": "Find the nearest blocks of given types in loaded chunks, with owner.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Block id or group (log, bed, door, wool, iron_ore incl. deepslate); comma-separate up to 8"
+        },
+        "radius": {
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 96,
+          "default": 48
+        },
+        "max": {
+          "type": "integer",
+          "description": "Per type",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 10
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "get_players",
+    "description": "Other players in tracking range: pos, direction, held item, armor, recent activity (guessed).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "get_chat",
+    "description": "Recent public chat, verbatim (private messages never appear).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "get_task",
+    "description": "Current background task and its progress.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "wait_events",
+    "description": "Wait for game events (long poll). task_only\u003dtrue returns as soon as the current task ends; progress events do not wake it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "max_wait_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120,
+          "default": 30
+        },
+        "task_only": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "say",
+    "description": "Say something in game chat ([AI] prefix is added). Must not start with /. Rate-limited.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Message, in the language the players use"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "text"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "memory_read",
+    "description": "Read this world\u0027s memory (goals, places, notes).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "memory_write",
+    "description": "Write one memory entry; the same key overwrites. Value up to 500 chars, total up to 16 KB.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "e.g. home, goal, user_prefs"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "value"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "memory_delete",
+    "description": "Delete one memory entry.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "key"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "plan",
+    "description": "Your current plan (kept by the mod; plan_ready from request_plan replaces it). Task results and idle reminders show the current step as plan_step\u003dn/m. show (default); done \u003d the current step is complete, move to the next; set \u003d write your own plan (replaces it); clear.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "show",
+            "done",
+            "set",
+            "clear"
+          ],
+          "default": "show"
+        },
+        "goal": {
+          "type": "string",
+          "description": "For set: overall goal"
+        },
+        "steps": {
+          "type": "string",
+          "description": "For set: 1 to 8 steps in order, one per line"
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "list_reflexes",
+    "description": "List reflexes and whether each is on.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "set_reflex",
+    "description": "Turn one reflex on or off (all reset to on in a new session).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "drowning",
+            "lava_avoid",
+            "on_fire",
+            "fall",
+            "retreat",
+            "self_defense",
+            "eat",
+            "unstuck"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "enabled"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "stop",
+    "description": "Stop the current background task.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "set_status",
+    "description": "Update the HUD the user watches; write it in the user\u0027s language. Omitted fields keep their value; an empty string clears.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Current action, max 40 chars; empty \u003d show the task"
+        },
+        "thought": {
+          "type": "string",
+          "description": "What you noticed and why, max 80 chars"
+        },
+        "short_goal": {
+          "type": "string",
+          "description": "Current stage goal, max 48 chars"
+        },
+        "long_goal": {
+          "type": "string",
+          "description": "Overall goal, max 48 chars"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "text"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "goto",
+    "description": "Walk to a position. Omit y to match x,z only and follow the surface (good for rough terrain).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "z": {
+          "type": "integer"
+        },
+        "range": {
+          "type": "integer",
+          "description": "Arrival distance",
+          "minimum": 0,
+          "maximum": 32,
+          "default": 1
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "z"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "goto_block",
+    "description": "Walk next to the nearest block of a type.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Block id or group"
+        },
+        "radius": {
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 96,
+          "default": 48
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "look_at",
+    "description": "Turn to look at a position.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "z": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "break_block",
+    "description": "Break one block within reach (usually a few seconds).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "z": {
+          "type": "integer"
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "place_block",
+    "description": "Place a block item at a position within reach, next to a solid face; waits for server confirmation. facing sets the placed block\u0027s facing (stairs, furnace, chest, hopper, wall torch, observer...; logs use its axis); the result is verified. A block without a facing property gives INVALID_ARGUMENT.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "z": {
+          "type": "integer"
+        },
+        "item": {
+          "type": "string",
+          "description": "Block item id"
+        },
+        "facing": {
+          "type": "string",
+          "description": "Facing of the placed block; omit for the default",
+          "enum": [
+            "north",
+            "south",
+            "east",
+            "west",
+            "up",
+            "down"
+          ]
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "z",
+        "item"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "use_block",
+    "description": "Right-click a block within reach: doors, buttons, levers, containers, stations.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "z": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "equip",
+    "description": "Equip an item to the main hand, off hand, or its armor slot.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "string"
+        },
+        "slot": {
+          "type": "string",
+          "enum": [
+            "mainhand",
+            "offhand",
+            "armor"
+          ],
+          "default": "mainhand"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "eat",
+    "description": "Eat food (about 2 s). Omit item to pick the best safe food.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "string"
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "attack",
+    "description": "Hit a mob once within reach (entity id, or type \u003d nearest within 16). Players, pets and villagers are protected. To fight until it dies, use hunt.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Entity id (e.g. \"1538\") or type (e.g. zombie)"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "target"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "hunt",
+    "description": "Track a mob, kill it and pick up keepable drops. Same tactics as the self_defense reflex (hit-and-back on creepers, shield toward ranged mobs, bow at range if you have bow and arrows).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Entity id or type (nearest within 48), e.g. sheep"
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "target"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "drop",
+    "description": "Drop items from the inventory, optionally facing a position (e.g. to give to a player).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2304,
+          "default": 1
+        },
+        "toward_x": {
+          "type": "integer"
+        },
+        "toward_y": {
+          "type": "integer"
+        },
+        "toward_z": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "creative_take",
+    "description": "Creative mode only: take items from the creative inventory into your inventory.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2304,
+          "default": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "clear_area",
+    "description": "Walk over and clear natural blocks of given types in a box, like a normal player. Only cells loaded and matching at start are handled.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Corner \"x,y,z\""
+        },
+        "to": {
+          "type": "string",
+          "description": "Opposite corner \"x,y,z\", inclusive"
+        },
+        "block": {
+          "type": "string",
+          "description": "Block id or group (e.g. birch_leaves, leaves); comma-separate up to 8, e.g. dirt,stone"
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "block"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "mine",
+    "description": "Find blocks, walk there, mine and pick them up until count is reached. Checks tool and inventory space first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "block": {
+          "type": "string",
+          "description": "Block id or group: log, stone, coal_ore, iron_ore (incl. deepslate)..."
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 640
+        },
+        "radius": {
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 96,
+          "default": 48
+        },
+        "search": {
+          "type": "boolean",
+          "description": "If not enough are loaded, explore outward (up to 5 min)",
+          "default": false
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "block",
+        "count"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "craft",
+    "description": "Craft items. Uses a crafting table within 16 blocks (anyone\u0027s) or places one from inventory materials. Missing materials are reported up front; it never gathers.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 576,
+          "default": 1
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "smelt",
+    "description": "Smelt in a furnace within 32 blocks (anyone\u0027s) or one placed from inventory; adds input and fuel, waits, and takes the output.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "string",
+          "description": "Input (e.g. raw_iron) or wanted output (e.g. iron_ingot)"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "fuel": {
+          "type": "string",
+          "description": "Omit to pick automatically"
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item",
+        "count"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "build_wall",
+    "description": "Build a straight wall between two points (same x or same z), height blocks up from the lower point. Fills empty cells only; never breaks anything. dry_run\u003dtrue previews (also while paused).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "\"x,y,z\""
+        },
+        "to": {
+          "type": "string",
+          "description": "\"x,y,z\""
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "material": {
+          "type": "string",
+          "description": "Block item id"
+        },
+        "dry_run": {
+          "type": "boolean",
+          "default": false
+        },
+        "offset": {
+          "type": "integer",
+          "description": "dry_run blocker page start",
+          "minimum": 0,
+          "maximum": 32768,
+          "default": 0
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "height",
+        "material"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "build_house",
+    "description": "Build a livable house (foundation, floor, walls, windows, flat roof, door) fitted to the terrain; refuses if the ground varies more than 3. Saved as a blueprint: the id is in the result, resume with build_blueprint. Pass id to regenerate it with changed params. Touches only natural blocks and its own blocks. dry_run\u003dtrue previews.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Outer wall corner \"x,y,z\"; y \u003d floor level"
+        },
+        "to": {
+          "type": "string",
+          "description": "Opposite outer wall corner \"x,y,z\""
+        },
+        "material": {
+          "type": "string",
+          "description": "Wall block id"
+        },
+        "height": {
+          "type": "integer",
+          "description": "Interior height (3-8, default 4)",
+          "minimum": 3,
+          "maximum": 8,
+          "default": 4
+        },
+        "floor": {
+          "type": "string",
+          "description": "Floor and foundation block; default material"
+        },
+        "roof": {
+          "type": "string",
+          "description": "Roof block; default material"
+        },
+        "door_side": {
+          "type": "string",
+          "enum": [
+            "north",
+            "south",
+            "east",
+            "west"
+          ],
+          "default": "north"
+        },
+        "door": {
+          "type": "string",
+          "description": "Wooden door id, or none for an opening; omitted: use a wooden door from inventory if any"
+        },
+        "window": {
+          "type": "string",
+          "description": "e.g. glass_pane; one per wall except the door wall"
+        },
+        "name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string",
+          "description": "Regenerate this house; give only the params to change"
+        },
+        "dry_run": {
+          "type": "boolean",
+          "default": false
+        },
+        "offset": {
+          "type": "integer",
+          "description": "dry_run blocker page start",
+          "minimum": 0,
+          "maximum": 32768,
+          "default": 0
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "build_blueprint",
+    "description": "Save, build, show, modify or demolish multi-block blueprints. Building only touches natural blocks and blocks this blueprint placed. Kept after missing materials; resume by id. For a plain house use build_house.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "create: save and build. resume: continue by id. list. show: parts and site diff. update: parts replaces all or add_parts appends, then builds; own blocks no longer in the design are removed. demolish: remove own blocks matching it, then delete the record. delete: forget the record only.",
+          "enum": [
+            "create",
+            "resume",
+            "list",
+            "show",
+            "update",
+            "demolish",
+            "delete"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "description": "Blueprint id (resume, show, update, demolish, delete)"
+        },
+        "name": {
+          "type": "string",
+          "description": "Name (create; update renames)"
+        },
+        "origin": {
+          "type": "string",
+          "description": "Absolute origin \"x,y,z\" (create)"
+        },
+        "parts": {
+          "type": "array",
+          "description": "Whole design (create, update); later parts override earlier ones",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string",
+                "description": "Relative \"x,y,z\""
+              },
+              "to": {
+                "type": "string",
+                "description": "Relative opposite corner, inclusive; omit for one block"
+              },
+              "block": {
+                "type": "string",
+                "description": "Block with optional state, e.g. oak_stairs[facing\u003dnorth]; air \u003d keep empty"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "from",
+              "block"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 256
+        },
+        "add_parts": {
+          "type": "array",
+          "description": "Parts appended to the saved design (update)",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string",
+                "description": "Relative \"x,y,z\""
+              },
+              "to": {
+                "type": "string",
+                "description": "Relative opposite corner, inclusive; omit for one block"
+              },
+              "block": {
+                "type": "string",
+                "description": "Block with optional state, e.g. oak_stairs[facing\u003dnorth]; air \u003d keep empty"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "from",
+              "block"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 256
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Preview create, update or resume without changing anything",
+          "default": false
+        },
+        "offset": {
+          "type": "integer",
+          "description": "Page start for list, show, dry_run",
+          "minimum": 0,
+          "maximum": 32768,
+          "default": 0
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "till_and_plant",
+    "description": "Till natural dirt or grass in an area into farmland and plant seeds. y \u003d ground level.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Corner \"x,y,z\""
+        },
+        "to": {
+          "type": "string",
+          "description": "Opposite corner \"x,y,z\", inclusive"
+        },
+        "seed": {
+          "type": "string",
+          "enum": [
+            "wheat_seeds",
+            "carrot",
+            "potato",
+            "beetroot_seeds"
+          ]
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "seed"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "harvest",
+    "description": "Harvest ripe crops you planted in an area and replant.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Corner \"x,y,z\""
+        },
+        "to": {
+          "type": "string",
+          "description": "Opposite corner \"x,y,z\", inclusive"
+        },
+        "replant": {
+          "type": "boolean",
+          "default": true
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "sleep",
+    "description": "Walk to a bed and sleep; night or thunderstorm only. Omit x,y,z to use the nearest free bed within 32 blocks (anyone\u0027s).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "z": {
+          "type": "integer"
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "follow",
+    "description": "Follow a player at a distance until time is up, they vanish, stop, or pause. Only when you decide to.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "player": {
+          "type": "string",
+          "description": "Name as shown by get_players"
+        },
+        "distance": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 8,
+          "default": 3
+        },
+        "max_sec": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 600,
+          "default": 60
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "player"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "use_on_entity",
+    "description": "Walk to a mob and right-click it holding an item: shear, breed, leash, milk... Omit item for an empty hand. State-changing use on players and tamed pets (anyone\u0027s, yours too) is blocked; villagers and wandering traders cannot be used at all (no trading).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Entity id or type, e.g. sheep"
+        },
+        "item": {
+          "type": "string",
+          "description": "e.g. shears, wheat"
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "target"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "mount",
+    "description": "Walk to and ride a boat, minecart or similar. The driver steers; you never drive. Dismount before walking. Tamed horses (anyone\u0027s, yours too), villagers and wandering traders are blocked.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Entity id or type, e.g. oak_boat"
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "target"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "dismount",
+    "description": "Get off a boat, minecart or similar (usually under 1 s).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "use_item",
+    "description": "Use an item: on the block at x,y,z within reach (fill/pour bucket, flint_and_steel, bone_meal), or in the air if omitted. Pouring and igniting follow the same rules as placing blocks.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "string",
+          "description": "e.g. water_bucket, bucket, flint_and_steel, bone_meal"
+        },
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "z": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "fish",
+    "description": "Fish at water within 16 blocks until count catches or time is up. Needs a fishing rod.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "description": "Catches",
+          "minimum": 1,
+          "maximum": 16,
+          "default": 1
+        },
+        "max_sec": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 300,
+          "default": 120
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "chest",
+    "description": "Walk to a chest, barrel, shulker box or ender chest and list its contents, put items in, or take items out. Anyone\u0027s chests and naturally generated ones are allowed. The result lists the contents.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "list",
+            "put",
+            "take"
+          ]
+        },
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "z": {
+          "type": "integer"
+        },
+        "items": {
+          "type": "object",
+          "description": "{item_id: count}; required for put and take",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minProperties": 1
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  }
+]

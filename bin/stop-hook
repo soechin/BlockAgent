@@ -1,0 +1,20 @@
+#!/bin/sh
+# Claude Code 的 Stop hook(docs/SPEC.md S5.3、S11.3)：
+# 工作階段還在進行(RUNNING)時，不讓 AI 結束回合，提醒它呼叫 wait_events。
+BA_HOME="${BLOCKAGENT_HOME:-$HOME/.blockagent}"
+RUNTIME="$BA_HOME/runtime.json"
+[ -f "$RUNTIME" ] || exit 0
+state="$(python3 -I - "$RUNTIME" <<'PY'
+import json, sys, urllib.request
+rt = json.load(open(sys.argv[1]))
+req = urllib.request.Request("http://127.0.0.1:%d/status" % rt["port"], headers={"Authorization": "Bearer " + rt["token"]})
+try:
+    print(json.load(urllib.request.urlopen(req, timeout=3)).get("state", ""))
+except Exception:
+    print("")
+PY
+)"
+if [ "$state" = "RUNNING" ]; then
+	printf '%s\n' '{"decision":"block","reason":"工作階段還在進行，請呼叫 wait_events 繼續。"}'
+fi
+exit 0

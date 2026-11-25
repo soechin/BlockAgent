@@ -1,0 +1,13 @@
+# codex-cli 0.171.0 搭配 bin/codex-config 和預設模型(gpt-6.2-sol)時，模型看得到的內建工具(docs/SPEC.md S11.1)。
+# 這是允許清單：換模型時工具可以比這份少，但不能有這裡沒有的工具(bin/codex-tools-check)。
+# apply_patch 拿不掉，靠 sandbox_mode=read-only + approval_policy=never 擋住寫入(T9 驗證)。
+exec.apply_patch
+exec.clock__curr_time
+exec.list_mcp_resource_templates
+exec.list_mcp_resources
+exec.read_mcp_resource
+functions.exec
+functions.request_user_input
+functions.request_user_input_async
+functions.send_message_to_user_async
+functions.wait

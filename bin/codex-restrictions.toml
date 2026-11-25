@@ -1,0 +1,26 @@
+approval_policy = "never"
+sandbox_mode    = "read-only"
+web_search      = "disabled"
+
+[features]
+shell_tool       = false
+unified_exec     = false
+view_image       = false
+image_generation = false
+browser_use      = false
+computer_use     = false
+in_app_browser   = false
+apps             = false
+plugins          = false
+memories         = false
+goals            = false
+sleep_tool       = false
+tool_suggest     = false
+skill_search     = false
+multi_agent_v2   = false
+
+[agents]
+enabled = false
+
+[skills.bundled]
+enabled = false

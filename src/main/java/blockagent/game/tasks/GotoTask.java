@@ -1,0 +1,87 @@
+package blockagent.game.tasks;
+
+import baritone.api.pathing.goals.Goal;
+import baritone.api.pathing.goals.GoalXZ;
+import blockagent.game.Agent;
+import blockagent.game.Bari;
+import blockagent.mcp.ErrorCode;
+import net.minecraft.client.Minecraft;
+
+/** 走到某處(Baritone CustomGoalProcess)。 */
+public final class GotoTask extends Task {
+	/** 只比對水平座標的目標(省略 y 時用，沿地表走，避免山地猜錯海拔)。 */
+	public record GoalNearXZ(int x, int z, int range) implements Goal {
+		@Override
+		public boolean isInGoal(int px, int py, int pz) {
+			long dx = (long) px - x;
+			long dz = (long) pz - z;
+			return dx * dx + dz * dz <= (long) range * range;
+		}
+
+		@Override
+		public double heuristic(int px, int py, int pz) {
+			return GoalXZ.calculate(px - x, pz - z);
+		}
+
+		@Override
+		public double heuristic() {
+			return GoalXZ.calculate(range, 0);
+		}
+	}
+
+	private final Goal goal;
+	private final String where;
+	private int idleTicks;
+
+	public GotoTask(Agent agent, String name, Goal goal, String where) {
+		super(agent, name);
+		this.goal = goal;
+		this.where = where;
+	}
+
+	@Override
+	public String describe() {
+		return "走到 " + where;
+	}
+
+	@Override
+	public String progress() {
+		var p = Minecraft.getInstance().player;
+		if (p == null) return "-";
+		return "target=" + where + " cost_left=" + (int) Math.sqrt(Math.max(0, goal.heuristic(p.blockPosition())));
+	}
+
+	@Override
+	public boolean moves() {
+		return true;
+	}
+
+	@Override
+	protected void start(Minecraft mc) {
+		Bari.b().getCustomGoalProcess().setGoalAndPath(goal);
+	}
+
+	@Override
+	protected void tick(Minecraft mc) {
+		if (goal.isInGoal(mc.player.blockPosition())) {
+			done("arrived=" + where);
+			return;
+		}
+		var b = Bari.b();
+		if (!b.getCustomGoalProcess().isActive() && !b.getPathingBehavior().isPathing()) {
+			if (++idleTicks > 20) fail(ErrorCode.PATH_BLOCKED, "no path to " + where + " (blocked, too far, or chunks not loaded)");
+		} else {
+			idleTicks = 0;
+		}
+	}
+
+	@Override
+	protected void onStop(Minecraft mc) {
+		Bari.stopAll();
+	}
+
+	@Override
+	protected void onResume(Minecraft mc) {
+		Bari.b().getCustomGoalProcess().setGoalAndPath(goal);
+	}
+}

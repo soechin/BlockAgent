@@ -1,0 +1,29 @@
+#!/bin/sh
+# 用 `codex debug prompt-input`(不呼叫模型)列出模型看得到的內建工具，和快照比對(S11.4、T9)。
+# 名稱以 mcp__blockagent 開頭的工具(模組的工具)不列入比對。
+# 快照是允許清單：內建工具會隨模型改變，比快照少沒關係(只提醒)；有快照以外的工具就拒絕(exit 1)。
+BA_BIN="$(cd "$(dirname "$0")" && pwd)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+# 先存成檔案再解析：POSIX sh 的管線沒有 pipefail，codex 失敗時解析結果會是空的、看起來像通過(M1)
+codex debug prompt-input > "$tmp/prompt-input.json" 2>"$tmp/err" || { grep -v WARNING "$tmp/err" >&2; exit 1; }
+# 要看原始內容時設 BLOCKAGENT_DEBUG_DIR，不再固定寫到 /tmp
+if [ -n "${BLOCKAGENT_DEBUG_DIR:-}" ]; then cp "$tmp/prompt-input.json" "$BLOCKAGENT_DEBUG_DIR/codex-prompt-input.json"; fi
+python3 -I "$BA_BIN/codex-tools.py" < "$tmp/prompt-input.json" > "$tmp/actual" || exit 1
+LC_ALL=C sort -u -o "$tmp/actual" "$tmp/actual"
+grep -v '^#' "$BA_BIN/codex-tools.snapshot" > "$tmp/expected"
+# 跟 codex-config 一樣：沒設時預設開規劃，設成空字串才關(M1)
+if [ -n "${BLOCKAGENT_PLANNER_MODEL-gpt-6.2-sol}" ]; then
+	# Codex 的程式碼模式會延後載入 MCP 工具。若 debug 有列出，只允許這個工具。
+	printf '%s\n' 'exec.mcp__planner__request_plan' 'mcp__planner__request_plan' 'planner.request_plan' >> "$tmp/expected"
+fi
+LC_ALL=C sort -u -o "$tmp/expected" "$tmp/expected"
+extra="$(LC_ALL=C comm -13 "$tmp/expected" "$tmp/actual")"
+missing="$(LC_ALL=C comm -23 "$tmp/expected" "$tmp/actual" | grep -v -E '^(exec\.mcp__planner__request_plan|mcp__planner__request_plan|planner\.request_plan)$' || true)"
+if [ -n "$missing" ]; then
+	printf '%s\n' "提醒：這個模型沒有快照裡的這些內建工具(不影響安全)：$(printf '%s' "$missing" | tr '\n' ' ')" >&2
+fi
+if [ -n "$extra" ]; then
+	printf '%s\n' "多出來的工具(快照裡沒有)：" "$extra" >&2
+	exit 1
+fi
