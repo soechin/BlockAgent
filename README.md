@@ -15,7 +15,7 @@ AI 啟動時會帶上「怎麼玩」的提示詞 [prompts/how-to-play.md](prompt
 - Minecraft Java 26.3、Java 25
 - Fabric Loader 0.20.1 以上、Fabric API `0.166.2+26.3`
 - Baritone `baritone-unoptimized-fabric-1.20.0.jar`([官方 release](https://github.com/cabaletta/baritone/releases/tag/v1.20.0)；要用 unoptimized 版)
-- Claude Code 2.1.329 或 codex-cli 0.171.0(其他版本啟動時會警告)
+- Claude Code 2.1.331 或 codex-cli 0.172.0(其他版本啟動時會警告)
 
 ## 建置與安裝
 

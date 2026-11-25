@@ -393,11 +393,11 @@
         },
         "short_goal": {
           "type": "string",
-          "description": "Current stage goal, max 20 chars"
+          "description": "Current stage goal, max 48 chars"
         },
         "long_goal": {
           "type": "string",
-          "description": "Overall goal, max 20 chars"
+          "description": "Overall goal, max 48 chars"
         }
       },
       "additionalProperties": false,

@@ -164,34 +164,44 @@ public final class Hud {
 		return fitText(font, longGoal, longWidth) + GOAL_SEPARATOR + fitText(font, shortGoal, available - longWidth);
 	}
 
-	/** 標頭、標籤、計數、靠右文字占掉的寬度(含間距)；剩下的給正文。 */
-	private static int fixedWidth(Font font, Row r) {
-		int w = font.width(r.head());
+	/** 扣掉標頭、標籤、計數和靠右文字後，留給正文的寬度。 */
+	private static int bodyMaxWidth(Font font, int maxWidth, Row r) {
+		int w = font.width(r.head()) + GAP;
 		if (r.tag() != null) w += GAP + font.width(r.tag());
 		if (r.count() != null) w += GAP + font.width(r.count());
 		if (r.right() != null) w += 2 * GAP + font.width(r.right());
-		return w + GAP;
+		return maxWidth - w;
+	}
+
+	/** 這一行實際畫出來的寬度(跟 render 的 draw 規則一致，避免正文為空時右側多一段空白)。 */
+	private static int rowWidth(Font font, Row r) {
+		int w = font.width(r.head());
+		if (r.tag() != null) w += GAP + font.width(r.tag());
+		if (!r.body().isEmpty()) w += GAP + font.width(r.body());
+		if (r.count() != null) w += GAP + font.width(r.count());
+		if (r.right() != null) w += 2 * GAP + font.width(r.right());
+		return w;
 	}
 
 	private void layout(Font font, int maxWidth) {
 		List<Row> result = new ArrayList<>(3);
 		Row first = new Row(cachedHead.label(), cachedHead.color(), cachedTag, cachedBody, BODY_COLOR, cachedCount, cachedRight);
-		result.add(first.withBody(fitText(font, cachedBody, maxWidth - fixedWidth(font, first))));
+		result.add(first.withBody(fitText(font, cachedBody, bodyMaxWidth(font, maxWidth, first))));
 		if (cachedPlan != null) {
 			String longGoal = cachedPlan.longGoal(), shortGoal = cachedPlan.shortGoal();
 			if (!longGoal.isBlank() || !shortGoal.isBlank()) {
 				Row goal = new Row("目標", DIM_COLOR, null, "", DETAIL_COLOR, null, null);
-				result.add(goal.withBody(goalText(font, maxWidth - fixedWidth(font, goal), longGoal, shortGoal)));
+				result.add(goal.withBody(goalText(font, bodyMaxWidth(font, maxWidth, goal), longGoal, shortGoal)));
 			}
 			if (!cachedPlan.thought().isBlank()) {
 				Row thought = new Row("想法", DIM_COLOR, null, "", DETAIL_COLOR, null, null);
-				result.add(thought.withBody(fitText(font, cachedPlan.thought(), maxWidth - fixedWidth(font, thought))));
+				result.add(thought.withBody(fitText(font, cachedPlan.thought(), bodyMaxWidth(font, maxWidth, thought))));
 			}
 		}
 		int width = 0;
 		List<String> plain = new ArrayList<>(result.size());
 		for (Row r : result) {
-			width = Math.max(width, fixedWidth(font, r) + font.width(r.body()));
+			width = Math.max(width, rowWidth(font, r));
 			plain.add(join(r.head(), r.tag(), r.body(), r.count(), r.right()));
 		}
 		rows = List.copyOf(result);

@@ -135,6 +135,22 @@ class PlanFlowTest {
 	}
 
 	@Test
+	void clearStaleStatusTextKeepsFreshAndClearsOld() throws Exception {
+		Agent a = new Agent(new Config(), tmp);
+		a.setHudStatusAt("改去蓋小屋", "白天適合蓋屋", "蓋牆", "建立基地", 100);
+		// 只改目標不改 text，不該刷新 textSetTick
+		a.setHudStatusAt(null, null, "蓋屋頂", null, 180);
+		a.clearStaleStatusTextAt(100 + Agent.FRESH_STATUS_TEXT_TICKS);
+		assertEquals("改去蓋小屋", a.hudStatus().text(), "剛設給新任務的文字(5 秒內)保留");
+
+		a.clearStaleStatusTextAt(100 + Agent.FRESH_STATUS_TEXT_TICKS + 1);
+		assertEquals("", a.hudStatus().text(), "超過 5 秒的舊文字在啟動或替換新任務時清掉");
+		assertEquals("白天適合蓋屋", a.hudStatus().thought());
+		assertEquals("蓋屋頂", a.hudStatus().shortGoal());
+		assertEquals("建立基地", a.hudStatus().longGoal());
+	}
+
+	@Test
 	void snapshotHasEverySection() {
 		String s = Agent.planContext("hp=20 food=18", "RUNNING", "plan=none", Map.of("home", "1,64,2"),
 			List.of("10:00:00 task_failed mine NOT_FOUND"), List.of("goto", "mine"));

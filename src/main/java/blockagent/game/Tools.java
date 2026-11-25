@@ -570,13 +570,13 @@ public final class Tools {
 				+ "their value; an empty string clears.",
 			Hints.IDEMPOTENT, Schema.object().string("text", "Current action, max 24 chars; cleared when a task ends; empty = show the task", true)
 				.string("thought", "What you noticed and why, max 32 chars", false)
-				.string("short_goal", "Current stage goal, max 20 chars", false)
-				.string("long_goal", "Overall goal, max 20 chars", false)
+				.string("short_goal", "Current stage goal, max 48 chars", false)
+				.string("long_goal", "Overall goal, max 48 chars", false)
 				.build(),
 			args -> {
 				Args g = new Args(args);
 				a.setHudStatus(hudText(g.str("text"), 24), hudText(g.str("thought", null), 32),
-					hudText(g.str("short_goal", null), 20), hudText(g.str("long_goal", null), 20));
+					hudText(g.str("short_goal", null), 48), hudText(g.str("long_goal", null), 48));
 				return ToolResult.ok("OK status_set");
 			});
 		taskTool(t, a, "goto", "Walk to a position. Omit y to match x,z only and follow the surface (good for rough terrain).",
@@ -589,10 +589,10 @@ public final class Tools {
 				boolean replace = g.bool("replace", false);
 				if (g.has("y")) {
 					BlockPos p = new BlockPos(x, g.integer("y"), z);
-					return act(a, "goto", args, mc -> a.tasks.start(new GotoTask(a, "goto", new GoalNear(p, range), Fmt.pos(p)),
+					return act(a, "goto", args, mc -> a.tasks.start(new GotoTask(a, "goto", new GoalNear(p, range), Fmt.pos(p), p),
 						replace, null));
 				}
-				return act(a, "goto", args, mc -> a.tasks.start(new GotoTask(a, "goto", new GotoTask.GoalNearXZ(x, z, range), x + ",~," + z),
+				return act(a, "goto", args, mc -> a.tasks.start(new GotoTask(a, "goto", new GotoTask.GoalNearXZ(x, z, range), x + ",~," + z, x, null, z),
 					replace, null));
 			});
 		taskTool(t, a, "goto_block", "Walk next to the nearest block of a type.",
@@ -605,7 +605,7 @@ public final class Tools {
 					List<BlockPos> found = Moves.scan(mc, blocks, r, 1, null);
 					if (found.isEmpty()) return notFoundBlocks(g.str("type"), r);
 					BlockPos p = found.getFirst();
-					return a.tasks.start(new GotoTask(a, "goto_block", new GoalGetToBlock(p), Fmt.pos(p)), g.bool("replace", false),
+					return a.tasks.start(new GotoTask(a, "goto_block", new GoalGetToBlock(p), Fmt.pos(p), p), g.bool("replace", false),
 						Kv.of().put("target", RuleGuard.shortId(mc.level.getBlockState(p))).put("pos", Fmt.pos(p)).toString());
 				});
 			});

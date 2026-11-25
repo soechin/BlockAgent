@@ -6,6 +6,7 @@ import blockagent.game.Agent;
 import blockagent.game.Bari;
 import blockagent.mcp.ErrorCode;
 import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 
 /** 走到某處(Baritone CustomGoalProcess)。 */
 public final class GotoTask extends Task {
@@ -31,20 +32,39 @@ public final class GotoTask extends Task {
 
 	private final Goal goal;
 	private final String where;
+	private final int targetX, targetZ;
+	/** 省略 y 時為 null，只算水平距離。 */
+	private final Integer targetY;
 	private int idleTicks;
 	private double bestHeuristic = Double.POSITIVE_INFINITY;
 
-	public GotoTask(Agent agent, String name, Goal goal, String where) {
+	public GotoTask(Agent agent, String name, Goal goal, String where, BlockPos target) {
+		this(agent, name, goal, where, target.getX(), target.getY(), target.getZ());
+	}
+
+	public GotoTask(Agent agent, String name, Goal goal, String where, int targetX, Integer targetY, int targetZ) {
 		super(agent, name);
 		this.goal = goal;
 		this.where = where;
+		this.targetX = targetX;
+		this.targetY = targetY;
+		this.targetZ = targetZ;
+	}
+
+	/** 玩家到目標的直線格數(省略 y 時只算水平距離)。 */
+	static int distanceBlocks(int px, int py, int pz, int tx, Integer ty, int tz) {
+		double dx = (double) px - tx;
+		double dz = (double) pz - tz;
+		double dy = ty == null ? 0.0 : (double) py - ty;
+		return (int) Math.round(Math.sqrt(dx * dx + dy * dy + dz * dz));
 	}
 
 	@Override
 	public String describe() {
 		var p = Minecraft.getInstance().player;
 		if (p == null) return "走到目標";
-		return "走到目標，剩 " + (int) Math.sqrt(Math.max(0, goal.heuristic(p.blockPosition()))) + " 格";
+		BlockPos bp = p.blockPosition();
+		return "走到目標，剩 " + distanceBlocks(bp.getX(), bp.getY(), bp.getZ(), targetX, targetY, targetZ) + " 格";
 	}
 
 	@Override

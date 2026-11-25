@@ -54,6 +54,10 @@ public final class TaskRunner {
 	 * replace=true 取消舊任務再回 null。不是背景任務、但會搶快捷列和視角的動作也要先呼叫(P2-5)。
 	 */
 	public ToolResult claim(String name, boolean replace) {
+		return claim(name, replace, false);
+	}
+
+	private ToolResult claim(String name, boolean replace, boolean startingTask) {
 		// 反射正在接手(保命、撤退、自衛、進食)時不開始新的事，免得跟反射搶 Baritone 和按鍵(H7)
 		var reflex = agent.reflexes.active();
 		if (reflex != null && reflex != blockagent.game.reflex.Reflexes.Kind.UNSTUCK) {
@@ -65,7 +69,7 @@ public final class TaskRunner {
 			return ToolResult.error(ErrorCode.BUSY, Kv.of().put("task", current.name()).raw(current.progress()),
 				"another task is running");
 		}
-		stop(Minecraft.getInstance(), Task.Status.CANCELLED, "replaced by " + name);
+		stop(Minecraft.getInstance(), Task.Status.CANCELLED, "replaced by " + name, startingTask);
 		agent.reflexes.dropUnstuck(Minecraft.getInstance(), "task_replaced");
 		return null;
 	}
@@ -78,8 +82,10 @@ public final class TaskRunner {
 			return ToolResult.error(ErrorCode.INVALID_ARGUMENT, Kv.of().put("riding", blockagent.game.Fmt.entityId(mc.player.getVehicle())),
 				"cannot start a walking task while riding", "dismount first");
 		}
-		ToolResult busy = claim(t.name(), replace);
+		ToolResult busy = claim(t.name(), replace, true);
 		if (busy != null) return busy;
+		// 待機時留著的舊動作文字(非剛設給新任務用的)在啟動新任務時清掉，免得黏在新任務上(S8.3)
+		agent.clearStaleStatusText();
 		// 舊任務的脫困反射跟著結束，不要繼續跳、挖
 		agent.reflexes.dropUnstuck(mc, "task_replaced");
 		t.startTick = agent.tick();
@@ -129,18 +135,23 @@ public final class TaskRunner {
 	}
 
 	private void finish(Minecraft mc, boolean notify) {
+		finish(mc, notify, false);
+	}
+
+	private void finish(Minecraft mc, boolean notify, boolean keepFreshStatus) {
 		try {
-			finishCurrent(mc, notify);
+			finishCurrent(mc, notify, keepFreshStatus);
 		} finally {
 			pendingResult = null;
 		}
 	}
 
-	private void finishCurrent(Minecraft mc, boolean notify) {
+	private void finishCurrent(Minecraft mc, boolean notify, boolean keepFreshStatus) {
 		Task t = current;
 		current = null;
-		// AI 為這個任務寫的 HUD 文字跟著任務結束，免得留到下一個任務(S8.3)
-		agent.clearStatusText();
+		// AI 為這個任務寫的 HUD 文字跟著任務結束；若是替換成新任務，剛設給新任務的文字保留(S8.3)
+		if (keepFreshStatus) agent.clearStaleStatusText();
+		else agent.clearStatusText();
 		try {
 			t.onStop(mc);
 		} catch (RuntimeException ignored) {
@@ -187,13 +198,13 @@ public final class TaskRunner {
 		return kv + " | " + reason + (hint == null || hint.isBlank() ? "" : " | hint=" + hint);
 	}
 
-	private void stop(Minecraft mc, Task.Status status, String reason) {
+	private void stop(Minecraft mc, Task.Status status, String reason, boolean keepFreshStatus) {
 		Task t = current;
 		if (t == null) return;
 		t.status = status;
 		t.failReason = reason;
 		if (status == Task.Status.FAILED) t.failCode = ErrorCode.INTERRUPTED;
-		finish(mc, true);
+		finish(mc, true, keepFreshStatus);
 	}
 
 	/** 取消目前任務(暫停、接手、stop 工具、結束工作階段)。 */
@@ -201,7 +212,7 @@ public final class TaskRunner {
 		Minecraft mc = Minecraft.getInstance();
 		agent.reflexes.dropUnstuck(mc, "task_cancelled");
 		if (current == null) return;
-		stop(mc, Task.Status.CANCELLED, reason);
+		stop(mc, Task.Status.CANCELLED, reason, false);
 	}
 
 	/** 被反射打斷而結束(保命、撤退類)。 */

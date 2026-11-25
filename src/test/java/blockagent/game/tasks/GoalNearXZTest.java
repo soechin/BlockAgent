@@ -24,4 +24,13 @@ class GoalNearXZTest {
 		assertFalse(exact.isInGoal(11, 99, 20));
 		assertFalse(exact.isInGoal(10, 99, 21));
 	}
+
+	@Test
+	void distanceBlocksMeasuresLinearDistance() {
+		assertEquals(100, GotoTask.distanceBlocks(0, 64, 0, 100, 64, 0));
+		assertEquals(5, GotoTask.distanceBlocks(0, 64, 0, 3, 64, 4));
+		assertEquals(13, GotoTask.distanceBlocks(0, 64, 0, 3, 76, 4), "有 y 時算三維直線距離");
+		assertEquals(5, GotoTask.distanceBlocks(0, 64, 0, 3, null, 4), "省略 y 時只算水平距離");
+		assertEquals(0, GotoTask.distanceBlocks(10, 64, -20, 10, null, -20));
+	}
 }
