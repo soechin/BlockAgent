@@ -153,12 +153,10 @@ public class SmokeGameTest implements FabricClientGameTest {
 			var dawn = c.call(ctx, "wait_events", McpTestClient.args("max_wait_sec", 5));
 			check(dawn.text().contains("daybreak: time=day weather="), "應該收到 daybreak 事件：" + dawn.text());
 
-			var status = c.call(ctx, "set_status", McpTestClient.args(
-				"text", "在避難屋等天亮", "thought", "屋外有苦力怕。",
-				"short_goal", "勘察空地", "long_goal", "建立基地"));
+			var status = c.call(ctx, "set_status", McpTestClient.args("text", "屋外有苦力怕，在避難屋等天亮"));
 			check(status.ok(), "設定 HUD 失敗：" + status.text());
-			ctx.waitFor(mc -> a.hud.line().contains("在避難屋等天亮") && a.hud.lines().equals(List.of(
-				a.hud.line(), "目標 建立基地 › 勘察空地", "想法 屋外有苦力怕。")));
+			ctx.waitFor(mc -> !a.hud.line().contains("苦力怕")
+				&& a.hud.lines().equals(List.of(a.hud.line(), "屋外有苦力怕，在避難屋等天亮")));
 
 			ctx.getInput().pressKey(a.control.toggleKey);
 			ctx.waitTicks(2);

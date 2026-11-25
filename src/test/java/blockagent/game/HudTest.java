@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
-/** HUD 第一行的狀態判斷(S8.3)：只有標頭著色；AI 端不在時不能顯示「想下一步」。 */
+/** HUD 第一行的狀態判斷(S8.3)：只有標頭著色；第一行只顯示任務，AI 端不在時不能顯示「想下一步」。 */
 class HudTest {
 	@Test
 	void headDependsOnStateAndAiPresence() {
@@ -24,18 +24,17 @@ class HudTest {
 	}
 
 	@Test
-	void bodyPrefersAiTextThenTaskThenPresenceDefault() {
+	void bodyShowsTaskThenPresenceDefault() {
 		Session.State run = Session.State.RUNNING;
-		assertEquals("去礦洞找鐵", Hud.body(run, AiPresence.BUSY, "去礦洞找鐵", "挖 鐵礦"));
-		assertEquals("挖 鐵礦", Hud.body(run, AiPresence.BUSY, " ", "挖 鐵礦"), "AI 沒寫文字就用任務描述");
-		assertEquals("挖 鐵礦", Hud.body(run, AiPresence.SILENT, "", "挖 鐵礦"), "AI 沒有回應時仍然顯示任務");
-		assertEquals("想下一步", Hud.body(run, AiPresence.ACTIVE, "", null));
-		assertEquals("等事件", Hud.body(run, AiPresence.BUSY, null, null));
-		assertEquals("超過 1 分鐘沒有動靜", Hud.body(run, AiPresence.SILENT, null, ""));
-		assertEquals("請啟動 Claude Code 或 Codex", Hud.body(run, AiPresence.NONE, null, null));
-		assertEquals("按 ` 恢復", Hud.body(Session.State.PAUSED, AiPresence.ACTIVE, "去礦洞找鐵", "挖 鐵礦"));
-		assertEquals("按 ` 開始", Hud.body(Session.State.READY, AiPresence.NONE, null, null));
-		assertEquals("", Hud.body(Session.State.ENDED, AiPresence.NONE, null, null));
+		assertEquals("挖 鐵礦", Hud.body(run, AiPresence.BUSY, "挖 鐵礦"));
+		assertEquals("挖 鐵礦", Hud.body(run, AiPresence.SILENT, "挖 鐵礦"), "AI 沒有回應時仍然顯示任務");
+		assertEquals("想下一步", Hud.body(run, AiPresence.ACTIVE, " "));
+		assertEquals("等事件", Hud.body(run, AiPresence.BUSY, null));
+		assertEquals("超過 1 分鐘沒有動靜", Hud.body(run, AiPresence.SILENT, ""));
+		assertEquals("請啟動 Claude Code 或 Codex", Hud.body(run, AiPresence.NONE, null));
+		assertEquals("按 ` 恢復", Hud.body(Session.State.PAUSED, AiPresence.ACTIVE, "挖 鐵礦"));
+		assertEquals("按 ` 開始", Hud.body(Session.State.READY, AiPresence.NONE, null));
+		assertEquals("", Hud.body(Session.State.ENDED, AiPresence.NONE, null));
 	}
 
 	@Test

@@ -59,13 +59,10 @@ class PlanFlowTest {
 		String events = a.unreadSummary("get_self");
 		assertTrue(events.contains("plan_ready:") && events.contains("1. 砍 16 塊原木 2. 蓋 5x5 的房子")
 			&& events.contains("plan(action=done)"), events);
-		assertEquals("砍 16 塊原木", a.hudStatus().shortGoal());
-		assertEquals("過第一晚", a.hudStatus().longGoal());
 		assertEquals(" | plan_step=1/2 \"砍 16 塊原木\"", a.planSuffix());
 
 		String done = a.tools.call("plan", args("done")).text();
 		assertTrue(done.startsWith("OK step_done step=1") && done.contains("plan_step=2/2"), done);
-		assertEquals("蓋 5x5 的房子", a.hudStatus().shortGoal());
 		assertTrue(a.tools.call("plan", args("done")).text().startsWith("OK plan_finished"));
 		assertFalse(a.tools.call("plan", args("done")).isOk(), "做完之後不能再往下");
 
@@ -104,50 +101,6 @@ class PlanFlowTest {
 		assertNull(a.acceptPlan(failNoMsg));
 		String noMsgEvents = a.unreadSummary("get_self");
 		assertTrue(noMsgEvents.contains("code=CLI_FAILED | hint="), "空白訊息不應出現空區段：" + noMsgEvents);
-	}
-
-	@Test
-	void syncPlanHudRestoresLoadedPlanAndKeepsTextAndThought() throws Exception {
-		Agent a = new Agent(new Config(), tmp);
-		a.memory.load(tmp.resolve("memory.json"));
-		a.loadPlan(tmp.resolve("plan.json"));
-		assertNull(a.acceptPlan(result("蓋農田", "找水源", "犁田")));
-
-		Agent reloaded = new Agent(new Config(), tmp);
-		reloaded.loadPlan(tmp.resolve("plan.json"));
-		reloaded.setHudStatus("觀察中", "先看環境", "", "");
-		reloaded.syncPlanHud();
-		assertEquals("觀察中", reloaded.hudStatus().text());
-		assertEquals("先看環境", reloaded.hudStatus().thought());
-		assertEquals("找水源", reloaded.hudStatus().shortGoal());
-		assertEquals("蓋農田", reloaded.hudStatus().longGoal());
-	}
-
-	@Test
-	void clearStatusTextKeepsThoughtAndGoals() throws Exception {
-		Agent a = new Agent(new Config(), tmp);
-		a.setHudStatus("去挖鐵礦", "鐵鎬快壞了", "做鐵鎬", "過第一晚");
-		a.clearStatusText();
-		assertEquals("", a.hudStatus().text(), "任務結束時清掉 AI 的動作文字");
-		assertEquals("鐵鎬快壞了", a.hudStatus().thought());
-		assertEquals("做鐵鎬", a.hudStatus().shortGoal());
-		assertEquals("過第一晚", a.hudStatus().longGoal());
-	}
-
-	@Test
-	void clearStaleStatusTextKeepsFreshAndClearsOld() throws Exception {
-		Agent a = new Agent(new Config(), tmp);
-		a.setHudStatusAt("改去蓋小屋", "白天適合蓋屋", "蓋牆", "建立基地", 100);
-		// 只改目標不改 text，不該刷新 textSetTick
-		a.setHudStatusAt(null, null, "蓋屋頂", null, 180);
-		a.clearStaleStatusTextAt(100 + Agent.FRESH_STATUS_TEXT_TICKS);
-		assertEquals("改去蓋小屋", a.hudStatus().text(), "剛設給新任務的文字(5 秒內)保留");
-
-		a.clearStaleStatusTextAt(100 + Agent.FRESH_STATUS_TEXT_TICKS + 1);
-		assertEquals("", a.hudStatus().text(), "超過 5 秒的舊文字在啟動或替換新任務時清掉");
-		assertEquals("白天適合蓋屋", a.hudStatus().thought());
-		assertEquals("蓋屋頂", a.hudStatus().shortGoal());
-		assertEquals("建立基地", a.hudStatus().longGoal());
 	}
 
 	@Test

@@ -16,7 +16,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 畫面左上角的 AI 面板(docs/SPEC.md S8.3)：最多 3 行(狀態、目標、想法)，每行都是單行，太長用「…」截短。
+ * 畫面左上角的 AI 面板(docs/SPEC.md S8.3)：最多 2 行，每行都是單行，太長用「…」截短。
+ * 第一行由模組產生(狀態、任務和進度、剩餘時間)；第二行是 AI 用 set_status 寫的一句話。
  * 只有狀態標頭著色，正文用白色。每 10 tick 更新一次內容。
  */
 public final class Hud {
@@ -24,24 +25,22 @@ public final class Hud {
 		GRAY = 0xFFAAAAAA, RED = 0xFFFF5555;
 
 	private static final int BODY_COLOR = 0xFFF2F2F2, DETAIL_COLOR = 0xFFE8E8E8, DIM_COLOR = 0xFF999999;
-	private static final int BACKGROUND = 0xA0000000;
+	private static final int BACKGROUND = 0x60000000;
 	private static final int MAX_TEXT_WIDTH = 340, PAD = 4, GAP = 4, MARGIN = 2;
-	private static final String GOAL_SEPARATOR = " › ";
 
 	/** 狀態標頭：符號加(異常時的)狀態字。 */
 	record Head(String label, int color) {}
 
-	/** 一行：著色的標頭、選用的反射標籤、可截短的正文、選用的計數和靠右的文字。 */
-	private record Row(String head, int headColor, String tag, String body, int bodyColor, String count, String right) {
+	/** 一行：縮排、著色的標頭、選用的反射標籤、可截短的正文，以及接在正文後面的灰色文字(計數、剩餘時間)。 */
+	private record Row(int indent, String head, int headColor, String tag, String body, int bodyColor, String trailer) {
 		Row withBody(String b) {
-			return new Row(head, headColor, tag, b, bodyColor, count, right);
+			return new Row(indent, head, headColor, tag, b, bodyColor, trailer);
 		}
 	}
 
 	private final Agent agent;
 	private Head cachedHead;
-	private String cachedTag, cachedBody, cachedCount, cachedRight;
-	private Agent.HudStatus cachedPlan;
+	private String cachedTag, cachedBody, cachedTrailer, cachedSay;
 	private long lastUpdateTick = -100;
 	private int layoutWidth = -1;
 	private int panelWidth;
@@ -58,10 +57,10 @@ public final class Hud {
 
 	/** 第一行的文字(測試用)。 */
 	public String line() {
-		return cachedHead == null ? "" : join(cachedHead.label(), cachedTag, cachedBody, cachedCount, cachedRight);
+		return cachedHead == null ? "" : join(cachedHead.label(), cachedTag, cachedBody, cachedTrailer);
 	}
 
-	/** 目前面板由上到下的文字(測試用；目標和想法是畫面上截短後的樣子)。 */
+	/** 目前面板由上到下的文字(測試用；是畫面上截短後的樣子)。 */
 	public List<String> lines() {
 		return plainLines;
 	}
@@ -98,11 +97,10 @@ public final class Hud {
 		};
 	}
 
-	/** 第一行的正文：AI 的文字 > 任務描述 > 依 AI 端狀態的預設文字。 */
-	static String body(Session.State state, AiPresence presence, String aiText, String taskDesc) {
+	/** 第一行的正文：任務描述，沒有任務時依 AI 端狀態的預設文字。AI 寫的話在第二行，不會蓋掉任務。 */
+	static String body(Session.State state, AiPresence presence, String taskDesc) {
 		return switch (state) {
 			case RUNNING -> {
-				if (aiText != null && !aiText.isBlank()) yield aiText;
 				if (taskDesc != null && !taskDesc.isBlank()) yield taskDesc;
 				yield switch (presence) {
 					case NONE -> "請啟動 Claude Code 或 Codex";
@@ -123,17 +121,18 @@ public final class Hud {
 		Session s = agent.session;
 		Session.State state = s.state();
 		AiPresence presence = agent.aiPresence();
-		Agent.HudStatus status = agent.hudStatus();
 		Task task = agent.tasks.current();
 		boolean running = state == Session.State.RUNNING;
 
 		cachedHead = head(state, presence);
 		cachedTag = running ? reflexTag(agent.reflexes.active()) : null;
-		cachedBody = body(state, presence, status.text(), task == null ? null : task.describe());
+		cachedBody = body(state, presence, task == null ? null : task.describe());
 		Task.Progress p = running && task != null ? task.hudProgress() : null;
-		cachedCount = p != null && p.total() > 0 ? p.done() + "/" + p.total() : null;
-		cachedRight = running && s.hasTimeLimit() ? "剩 " + (s.remainingMs() + 59_999) / 60_000 + " 分" : null;
-		cachedPlan = running || state == Session.State.PAUSED ? status : null;
+		String count = p != null && p.total() > 0 ? p.done() + "/" + p.total() : null;
+		String left = running && s.hasTimeLimit() ? "剩 " + (s.remainingMs() + 59_999) / 60_000 + " 分" : null;
+		cachedTrailer = count == null ? left : left == null ? count : count + " · " + left;
+		String say = agent.statusText();
+		cachedSay = (running || state == Session.State.PAUSED) && !say.isBlank() ? say : null;
 		layoutWidth = -1;
 	}
 
@@ -154,55 +153,38 @@ public final class Hud {
 		return font.plainSubstrByWidth(text, maxWidth - ellipsisWidth) + "…";
 	}
 
-	/** 長期 › 短期目標；兩邊各有可見空間，文字較短的一側讓出空間。 */
-	static String goalText(Font font, int maxWidth, String longGoal, String shortGoal) {
-		if (longGoal.isBlank()) return fitText(font, shortGoal, maxWidth);
-		if (shortGoal.isBlank()) return fitText(font, longGoal, maxWidth);
-		int available = maxWidth - font.width(GOAL_SEPARATOR);
-		if (available < 2 * font.width("…")) return fitText(font, longGoal + GOAL_SEPARATOR + shortGoal, maxWidth);
-		int longWidth = Math.min(font.width(longGoal), Math.max(available / 2, available - font.width(shortGoal)));
-		return fitText(font, longGoal, longWidth) + GOAL_SEPARATOR + fitText(font, shortGoal, available - longWidth);
-	}
-
-	/** 扣掉標頭、標籤、計數和靠右文字後，留給正文的寬度。 */
+	/** 扣掉縮排、標頭、標籤和尾巴後，留給正文的寬度。 */
 	private static int bodyMaxWidth(Font font, int maxWidth, Row r) {
-		int w = font.width(r.head()) + GAP;
-		if (r.tag() != null) w += GAP + font.width(r.tag());
-		if (r.count() != null) w += GAP + font.width(r.count());
-		if (r.right() != null) w += 2 * GAP + font.width(r.right());
+		int w = r.indent();
+		if (!r.head().isEmpty()) w += font.width(r.head()) + GAP;
+		if (r.tag() != null) w += font.width(r.tag()) + GAP;
+		if (r.trailer() != null) w += GAP + font.width(r.trailer());
 		return maxWidth - w;
 	}
 
-	/** 這一行實際畫出來的寬度(跟 render 的 draw 規則一致，避免正文為空時右側多一段空白)。 */
+	/** 這一行實際畫出來的寬度(跟 render 一樣：每段非空的文字後面接 GAP，最後一段不算)。 */
 	private static int rowWidth(Font font, Row r) {
-		int w = font.width(r.head());
-		if (r.tag() != null) w += GAP + font.width(r.tag());
-		if (!r.body().isEmpty()) w += GAP + font.width(r.body());
-		if (r.count() != null) w += GAP + font.width(r.count());
-		if (r.right() != null) w += 2 * GAP + font.width(r.right());
-		return w;
+		int w = 0;
+		for (String part : new String[]{r.head(), r.tag(), r.body(), r.trailer()}) {
+			if (part != null && !part.isEmpty()) w += font.width(part) + GAP;
+		}
+		return r.indent() + Math.max(0, w - GAP);
 	}
 
 	private void layout(Font font, int maxWidth) {
-		List<Row> result = new ArrayList<>(3);
-		Row first = new Row(cachedHead.label(), cachedHead.color(), cachedTag, cachedBody, BODY_COLOR, cachedCount, cachedRight);
+		List<Row> result = new ArrayList<>(2);
+		Row first = new Row(0, cachedHead.label(), cachedHead.color(), cachedTag, cachedBody, BODY_COLOR, cachedTrailer);
 		result.add(first.withBody(fitText(font, cachedBody, bodyMaxWidth(font, maxWidth, first))));
-		if (cachedPlan != null) {
-			String longGoal = cachedPlan.longGoal(), shortGoal = cachedPlan.shortGoal();
-			if (!longGoal.isBlank() || !shortGoal.isBlank()) {
-				Row goal = new Row("目標", DIM_COLOR, null, "", DETAIL_COLOR, null, null);
-				result.add(goal.withBody(goalText(font, bodyMaxWidth(font, maxWidth, goal), longGoal, shortGoal)));
-			}
-			if (!cachedPlan.thought().isBlank()) {
-				Row thought = new Row("想法", DIM_COLOR, null, "", DETAIL_COLOR, null, null);
-				result.add(thought.withBody(fitText(font, cachedPlan.thought(), bodyMaxWidth(font, maxWidth, thought))));
-			}
+		if (cachedSay != null) {
+			// 跟第一行的正文對齊，一眼看出是另一個來源
+			Row say = new Row(font.width(cachedHead.label()) + GAP, "", 0, null, "", DETAIL_COLOR, null);
+			result.add(say.withBody(fitText(font, cachedSay, bodyMaxWidth(font, maxWidth, say))));
 		}
 		int width = 0;
 		List<String> plain = new ArrayList<>(result.size());
 		for (Row r : result) {
 			width = Math.max(width, rowWidth(font, r));
-			plain.add(join(r.head(), r.tag(), r.body(), r.count(), r.right()));
+			plain.add(join(r.head(), r.tag(), r.body(), r.trailer()));
 		}
 		rows = List.copyOf(result);
 		plainLines = List.copyOf(plain);
@@ -231,12 +213,11 @@ public final class Hud {
 		g.fill(MARGIN, MARGIN, right + PAD, MARGIN + PAD + rows.size() * lineHeight - 2 + PAD, BACKGROUND);
 		int y = MARGIN + PAD;
 		for (Row r : rows) {
-			int x = left;
+			int x = left + r.indent();
 			x = draw(g, font, r.head(), x, y, r.headColor());
 			if (r.tag() != null) x = draw(g, font, r.tag(), x, y, ORANGE);
 			x = draw(g, font, r.body(), x, y, r.bodyColor());
-			if (r.count() != null) draw(g, font, r.count(), x, y, DIM_COLOR);
-			if (r.right() != null) g.text(font, r.right(), right - font.width(r.right()), y, DIM_COLOR, true);
+			if (r.trailer() != null) draw(g, font, r.trailer(), x, y, DIM_COLOR);
 			y += lineHeight;
 		}
 	}

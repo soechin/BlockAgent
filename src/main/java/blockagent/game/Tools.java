@@ -185,6 +185,8 @@ public final class Tools {
 			: Kv.of("OK no_events").put("waited", sec + "s").toString();
 	}
 
+	static final int STATUS_TEXT_MAX = 30;
+
 	private static String hudText(String raw, int maxLength) {
 		if (raw == null) return null;
 		String text = ChatPolicy.sanitize(raw);
@@ -566,17 +568,11 @@ public final class Tools {
 				Bari.stopAll();
 				return ToolResult.ok(cur != null ? Kv.of("OK stopped").put("task", cur.name()).toString() : "OK no_task");
 			}));
-		t.register("set_status", "Update the HUD the user watches; write it in the user's language. Omitted fields keep "
-				+ "their value; an empty string clears.",
-			Hints.IDEMPOTENT, Schema.object().string("text", "Current action, max 24 chars; cleared when a task ends; empty = show the task", true)
-				.string("thought", "What you noticed and why, max 32 chars", false)
-				.string("short_goal", "Current stage goal, max 48 chars", false)
-				.string("long_goal", "Overall goal, max 48 chars", false)
-				.build(),
+		t.register("set_status", "Set the one sentence the user sees on the HUD under the task line: what you are doing and why, "
+				+ "in the user's language. It stays until you set another; empty clears.",
+			Hints.IDEMPOTENT, Schema.object().string("text", "Max " + STATUS_TEXT_MAX + " chars", true).build(),
 			args -> {
-				Args g = new Args(args);
-				a.setHudStatus(hudText(g.str("text"), 24), hudText(g.str("thought", null), 32),
-					hudText(g.str("short_goal", null), 48), hudText(g.str("long_goal", null), 48));
+				a.setStatusText(hudText(new Args(args).str("text"), STATUS_TEXT_MAX));
 				return ToolResult.ok("OK status_set");
 			});
 		taskTool(t, a, "goto", "Walk to a position. Omit y to match x,z only and follow the surface (good for rough terrain).",

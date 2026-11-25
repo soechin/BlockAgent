@@ -379,25 +379,13 @@
   },
   {
     "name": "set_status",
-    "description": "Update the HUD the user watches; write it in the user\u0027s language. Omitted fields keep their value; an empty string clears.",
+    "description": "Set the one sentence the user sees on the HUD under the task line: what you are doing and why, in the user\u0027s language. It stays until you set another; empty clears.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "text": {
           "type": "string",
-          "description": "Current action, max 24 chars; cleared when a task ends; empty \u003d show the task"
-        },
-        "thought": {
-          "type": "string",
-          "description": "What you noticed and why, max 32 chars"
-        },
-        "short_goal": {
-          "type": "string",
-          "description": "Current stage goal, max 48 chars"
-        },
-        "long_goal": {
-          "type": "string",
-          "description": "Overall goal, max 48 chars"
+          "description": "Max 30 chars"
         }
       },
       "additionalProperties": false,

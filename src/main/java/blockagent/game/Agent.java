@@ -80,7 +80,8 @@ public final class Agent {
 	private volatile Path planFile;
 
 	private volatile String worldKey;
-	private volatile HudStatus hudStatus = HudStatus.EMPTY;
+	/** AI 用 set_status 寫在 HUD 第二行的一句話(S8.3)。 */
+	private volatile String statusText = "";
 	private volatile long tick;
 	/** 斷線原因(由 Mixin 在伺服器斷線時設定)；null 表示使用者自己離開。 */
 	private volatile String disconnectReason;
@@ -180,57 +181,13 @@ public final class Agent {
 		return worldKey;
 	}
 
-	/** 啟動或替換任務時，這段時間內剛設的 status.text 視為要給新任務用的，不自動清掉(S8.3)。 */
-	static final long FRESH_STATUS_TEXT_TICKS = 5L * 20L;
-
-	record HudStatus(String text, String thought, String shortGoal, String longGoal, long textSetTick) {
-		private static final HudStatus EMPTY = new HudStatus("", "", "", "", Long.MIN_VALUE);
+	String statusText() {
+		return statusText;
 	}
 
-	HudStatus hudStatus() {
-		return hudStatus;
-	}
-
-	synchronized void setHudStatus(String text, String thought, String shortGoal, String longGoal) {
-		setHudStatusAt(text, thought, shortGoal, longGoal, tick);
-	}
-
-	synchronized void setHudStatusAt(String text, String thought, String shortGoal, String longGoal, long nowTick) {
-		HudStatus previous = hudStatus;
-		String nextText = text == null ? previous.text() : text;
-		long nextTextTick = text == null ? previous.textSetTick() : (nextText.isEmpty() ? Long.MIN_VALUE : nowTick);
-		hudStatus = new HudStatus(
-			nextText,
-			thought == null ? previous.thought() : thought,
-			shortGoal == null ? previous.shortGoal() : shortGoal,
-			longGoal == null ? previous.longGoal() : longGoal,
-			nextTextTick);
-	}
-
-	/** 任務結束時清掉 AI 的動作文字，想法和目標保留(S8.3)。 */
-	public void clearStatusText() {
-		setHudStatus("", null, null, null);
-	}
-
-	/**
-	 * 任務被替換或待機狀態啟動新任務時：若 AI 的動作文字是最近剛設的(多半就是為新任務設的)就保留，
-	 * 否則清掉，免得上一個行動或待機時的舊文字黏到新任務(S8.3)。
-	 */
-	public synchronized void clearStaleStatusText() {
-		clearStaleStatusTextAt(tick);
-	}
-
-	synchronized void clearStaleStatusTextAt(long nowTick) {
-		if (isStaleStatusText(hudStatus.text(), hudStatus.textSetTick(), nowTick)) {
-			setHudStatusAt("", null, null, null, nowTick);
-		}
-	}
-
-	static boolean isStaleStatusText(String text, long textSetTick, long nowTick) {
-		if (text == null || text.isEmpty()) return false;
-		if (textSetTick == Long.MIN_VALUE) return true;
-		long age = nowTick - textSetTick;
-		return age < 0 || age > FRESH_STATUS_TEXT_TICKS;
+	/** AI 寫的那句話；空字串表示不顯示。 */
+	void setStatusText(String text) {
+		statusText = text == null ? "" : text;
 	}
 
 	public void setDisconnectReason(String r) {
@@ -262,8 +219,7 @@ public final class Agent {
 		reflexes.resetEnabled();
 		observation.resetWorld();
 		chat.clear();
-		setHudStatus("", "", "", "");
-		syncPlanHud();
+		setStatusText("");
 		session.enterWorld();
 		Bari.applySettings();
 		if (!Bari.mixinTargetsPresent() && mc.player != null) {
@@ -345,7 +301,7 @@ public final class Agent {
 		}
 	}
 
-	/** 計畫改了：存檔，並把 HUD 的目標換成計畫的目標和目前步驟。呼叫端應持有 {@code synchronized (plan)} 或透過這裡序列化。 */
+	/** 計畫改了：存檔。呼叫端應持有 {@code synchronized (plan)} 或透過這裡序列化。 */
 	void planChanged() {
 		synchronized (plan) {
 			Path file = planFile;
@@ -356,18 +312,7 @@ public final class Agent {
 					BlockAgentMod.LOG.warn("寫入計畫失敗：{}", e.toString());
 				}
 			}
-			syncPlanHud();
 		}
-	}
-
-	/** 把目前計畫的目標和步驟同步到 HUD(保留既有的 text 與 thought)。 */
-	void syncPlanHud() {
-		String step, goal;
-		synchronized (plan) {
-			step = plan.current();
-			goal = plan.goal();
-		}
-		setHudStatus(null, null, clip(step == null ? "" : step, 48), clip(goal == null ? "" : goal, 48));
 	}
 
 	private static String clip(String s, int max) {
