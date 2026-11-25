@@ -296,8 +296,7 @@ public final class BuildTask extends Task {
 	@Override
 	public String describe() {
 		Minecraft mc = Minecraft.getInstance();
-		if (targets.isEmpty() && doors.isEmpty()) return "拆" + what + " " + (dug + demolished) + "/" + (dug + demolished + clearQueue.size());
-		return "蓋" + what + " " + (mc.level == null ? 0 : placed(mc)) + "/" + targets.size();
+		return new Progress(mc.level == null ? 0 : placed(mc), targets.size());
 	}
 
 	@Override
@@ -307,6 +306,12 @@ public final class BuildTask extends Task {
 		if (dug + demolished > 0 || !clearQueue.isEmpty()) {
 			s += " cleared=" + (dug + demolished) + (clearQueue.isEmpty() ? "" : " to_clear=" + clearQueue.size());
 		}
+		return (targets.isEmpty() && doors.isEmpty() ? "拆" : "蓋") + what;
+	}
+
+	@Override
+	public Progress hudProgress() {
+		if (targets.isEmpty() && doors.isEmpty()) return new Progress(dug + demolished, dug + demolished + clearQueue.size());
 		if (doors.placed() > 0) s += " doors=" + doors.placed();
 		if (cleaning) s += " state=removing_scaffold";
 		else if (!scaffold.isEmpty()) s += " scaffold_left=" + scaffold.size();

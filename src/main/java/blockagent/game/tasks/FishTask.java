@@ -43,7 +43,12 @@ public final class FishTask extends Task {
 
 	@Override
 	public String describe() {
-		return "釣魚 " + caught + "/" + count;
+		return "釣魚";
+	}
+
+	@Override
+	public Progress hudProgress() {
+		return new Progress(caught, count);
 	}
 
 	@Override

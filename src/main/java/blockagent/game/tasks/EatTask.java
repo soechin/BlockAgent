@@ -21,7 +21,7 @@ public final class EatTask extends Task {
 
 	@Override
 	public String describe() {
-		return "吃 " + Inv.id(food);
+		return "吃 " + name(food);
 	}
 
 	@Override

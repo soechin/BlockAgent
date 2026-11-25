@@ -86,7 +86,7 @@ public final class TaskRunner {
 		t.lastProgressTick = t.startTick;
 		current = t;
 		pendingResult = t;
-		agent.log.log(ActionLog.Source.ai, "task_start", t.name() + " " + t.describe());
+		agent.log.log(ActionLog.Source.ai, "task_start", t.name() + " " + t.progress());
 		try {
 			t.start(mc);
 		} catch (RuntimeException e) {
@@ -139,6 +139,8 @@ public final class TaskRunner {
 	private void finishCurrent(Minecraft mc, boolean notify) {
 		Task t = current;
 		current = null;
+		// AI 為這個任務寫的 HUD 文字跟著任務結束，免得留到下一個任務(S8.3)
+		agent.clearStatusText();
 		try {
 			t.onStop(mc);
 		} catch (RuntimeException ignored) {

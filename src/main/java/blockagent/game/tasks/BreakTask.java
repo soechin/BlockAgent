@@ -28,7 +28,9 @@ public final class BreakTask extends Task {
 
 	@Override
 	public String describe() {
-		return "挖 " + pos.toShortString();
+		var level = Minecraft.getInstance().level;
+		BlockState st = level == null ? null : level.getBlockState(pos);
+		return st == null || st.isAir() ? "挖方塊" : "挖 " + name(st.getBlock());
 	}
 
 	@Override

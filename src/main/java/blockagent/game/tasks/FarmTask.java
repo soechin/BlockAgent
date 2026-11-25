@@ -57,7 +57,12 @@ public final class FarmTask extends Task {
 
 	@Override
 	public String describe() {
-		return (mode == Mode.TILL_AND_PLANT ? "種田 " : "收成 ") + doneCount + "/" + targets.size();
+		return mode == Mode.TILL_AND_PLANT ? "種田" : "收成";
+	}
+
+	@Override
+	public Progress hudProgress() {
+		return new Progress(doneCount, targets.size());
 	}
 
 	@Override

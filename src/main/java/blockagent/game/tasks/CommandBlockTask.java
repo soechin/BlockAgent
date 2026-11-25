@@ -30,7 +30,7 @@ public final class CommandBlockTask extends Task {
 
 	@Override
 	public String describe() {
-		return (after.isAir() ? "挖 " : "放置 " + RuleGuard.shortId(after) + " @ ") + pos.toShortString();
+		return after.isAir() ? "挖 " + name(before.getBlock()) : "放置 " + name(after.getBlock());
 	}
 
 	@Override

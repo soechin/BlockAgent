@@ -48,7 +48,7 @@ public final class PlaceTask extends Task {
 
 	@Override
 	public String describe() {
-		return "放 " + Inv.id(item) + "(朝 " + facing.getSerializedName() + ")@ " + pos.toShortString();
+		return "放置 " + name(item);
 	}
 
 	/** 進行中帶目標位置和階段；結束時只留物品和朝向，因為結果尾巴已經有 pos=(自己的位置)、done 會給 state=，不要重複(P2-2)。 */

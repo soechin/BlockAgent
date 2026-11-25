@@ -41,7 +41,9 @@ public final class GotoTask extends Task {
 
 	@Override
 	public String describe() {
-		return "走到 " + where;
+		var p = Minecraft.getInstance().player;
+		if (p == null) return "走到目標";
+		return "走到目標，剩 " + (int) Math.sqrt(Math.max(0, goal.heuristic(p.blockPosition()))) + " 格";
 	}
 
 	@Override

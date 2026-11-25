@@ -71,7 +71,12 @@ public final class ClearAreaTask extends Task {
 
 	@Override
 	public String describe() {
-		return "清除指定範圍的 " + total + " 格天然方塊";
+		return "清除天然方塊";
+	}
+
+	@Override
+	public Progress hudProgress() {
+		return new Progress(cleared + vanished + changed + unreachable, total);
 	}
 
 	@Override

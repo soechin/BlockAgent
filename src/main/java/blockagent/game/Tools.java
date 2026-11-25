@@ -568,15 +568,15 @@ public final class Tools {
 			}));
 		t.register("set_status", "Update the HUD the user watches; write it in the user's language. Omitted fields keep "
 				+ "their value; an empty string clears.",
-			Hints.IDEMPOTENT, Schema.object().string("text", "Current action, max 40 chars; empty = show the task", true)
-				.string("thought", "What you noticed and why, max 80 chars", false)
-				.string("short_goal", "Current stage goal, max 48 chars", false)
-				.string("long_goal", "Overall goal, max 48 chars", false)
+			Hints.IDEMPOTENT, Schema.object().string("text", "Current action, max 24 chars; cleared when a task ends; empty = show the task", true)
+				.string("thought", "What you noticed and why, max 32 chars", false)
+				.string("short_goal", "Current stage goal, max 20 chars", false)
+				.string("long_goal", "Overall goal, max 20 chars", false)
 				.build(),
 			args -> {
 				Args g = new Args(args);
-				a.setHudStatus(hudText(g.str("text"), 40), hudText(g.str("thought", null), 80),
-					hudText(g.str("short_goal", null), 48), hudText(g.str("long_goal", null), 48));
+				a.setHudStatus(hudText(g.str("text"), 24), hudText(g.str("thought", null), 32),
+					hudText(g.str("short_goal", null), 20), hudText(g.str("long_goal", null), 20));
 				return ToolResult.ok("OK status_set");
 			});
 		taskTool(t, a, "goto", "Walk to a position. Omit y to match x,z only and follow the surface (good for rough terrain).",

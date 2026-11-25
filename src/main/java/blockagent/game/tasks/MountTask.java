@@ -19,7 +19,7 @@ public final class MountTask extends EntityTask {
 
 	@Override
 	public String describe() {
-		return "坐上 " + targetName;
+		return "坐上 " + hudName();
 	}
 
 	@Override

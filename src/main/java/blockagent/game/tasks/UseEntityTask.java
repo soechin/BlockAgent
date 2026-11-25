@@ -26,12 +26,12 @@ public final class UseEntityTask extends EntityTask {
 	}
 
 	private String what() {
-		return item == null ? "空手" : Inv.id(item);
+		return item == null ? "空手" : name(item);
 	}
 
 	@Override
 	public String describe() {
-		return "對 " + targetName + " 用" + what();
+		return "對 " + hudName() + " 用" + what();
 	}
 
 	@Override

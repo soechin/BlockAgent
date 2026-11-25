@@ -43,7 +43,18 @@ public final class MineTask extends Task {
 
 	@Override
 	public String describe() {
-		return "挖 " + label + " " + mined + "/" + count;
+		if (blocks.isEmpty()) return "挖 " + label;
+		// label 本身是方塊 ID 時用那個方塊的名稱；是群組(例如 log)時顯示「第一個方塊名等」
+		String id = label.trim().toLowerCase(java.util.Locale.ROOT).replace("minecraft:", "");
+		for (Block b : blocks) {
+			if (net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(b).getPath().equals(id)) return "挖 " + name(b);
+		}
+		return "挖 " + name(blocks.getFirst()) + (blocks.size() > 1 ? "等" : "");
+	}
+
+	@Override
+	public Progress hudProgress() {
+		return new Progress(mined, count);
 	}
 
 	@Override

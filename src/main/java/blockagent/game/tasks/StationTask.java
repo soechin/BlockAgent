@@ -49,10 +49,10 @@ public final class StationTask extends Task {
 	@Override
 	public String describe() {
 		return switch (mode) {
-			case SLEEP -> "去睡覺 @ " + pos.toShortString();
-			case CHEST_LIST -> "查看箱子 @ " + pos.toShortString();
-			case CHEST_PUT -> "放東西進箱子 @ " + pos.toShortString();
-			case CHEST_TAKE -> "從箱子拿東西 @ " + pos.toShortString();
+			case SLEEP -> "去睡覺";
+			case CHEST_LIST -> "查看箱子";
+			case CHEST_PUT -> "放東西進箱子";
+			case CHEST_TAKE -> "從箱子拿東西";
 		};
 	}
 

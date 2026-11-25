@@ -41,7 +41,7 @@ public abstract class Task {
 		return name;
 	}
 
-	/** 給 HUD 那一行用(給人看，繁體中文)，例如「挖 iron_ore 4/10」。 */
+	/** 只給 HUD 用(給人看，繁體中文)：寫動作和遊戲裡的中文名稱，例如「挖 鐵礦」；不帶進度和座標。 */
 	public abstract String describe();
 
 	/** 做到哪裡(給 AI 看的 KV，S3.0)，例如 {@code mined=4/10}。 */
@@ -49,6 +49,24 @@ public abstract class Task {
 
 	/** 開始執行(已通過事前檢查)。 */
 	protected void start(Minecraft mc) {
+	/** HUD 在正文後面顯示的 done/total(S8.3)。 */
+	public record Progress(int done, int total) {}
+
+	/** 只給 HUD 用；有計數的任務覆寫，數字跟 {@link #progress()} 一致。沒有計數回 null。 */
+	public Progress hudProgress() {
+		return null;
+	}
+
+	/** 物品在遊戲語言裡的名稱(給 HUD)。 */
+	protected static String name(net.minecraft.world.item.Item item) {
+		return new net.minecraft.world.item.ItemStack(item).getHoverName().getString();
+	}
+
+	/** 方塊在遊戲語言裡的名稱(給 HUD)。 */
+	protected static String name(net.minecraft.world.level.block.Block block) {
+		return block.getName().getString();
+	}
+
 	}
 
 	protected abstract void tick(Minecraft mc);

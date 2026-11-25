@@ -71,7 +71,12 @@ public final class CommandBuildTask extends Task {
 
 	@Override
 	public String describe() {
-		return "蓋" + what + " " + (total - remaining.size()) + "/" + total;
+		return "蓋" + what;
+	}
+
+	@Override
+	public Progress hudProgress() {
+		return new Progress(total - remaining.size(), total);
 	}
 
 	@Override

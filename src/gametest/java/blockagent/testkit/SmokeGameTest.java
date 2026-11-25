@@ -84,7 +84,7 @@ public class SmokeGameTest implements FabricClientGameTest {
 				"short_goal", "勘察空地", "long_goal", "建立基地"));
 			check(status.ok(), "設定 HUD 失敗：" + status.text());
 			ctx.waitFor(mc -> a.hud.line().contains("在避難屋等天亮") && a.hud.lines().equals(List.of(
-				a.hud.line(), "目標｜建立基地/勘察空地", "想法｜屋外有苦力怕。")));
+				a.hud.line(), "目標 建立基地 › 勘察空地", "想法 屋外有苦力怕。")));
 
 			ctx.getInput().pressKey(a.control.toggleKey);
 			ctx.waitTicks(2);

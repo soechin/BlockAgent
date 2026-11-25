@@ -58,7 +58,12 @@ public final class SmeltTask extends Task {
 
 	@Override
 	public String describe() {
-		return "熔煉 " + Inv.id(input) + " → " + Inv.id(result) + " " + taken + "/" + count;
+		return "熔煉 " + name(input) + " → " + name(result);
+	}
+
+	@Override
+	public Progress hudProgress() {
+		return new Progress(taken, count);
 	}
 
 	@Override

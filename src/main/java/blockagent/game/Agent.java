@@ -197,6 +197,11 @@ public final class Agent {
 			longGoal == null ? previous.longGoal() : longGoal);
 	}
 
+	/** 任務結束時清掉 AI 的動作文字，想法和目標保留(S8.3)。 */
+	public void clearStatusText() {
+		setHudStatus("", null, null, null);
+	}
+
 	public void setDisconnectReason(String r) {
 		disconnectReason = r;
 	}

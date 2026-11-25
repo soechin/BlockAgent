@@ -26,6 +26,11 @@ abstract class EntityTask extends Task {
 		this.targetName = BuiltInRegistries.ENTITY_TYPE.getKey(target.getType()).getPath() + " id=" + target.getId();
 	}
 
+	/** 目標在遊戲語言裡的名稱(給 HUD)；targetName 是給 AI 的 ID，不能換。 */
+	protected String hudName() {
+		return target.getName().getString();
+	}
+
 	@Override
 	public boolean moves() {
 		return true;

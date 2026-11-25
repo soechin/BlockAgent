@@ -124,6 +124,17 @@ class PlanFlowTest {
 	}
 
 	@Test
+	void clearStatusTextKeepsThoughtAndGoals() throws Exception {
+		Agent a = new Agent(new Config(), tmp);
+		a.setHudStatus("去挖鐵礦", "鐵鎬快壞了", "做鐵鎬", "過第一晚");
+		a.clearStatusText();
+		assertEquals("", a.hudStatus().text(), "任務結束時清掉 AI 的動作文字");
+		assertEquals("鐵鎬快壞了", a.hudStatus().thought());
+		assertEquals("做鐵鎬", a.hudStatus().shortGoal());
+		assertEquals("過第一晚", a.hudStatus().longGoal());
+	}
+
+	@Test
 	void snapshotHasEverySection() {
 		String s = Agent.planContext("hp=20 food=18", "RUNNING", "plan=none", Map.of("home", "1,64,2"),
 			List.of("10:00:00 task_failed mine NOT_FOUND"), List.of("goto", "mine"));

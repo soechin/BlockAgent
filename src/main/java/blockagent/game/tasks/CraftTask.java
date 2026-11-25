@@ -61,7 +61,7 @@ public final class CraftTask extends Task {
 
 	@Override
 	public String describe() {
-		return "合成 " + shortId(target) + "×" + count;
+		return "合成 " + name(item(target)) + "×" + count;
 	}
 
 	static String shortId(String id) {

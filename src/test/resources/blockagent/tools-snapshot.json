@@ -385,19 +385,19 @@
       "properties": {
         "text": {
           "type": "string",
-          "description": "Current action, max 40 chars; empty \u003d show the task"
+          "description": "Current action, max 24 chars; cleared when a task ends; empty \u003d show the task"
         },
         "thought": {
           "type": "string",
-          "description": "What you noticed and why, max 80 chars"
+          "description": "What you noticed and why, max 32 chars"
         },
         "short_goal": {
           "type": "string",
-          "description": "Current stage goal, max 48 chars"
+          "description": "Current stage goal, max 20 chars"
         },
         "long_goal": {
           "type": "string",
-          "description": "Overall goal, max 48 chars"
+          "description": "Overall goal, max 20 chars"
         }
       },
       "additionalProperties": false,
