@@ -17,6 +17,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -34,6 +35,7 @@ public final class SmeltTask extends Task {
 	private final Item fuel;
 	private final int fuelCount;
 	private final Set<BlockPos> rejected = new HashSet<>();
+	private final List<String> rejectedDetails = new ArrayList<>();
 	private BlockPos furnace;
 	private Phase phase = Phase.FIND;
 	private int waitTicks;
@@ -99,8 +101,9 @@ public final class SmeltTask extends Task {
 				if (waitTicks++ == 0) {
 					BlockPos spot = Moves.findPlaceSpot(mc, p -> agent.guard.canPlaceInto(mc.level, p).allowed());
 					if (spot == null || !Inv.selectInHand(mc, s -> s.is(Items.FURNACE))) {
+						String busyNote = rejectedDetails.isEmpty() ? "" : " (" + String.join("; ", rejectedDetails) + ")";
 						fail(ErrorCode.NO_STATION, rejected.isEmpty() ? "no furnace within 32 blocks or in inventory (craft furnace first)"
-							: "nearby furnaces are busy with other items and none in inventory");
+							: "nearby furnaces are busy with other items" + busyNote + " and none in inventory");
 						return;
 					}
 					Moves.useOn(mc, spot.below(), Direction.UP);
@@ -170,7 +173,15 @@ public final class SmeltTask extends Task {
 				int firstFuel = Math.min(fuelCount, m.getSlot(1).getMaxStackSize(new ItemStack(fuel)));
 				boolean blockedFuel = !f.isEmpty() && (f.getItem() != fuel || f.getCount() + firstFuel > m.getSlot(1).getMaxStackSize(f));
 				boolean blockedOut = !out.isEmpty() && (out.getItem() != result || out.getCount() + count > out.getMaxStackSize());
+				// 自己擁有、已熄火且空的熔爐若只因殘留不同燃料被擋，先把舊燃料取回背包再重用
+				if (!blockedInput && !blockedOut
+					&& canClearOwnLeftoverFuel(agent.guard.isOwned(furnace), m.isLit(), in.isEmpty(), out.isEmpty(), blockedFuel, canReceive(mc.player, f))) {
+					MenuOps.quickMove(mc, m, 1);
+					f = m.getSlot(1).getItem();
+					blockedFuel = !f.isEmpty() && (f.getItem() != fuel || f.getCount() + firstFuel > m.getSlot(1).getMaxStackSize(f));
+				}
 				if (blockedInput || blockedFuel || blockedOut) {
+					rejectedDetails.add(describeBusy(furnace, in, f, out));
 					MenuOps.close(mc);
 					markOpenedContainer(false);
 					rejected.add(furnace);
@@ -266,6 +277,35 @@ public final class SmeltTask extends Task {
 	 * 反射接手時熔爐畫面被關掉了(onSuspend = onStop)：要用到熔爐畫面的階段先重新打開，再回到原本的階段(H7)。
 	 * 不然 CHECK 會把背包畫面當熔爐畫面、PUT_* 會點到 2×2 合成格。
 	 */
+	/** 自己擁有且已熄火的空熔爐，只有燃料格殘留別種燃料時可自動取回(純邏輯，供單元測試直接驗證)。 */
+	static boolean canClearOwnLeftoverFuel(boolean ownFurnace, boolean lit, boolean inputEmpty, boolean outputEmpty,
+											boolean fuelBlocked, boolean canReceive) {
+		return ownFurnace && !lit && inputEmpty && outputEmpty && fuelBlocked && canReceive;
+	}
+
+	private static boolean canReceive(net.minecraft.world.entity.player.Player player, ItemStack stack) {
+		if (stack.isEmpty()) return false;
+		if (Inv.freeSlots(player) > 0) return true;
+		var inv = player.getInventory();
+		int space = 0;
+		for (int i = 0; i < Inv.MAIN_SIZE; i++) {
+			ItemStack slot = inv.getItem(i);
+			if (ItemStack.isSameItemSameComponents(slot, stack)) {
+				space += Math.max(0, slot.getMaxStackSize() - slot.getCount());
+				if (space >= stack.getCount()) return true;
+			}
+		}
+		return false;
+	}
+
+	private static String describeBusy(BlockPos pos, ItemStack in, ItemStack f, ItemStack out) {
+		List<String> parts = new ArrayList<>();
+		if (!in.isEmpty()) parts.add("in=" + Inv.id(in) + ":" + in.getCount());
+		if (!f.isEmpty()) parts.add("fuel=" + Inv.id(f) + ":" + f.getCount());
+		if (!out.isEmpty()) parts.add("out=" + Inv.id(out) + ":" + out.getCount());
+		return blockagent.game.Fmt.pos(pos) + (parts.isEmpty() ? "" : "[" + String.join(",", parts) + "]");
+	}
+
 	/** 熔爐是否已停下來(熄火、產物格空、且缺燃料或缺原料；供單元測試直接驗證)。 */
 	static boolean shouldStall(boolean lit, boolean outputEmpty, boolean noFuel, boolean noInput) {
 		return !lit && outputEmpty && (noFuel || noInput);

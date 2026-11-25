@@ -2,6 +2,7 @@ package blockagent.mixin;
 
 import blockagent.game.Agent;
 import blockagent.game.tasks.BuildTask;
+import blockagent.game.tasks.MineTask;
 import net.minecraft.world.level.block.state.BlockState;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -18,8 +19,11 @@ public abstract class CalculationContextMixin {
 	@Inject(method = "breakCostMultiplierAt", at = @At("HEAD"), cancellable = true, remap = false)
 	private void blockagent$avoidProtected(int x, int y, int z, BlockState current, CallbackInfoReturnable<Double> cir) {
 		Agent a = Agent.get();
-		if (a != null && a.session.isRunning() && !a.guard.canBreak(x, y, z, current).allowed()) {
-			cir.setReturnValue(baritone.api.pathing.movement.ActionCosts.COST_INF);
+		if (a != null && a.session.isRunning()) {
+			if (!a.guard.canBreak(x, y, z, current).allowed()
+				|| (a.tasks.current() instanceof MineTask mine && mine.rejectsMineTarget(x, y, z, current))) {
+				cir.setReturnValue(baritone.api.pathing.movement.ActionCosts.COST_INF);
+			}
 		}
 	}
 

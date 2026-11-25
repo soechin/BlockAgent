@@ -21,24 +21,47 @@ public final class MineTask extends Task {
 	private final Set<Block> blockSet;
 	private final String label;
 	private final int count;
+	private final int radius;
 	private final boolean search;
+	/** Baritone 尋路執行緒會讀：開工時的起點座標(不變物件)，用來在 search=false 時把開採目標限制在 radius 內。 */
+	private volatile BlockPos origin;
 	private int mined;
 	private int idleTicks;
 	private boolean savedExplore;
 	/** 挖到數量後去撿最後的掉落物(L6)：開始撿的 tick(-1 表示還在挖)和最後挖掉的位置。 */
 	private long finishing = -1;
+	private boolean sawFinalDrop;
 	private BlockPos lastMined;
 	private BlockPos pickupKey;
 	private static final int PICKUP_TICKS = 60;
 
-	public MineTask(Agent agent, List<Block> blocks, String label, int count, boolean search) {
+	public MineTask(Agent agent, List<Block> blocks, String label, int count, int radius, boolean search) {
 		super(agent, "mine");
 		this.blocks = blocks;
 		this.blockSet = Set.copyOf(blocks);
 		this.label = label;
 		this.count = count;
+		this.radius = radius;
 		this.search = search;
 		if (search) this.timeoutTicks = Math.min(timeoutTicks, 5 * 60 * 20L + count * 60 * 20L);
+	}
+
+	/** 目標座標是否在起點半徑內(純邏輯，供單元測試直接驗證)。 */
+	static boolean withinRadius(int ox, int oy, int oz, int x, int y, int z, int radius) {
+		long dx = (long) x - ox;
+		long dy = (long) y - oy;
+		long dz = (long) z - oz;
+		return dx * dx + dy * dy + dz * dz <= (long) radius * radius;
+	}
+
+	/**
+	 * Baritone 尋路執行緒會讀：search=false 時，超出起點 radius 的目標方塊不納入開採，
+	 * 避免挖淺層礦或拔草時一路鑽進深洞或遠征數十格。
+	 */
+	public boolean rejectsMineTarget(int x, int y, int z, BlockState current) {
+		BlockPos o = origin;
+		if (search || o == null || !blockSet.contains(current.getBlock())) return false;
+		return !withinRadius(o.getX(), o.getY(), o.getZ(), x, y, z, radius);
 	}
 
 	@Override
@@ -67,10 +90,24 @@ public final class MineTask extends Task {
 		return true;
 	}
 
+	private boolean ensureTool(Minecraft mc) {
+		if (blockagent.game.Creative.isCreative(mc)) return true;
+		BlockState st = blocks.getFirst().defaultBlockState();
+		int slot = blockagent.game.Inv.ensureHotbarTool(mc, st);
+		if (st.requiresCorrectToolForDrops() && slot < 0
+			&& blockagent.game.Inv.find(mc.player, s -> s.isCorrectToolForDrops(st)) < 0) {
+			fail(ErrorCode.MISSING_TOOL, "no suitable tool left for " + label + " (tool broke or missing)", "craft a suitable tool first");
+			return false;
+		}
+		return true;
+	}
+
 	@Override
 	protected void start(Minecraft mc) {
 		var s = BaritoneAPI.getSettings();
 		savedExplore = s.exploreForBlocks.value;
+		origin = mc.player.blockPosition().immutable();
+		if (!ensureTool(mc)) return;
 		s.exploreForBlocks.value = search;
 		Bari.b().getMineProcess().mine(blocks.toArray(new Block[0]));
 	}
@@ -90,19 +127,24 @@ public final class MineTask extends Task {
 			if (finishing < 0) {
 				// 挖到數量就不再挖，但最後一格的掉落物還在地上：最多花 3 秒走過去撿(L6)
 				finishing = agent.tick();
+				sawFinalDrop = false;
 				Bari.b().getMineProcess().cancel();
 				Bari.b().getMineProcess().onLostControl();
 			}
 			if (!pickUp(mc)) done(blockagent.game.Creative.noDropsNote(mc));
 			return;
 		}
+		if (agent.tick() % 10 == 0 && !ensureTool(mc)) return;
 		if (!Bari.b().getMineProcess().isActive()) {
 			if (++idleTicks > 20) {
-				int left = Moves.scan(mc, blocks, 48, 20, p -> agent.guard.canBreak(mc.level, p).allowed()).size();
+				BlockPos o = origin;
+				int scanRadius = search ? 48 : radius;
+				int left = Moves.scan(mc, blocks, scanRadius, 20, p -> agent.guard.canBreak(mc.level, p).allowed()
+					&& (search || o == null || withinRadius(o.getX(), o.getY(), o.getZ(), p.getX(), p.getY(), p.getZ(), radius))).size();
 				if (left > 0) {
 					fail(ErrorCode.PATH_BLOCKED, left + " more " + label + " nearby but unreachable (terrain or others' blocks in the way; the rules forbid breaking those)");
 				} else {
-					fail(ErrorCode.NOT_FOUND, "no more " + label + (search ? " found" : " in loaded chunks (pass search=true to explore)"));
+					fail(ErrorCode.NOT_FOUND, "no more " + label + (search ? " found" : " within radius " + radius + " (pass search=true to explore)"));
 				}
 			}
 		} else {
@@ -115,7 +157,8 @@ public final class MineTask extends Task {
 		if (lastMined == null || agent.tick() - finishing > PICKUP_TICKS || blockagent.game.Inv.freeSlots(mc.player) == 0) return false;
 		var near = mc.level.getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,
 			new net.minecraft.world.phys.AABB(lastMined).inflate(3), e -> e.isAlive() && e.tickCount < 20 * 10);
-		if (near.isEmpty()) return false;
+		if (near.isEmpty()) return !sawFinalDrop && agent.tick() - finishing < 6;
+		sawFinalDrop = true;
 		var closest = near.stream().min(java.util.Comparator.comparingDouble(e -> e.distanceToSqr(mc.player))).orElseThrow();
 		BlockPos at = closest.blockPosition();
 		if (!at.equals(pickupKey)) {
@@ -147,6 +190,7 @@ public final class MineTask extends Task {
 			pickupKey = null;
 			return;
 		}
+		if (!ensureTool(mc)) return;
 		Bari.b().getMineProcess().mine(blocks.toArray(new Block[0]));
 	}
 }

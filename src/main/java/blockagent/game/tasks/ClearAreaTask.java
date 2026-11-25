@@ -189,15 +189,49 @@ public final class ClearAreaTask extends Task {
 	}
 
 	private BlockHitResult sightLine(Minecraft mc, Vec3 eye, BlockPos pos) {
-		Vec3 center = Vec3.atCenterOf(pos);
-		var hit = clipTo(mc, eye, center, pos);
-		if (hit != null) return hit;
-		for (Direction offset : Direction.values()) {
-			Vec3 sample = center.add(offset.getStepX() * 0.375, offset.getStepY() * 0.375, offset.getStepZ() * 0.375);
-			hit = clipTo(mc, eye, sample, pos);
+		BlockState state = level.getBlockState(pos);
+		var shape = state.getShape(level, pos);
+		double minX, minY, minZ, maxX, maxY, maxZ;
+		if (shape.isEmpty()) {
+			minX = pos.getX();
+			minY = pos.getY();
+			minZ = pos.getZ();
+			maxX = minX + 1.0;
+			maxY = minY + 1.0;
+			maxZ = minZ + 1.0;
+		} else {
+			var box = shape.bounds().move(pos);
+			minX = box.minX;
+			minY = box.minY;
+			minZ = box.minZ;
+			maxX = box.maxX;
+			maxY = box.maxY;
+			maxZ = box.maxZ;
+		}
+		for (double[] pt : samplePoints(minX, minY, minZ, maxX, maxY, maxZ)) {
+			var hit = clipTo(mc, eye, new Vec3(pt[0], pt[1], pt[2]), pos);
 			if (hit != null) return hit;
 		}
 		return null;
+	}
+
+	/** 依方塊實際外框產生視線採樣點(中心點加上六方向內縮 37.5%)，讓一層雪、地毯等低矮方塊也能命中。 */
+	static double[][] samplePoints(double minX, double minY, double minZ, double maxX, double maxY, double maxZ) {
+		double cx = (minX + maxX) * 0.5;
+		double cy = (minY + maxY) * 0.5;
+		double cz = (minZ + maxZ) * 0.5;
+		double rx = (maxX - minX) * 0.375;
+		double ry = (maxY - minY) * 0.375;
+		double rz = (maxZ - minZ) * 0.375;
+		return new double[][]{
+			{cx, cy, cz},
+			{cx, cy - ry, cz},
+			{cx, cy + ry, cz},
+			{cx, cy, cz - rz},
+			{cx, cy, cz + rz},
+			{cx - rx, cy, cz},
+			{cx + rx, cy, cz},
+		};
 	}
 
 	private BlockHitResult clipTo(Minecraft mc, Vec3 eye, Vec3 sample, BlockPos pos) {

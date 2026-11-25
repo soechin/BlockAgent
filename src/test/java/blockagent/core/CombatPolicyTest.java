@@ -47,11 +47,12 @@ class CombatPolicyTest {
 	}
 
 	@Test
-	void unstuckFailureNotReportedWhenReplacedOrCancelled() {
-		assertTrue(CombatPolicy.shouldReportUnstuckFailure("still_stuck", false, 3));
-		assertFalse(CombatPolicy.shouldReportUnstuckFailure("still_stuck", true, 3));
-		assertFalse(CombatPolicy.shouldReportUnstuckFailure("still_stuck", false, 2));
-		assertFalse(CombatPolicy.shouldReportUnstuckFailure("task_replaced", false, 3));
-		assertFalse(CombatPolicy.shouldReportUnstuckFailure("task_cancelled", false, 3));
+	void unstuckFailureReportedAfterThreeStalledAttemptsUnlessReplacedOrCancelled() {
+		assertTrue(CombatPolicy.shouldReportUnstuckFailure("still_stuck", 3));
+		assertTrue(CombatPolicy.shouldReportUnstuckFailure("done", 3), "即使當次後退移動成功，任務無進展累計 3 次仍須中斷");
+		assertFalse(CombatPolicy.shouldReportUnstuckFailure("still_stuck", 2));
+		assertFalse(CombatPolicy.shouldReportUnstuckFailure("task_replaced", 3));
+		assertFalse(CombatPolicy.shouldReportUnstuckFailure("task_cancelled", 3));
+		assertFalse(CombatPolicy.shouldReportUnstuckFailure("turned_off", 3));
 	}
 }

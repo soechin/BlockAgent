@@ -64,12 +64,86 @@ public class SmokeGameTest implements FabricClientGameTest {
 			server.runCommand("execute as @p at @s run setblock ~3 ~-1 ~ soul_sand");
 			server.runCommand("execute as @p at @s run setblock ~3 ~ ~ soul_fire");
 			server.runCommand("execute as @p at @s run setblock ~-3 ~ ~ crafting_table");
+			// 驗證 tall_grass 掃描不會觸發 Baritone NPE(P2-7)，以及近處生物列出座標與幼體數(P1-5)
+			server.runCommand("execute as @p at @s run setblock ~2 ~ ~2 tall_grass[half=lower]");
+			server.runCommand("execute as @p at @s run setblock ~2 ~1 ~2 tall_grass[half=upper]");
+			server.runCommand("execute as @p at @s run summon minecraft:chicken ~2 ~ ~-2 {NoAI:1b}");
+			server.runCommand("execute as @p at @s run summon minecraft:chicken ~3 ~ ~-2 {NoAI:1b,Age:-24000}");
 			ctx.waitTicks(5);
-			var sur = c.call(ctx, "get_surroundings");
+			var sur = c.call(ctx, "get_surroundings", McpTestClient.args("radius", 16, "detail", true));
 			check(sur.ok(), "get_surroundings 失敗：" + sur.text());
 			check(sur.text().contains("- fire n=") && sur.text().contains("- crafting_table n="),
 				"get_surroundings 應該分別列出火和工作台：" + sur.text());
+			check(sur.text().contains("chicken") && sur.text().contains("babies=1")
+				&& sur.text().contains("at=") && sur.text().contains(":baby"),
+				"get_surroundings 近處應列出生物座標與幼體狀態：" + sur.text());
 			check(sur.text().matches("(?s).*time=(day|dusk|night|dawn) (dusk|night|day)_in=\\d+(s|min) weather=.*"), "時間格式不對：" + sur.text());
+
+			var grass = c.call(ctx, "find_blocks", McpTestClient.args("type", "short_grass,tall_grass", "radius", 16));
+			check(grass.ok() && grass.text().contains("tall_grass"), "find_blocks 應該找到 tall_grass 且無異常：" + grass.text());
+
+			// 驗證一層薄雪(snow[layers=1])：clear_area 射線要打得到、build_blueprint 要能覆蓋成功(P0-2)
+			var base = ctx.computeOnClient(mc -> mc.player.blockPosition());
+			int bx = base.getX(), by = base.getY(), bz = base.getZ();
+			server.runCommand("fill " + (bx - 2) + " " + (by - 1) + " " + (bz + 2) + " " + (bx - 1) + " " + (by - 1) + " " + (bz + 3) + " minecraft:stone");
+			server.runCommand("fill " + (bx - 2) + " " + by + " " + (bz + 2) + " " + (bx - 1) + " " + (by + 1) + " " + (bz + 3) + " minecraft:air");
+			server.runCommand("setblock " + (bx - 2) + " " + by + " " + (bz + 2) + " minecraft:snow[layers=1]");
+			server.runCommand("setblock " + (bx - 1) + " " + by + " " + (bz + 2) + " minecraft:snow[layers=1]");
+			ctx.waitTicks(5);
+			var cleared = c.call(ctx, "clear_area", McpTestClient.args(
+				"block", "snow",
+				"from", (bx - 2) + "," + by + "," + (bz + 2),
+				"to", (bx - 1) + "," + by + "," + (bz + 2),
+				"wait_sec", 30));
+			check(cleared.ok() && cleared.text().contains("cleared=2") && cleared.text().contains("unreachable=0"),
+				"clear_area 應該清掉兩格一層雪：" + cleared.text());
+
+			server.runCommand("setblock " + (bx - 2) + " " + by + " " + (bz + 3) + " minecraft:snow[layers=1]");
+			server.runCommand("setblock " + (bx - 1) + " " + by + " " + (bz + 3) + " minecraft:snow[layers=1]");
+			server.runCommand("give @p minecraft:cobblestone 8");
+			ctx.waitTicks(5);
+			var parts = new com.google.gson.JsonArray();
+			var part = new com.google.gson.JsonObject();
+			part.addProperty("from", "0,0,0");
+			part.addProperty("to", "1,0,0");
+			part.addProperty("block", "cobblestone");
+			parts.add(part);
+			var bpArgs = McpTestClient.args("action", "create", "name", "雪地矮牆",
+				"origin", (bx - 2) + "," + by + "," + (bz + 3), "wait_sec", 30);
+			bpArgs.add("parts", parts);
+			var built = c.call(ctx, "build_blueprint", bpArgs);
+			check(built.ok() && built.text().contains("result=built"),
+				"build_blueprint 應該清掉一層雪並完成放置：" + built.text());
+
+			// 驗證 mine 開工自動把主背包裡的鐵鎬換上快捷列，不拿快捷列的木鎬挖爆鐵礦(P0-1)
+			server.runCommand("clear @p");
+			server.runCommand("item replace entity @p hotbar.0 with minecraft:wooden_pickaxe");
+			for (int slot = 1; slot < 9; slot++) {
+				server.runCommand("item replace entity @p hotbar." + slot + " with minecraft:dirt");
+			}
+			server.runCommand("item replace entity @p inventory.6 with minecraft:iron_pickaxe");
+			server.runCommand("setblock " + (bx + 2) + " " + by + " " + bz + " minecraft:iron_ore");
+			server.runCommand("setblock " + (bx + 2) + " " + (by + 1) + " " + bz + " minecraft:iron_ore");
+			ctx.waitTicks(5);
+			var mined = c.call(ctx, "mine", McpTestClient.args("block", "iron_ore", "count", 2, "radius", 8, "wait_sec", 30));
+			check(mined.ok() && mined.text().contains("task_done: task=mine") && mined.text().contains("mined=2/2"),
+				"mine 應該成功挖完 2 塊鐵礦：" + mined.text());
+			int rawIron = ctx.computeOnClient(mc -> blockagent.game.Inv.count(mc.player, net.minecraft.world.item.Items.RAW_IRON));
+			boolean ironInHotbar = ctx.computeOnClient(mc -> {
+				for (int i = 0; i < 9; i++) {
+					if (mc.player.getInventory().getItem(i).is(net.minecraft.world.item.Items.IRON_PICKAXE)) return true;
+				}
+				return false;
+			});
+			int woodDamage = ctx.computeOnClient(mc -> {
+				for (int i = 0; i < blockagent.game.Inv.MAIN_SIZE; i++) {
+					var s = mc.player.getInventory().getItem(i);
+					if (s.is(net.minecraft.world.item.Items.WOODEN_PICKAXE)) return s.getDamageValue();
+				}
+				return -1;
+			});
+			check(ironInHotbar && rawIron >= 2 && woodDamage == 0,
+				"鐵鎬應該已換進快捷列、取得 2 個粗鐵且木鎬無損(inHotbar=" + ironInHotbar + ", rawIron=" + rawIron + ", woodDamage=" + woodDamage + ")");
 
 			// 過完夜晚跨進白天要發 daybreak(M17)
 			server.runCommand("time set 13000");

@@ -786,7 +786,7 @@ public final class Tools {
 					Kv pre = Kv.of().put("found", found.size() + (found.size() >= count ? "+" : ""))
 						.putIf(found.size() < count, "warn", search ? "not enough loaded; will search outward" : "not enough loaded; may stop early")
 						.raw(Creative.noDropsNote(mc));
-					return a.tasks.start(new MineTask(a, blocks, label, count, search), g.bool("replace", false), pre.toString());
+					return a.tasks.start(new MineTask(a, blocks, label, count, r, search), g.bool("replace", false), pre.toString());
 				});
 			});
 		taskTool(t, a, "craft", "Craft items. Uses a crafting table within 16 blocks (anyone's) or places one from inventory "

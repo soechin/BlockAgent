@@ -18,6 +18,8 @@ public abstract class Task {
 	long startTick;
 	/** 最後一次有進展(放下、挖掉、收成一格…)的 tick；脫困反射用它分辨「站著做事」和「真的卡住」。 */
 	long lastProgressTick;
+	/** 任務實際推進的次數(僅 markProgress 遞增，不受暫停平移影響)；脫困反射用來判斷是否陷入原地死循環。 */
+	private int progressCount;
 	long timeoutTicks;
 	Status status = Status.RUNNING;
 	String resultText;
@@ -47,8 +49,6 @@ public abstract class Task {
 	/** 做到哪裡(給 AI 看的 KV，S3.0)，例如 {@code mined=4/10}。 */
 	public abstract String progress();
 
-	/** 開始執行(已通過事前檢查)。 */
-	protected void start(Minecraft mc) {
 	/** HUD 在正文後面顯示的 done/total(S8.3)。 */
 	public record Progress(int done, int total) {}
 
@@ -67,6 +67,8 @@ public abstract class Task {
 		return block.getName().getString();
 	}
 
+	/** 開始執行(已通過事前檢查)。 */
+	protected void start(Minecraft mc) {
 	}
 
 	protected abstract void tick(Minecraft mc);
@@ -159,6 +161,11 @@ public abstract class Task {
 	/** 任務有進展時呼叫。 */
 	protected final void markProgress() {
 		lastProgressTick = agent.tick();
+		progressCount++;
+	}
+
+	public final int progressCount() {
+		return progressCount;
 	}
 
 	public final long ticksSinceProgress() {

@@ -2,12 +2,14 @@ package blockagent.game;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.tags.ItemTags;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -74,12 +76,72 @@ public final class Inv {
 	}
 
 	/**
-	 * 拿這個東西挖這格划不划算：會耗損耐久的工具，只有比徒手快、或掉落需要它時才值得用
-	 * (2026-11-22 試玩：拿鐵劍、斧頭挖泥土)。BreakTask 和 Baritone 的選工具都照這條。
+	 * 拿這個東西挖這格划不划算：會耗損耐久的工具，對方塊需要正確工具才能掉落時必須達標(避免拿木鎬挖爆鐵礦)；
+	 * 否則必須比徒手快(避免拿鐵劍、斧頭挖泥土或樹葉)。BreakTask 和 Baritone 的選工具都照這條。
 	 */
-	public static boolean worthDigging(ItemStack s, net.minecraft.world.level.block.state.BlockState st) {
-		if (!s.isDamageableItem()) return true;
-		return s.getDestroySpeed(st) > 1.01f || (st.requiresCorrectToolForDrops() && s.isCorrectToolForDrops(st));
+	public static boolean worthDigging(ItemStack s, BlockState st) {
+		return worthDigging(s.isDamageableItem(), st.requiresCorrectToolForDrops(),
+			st.requiresCorrectToolForDrops() && s.isCorrectToolForDrops(st), s.getDestroySpeed(st));
+	}
+
+	static boolean worthDigging(boolean damageable, boolean requiresTool, boolean correctTool, float destroySpeed) {
+		if (!damageable) return true;
+		if (requiresTool) return correctTool;
+		return destroySpeed > 1.01f;
+	}
+
+	/**
+	 * 挑一格快捷列(0–8)來跟主背包物品交換：優先空格，其次不會耗損耐久且不受保護的物品，最後才動到其他不受保護的工具。
+	 * 找不到任何可換格時回傳 {@code fallback}。
+	 */
+	public static int chooseHotbarSwapSlot(boolean[] occupied, boolean[] damageable, boolean[] protectedSlot, int fallback) {
+		int nonDamageable = -1;
+		int anyAllowed = -1;
+		for (int i = 0; i < 9; i++) {
+			if (!occupied[i]) return i;
+			if (protectedSlot != null && protectedSlot[i]) continue;
+			if (!damageable[i] && nonDamageable < 0) nonDamageable = i;
+			if (anyAllowed < 0) anyAllowed = i;
+		}
+		if (nonDamageable >= 0) return nonDamageable;
+		if (anyAllowed >= 0) return anyAllowed;
+		return fallback;
+	}
+
+	/**
+	 * 確保挖 {@code state} 用的最佳工具在快捷列(0–8)上，讓只看快捷列的 Baritone 用得到。
+	 * 已在快捷列回傳該格索引；在主背包時透過正常背包交換換上快捷列並回傳目標格；沒有合適工具或開著容器無法換時回傳 -1。
+	 */
+	public static int ensureHotbarTool(Minecraft mc, BlockState state) {
+		Player p = mc.player;
+		Inventory inv = p.getInventory();
+		boolean needsTool = state.requiresCorrectToolForDrops();
+		int bestIdx = -1;
+		float bestSpeed = needsTool ? 0f : 1.01f;
+		for (int i = 0; i < MAIN_SIZE; i++) {
+			ItemStack s = inv.getItem(i);
+			if (s.isEmpty()) continue;
+			if (needsTool && !s.isCorrectToolForDrops(state)) continue;
+			float sp = s.getDestroySpeed(state);
+			if (!needsTool && (sp <= 1.01f || (s.is(ItemTags.SWORDS) && sp < 10f))) continue;
+			if (bestIdx < 0 || sp > bestSpeed + 0.01f) {
+				bestIdx = i;
+				bestSpeed = sp;
+			}
+		}
+		if (bestIdx < 0) return -1;
+		if (bestIdx < 9) return bestIdx;
+		if (p.containerMenu != p.inventoryMenu) return -1;
+		boolean[] occupied = new boolean[9];
+		boolean[] damageable = new boolean[9];
+		for (int i = 0; i < 9; i++) {
+			ItemStack s = inv.getItem(i);
+			occupied[i] = !s.isEmpty();
+			damageable[i] = occupied[i] && s.isDamageableItem();
+		}
+		int targetSlot = chooseHotbarSwapSlot(occupied, damageable, null, inv.getSelectedSlot());
+		click(mc, p.inventoryMenu, menuSlot(bestIdx), targetSlot, ContainerInput.SWAP);
+		return targetSlot;
 	}
 
 	/**

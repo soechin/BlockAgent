@@ -94,6 +94,18 @@ public final class Observation {
 
 	// ---- 共用格式(S3.0、S3.2) ----
 
+	record MobEntry(int id, int x, int y, int z, boolean baby) {
+	}
+
+	/** 格式化近處生物的個體座標清單：{@code 55@28,110,-89;57@28,110,-90:baby}。 */
+	static String formatMobPositions(List<MobEntry> entries) {
+		List<String> parts = new ArrayList<>(entries.size());
+		for (MobEntry e : entries) {
+			parts.add(e.id() + "@" + e.x() + "," + e.y() + "," + e.z() + (e.baby() ? ":baby" : ""));
+		}
+		return String.join(";", parts);
+	}
+
 	static String truncate(StringBuilder sb, int hidden, String hint) {
 		String s = sb.toString();
 		if (s.length() <= MAX_CHARS && hidden == 0) return s;
@@ -345,7 +357,8 @@ public final class Observation {
 		sb.append("\nmobs");
 		boolean anyMob = false;
 		int maxSpecies = detail ? 12 : 8;
-		int maxPerSpecies = detail ? 3 : 1;
+		boolean showPositions = detail || radius <= 16;
+		int maxPerSpecies = detail ? 6 : showPositions ? 3 : 1;
 		for (var en : byKind.entrySet()) {
 			if (en.getValue().isEmpty()) continue;
 			anyMob = true;
@@ -362,12 +375,26 @@ public final class Observation {
 				var sp = species.get(i);
 				List<Entity> list = sp.getValue();
 				Entity nearest = list.getFirst();
+				int babies = 0;
+				for (Entity e : list) if (e instanceof LivingEntity le && le.isBaby()) babies++;
 				Kv line = Kv.of(en.getKey()).word(sp.getKey()).put("id", nearest.getId()).putIf(list.size() > 1, "n", list.size());
+				if (showPositions) line.put("pos", Fmt.pos(nearest.blockPosition()));
 				Fmt.rel(line, eye, nearest.position());
+				line.putIf(babies > 0, "babies", babies);
 				if (list.size() > 1 && maxPerSpecies > 1) {
-					List<String> ids = new ArrayList<>();
-					for (int j = 0; j < Math.min(list.size(), maxPerSpecies); j++) ids.add(String.valueOf(list.get(j).getId()));
+					int limit = Math.min(list.size(), maxPerSpecies);
+					List<String> ids = new ArrayList<>(limit);
+					List<MobEntry> entries = showPositions ? new ArrayList<>(limit) : List.of();
+					for (int j = 0; j < limit; j++) {
+						Entity e = list.get(j);
+						ids.add(String.valueOf(e.getId()));
+						if (showPositions) {
+							BlockPos bp = e.blockPosition();
+							entries.add(new MobEntry(e.getId(), bp.getX(), bp.getY(), bp.getZ(), e instanceof LivingEntity le && le.isBaby()));
+						}
+					}
 					line.put("ids", String.join(",", ids));
+					if (showPositions) line.put("at", formatMobPositions(entries));
 				}
 				List<String> states = new ArrayList<>();
 				for (Entity e : list) {

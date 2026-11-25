@@ -315,14 +315,36 @@ public final class Recipes {
 
 	/** 常見燃料的燃燒時間(tick)。26.3 的燃料改成物品資料元件，需要戰利品情境才算得出來，所以用原版數值的表。 */
 	public static int burnTicks(String item, boolean isFuel) {
-		return switch (norm(item)) {
+		if (!isFuel) return 0;
+		String id = norm(item);
+		return switch (id) {
 			case "minecraft:coal", "minecraft:charcoal" -> 1600;
 			case "minecraft:coal_block" -> 16000;
 			case "minecraft:blaze_rod" -> 2400;
 			case "minecraft:lava_bucket" -> 20000;
 			case "minecraft:dried_kelp_block" -> 4001;
-			case "minecraft:stick", "minecraft:bamboo" -> norm(item).equals("minecraft:stick") ? 100 : 50;
-			default -> isFuel ? 200 : 0; // 不在表裡的燃料保守估計 200(木製工具等)
+			case "minecraft:bamboo", "minecraft:scaffolding" -> 50;
+			case "minecraft:stick", "minecraft:bowl", "minecraft:dead_bush",
+				 "minecraft:azalea", "minecraft:flowering_azalea", "minecraft:leaf_litter" -> 100;
+			case "minecraft:bamboo_block", "minecraft:stripped_bamboo_block", "minecraft:bamboo_mosaic",
+				 "minecraft:crafting_table", "minecraft:chest", "minecraft:trapped_chest", "minecraft:barrel",
+				 "minecraft:bookshelf", "minecraft:chiseled_bookshelf", "minecraft:jukebox", "minecraft:note_block",
+				 "minecraft:composter", "minecraft:lectern", "minecraft:loom", "minecraft:smithing_table",
+				 "minecraft:cartography_table", "minecraft:fletching_table", "minecraft:mangrove_roots",
+				 "minecraft:daylight_detector" -> 300;
+			default -> {
+				if (id.endsWith("_carpet")) yield 50;
+				if (id.endsWith("_sapling") || id.endsWith("_wool") || id.endsWith("_button")) yield 100;
+				if (id.endsWith("_slab")) yield 150;
+				if (id.endsWith("_log") || id.endsWith("_wood") || id.endsWith("_planks")
+					|| id.endsWith("_stem") || id.endsWith("_hyphae")
+					|| id.endsWith("_fence") || id.endsWith("_fence_gate")
+					|| id.endsWith("_stairs") || id.endsWith("_trapdoor")
+					|| id.endsWith("_pressure_plate")) {
+					yield 300;
+				}
+				yield 200; // 木門、告示牌、木船、木製工具等
+			}
 		};
 	}
 }

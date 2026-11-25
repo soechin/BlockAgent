@@ -2,10 +2,21 @@ package blockagent.game;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /** 觀察摘要的共用格式(docs/SPEC.md S3.1)。時間的切點和倒數在 CoreLogicTest(DayClock)。 */
 class ObservationTest {
+	@Test
+	void formatsMobPositionsWithBabyFlag() {
+		String out = Observation.formatMobPositions(List.of(
+			new Observation.MobEntry(55, 28, 110, -89, false),
+			new Observation.MobEntry(57, 28, 110, -90, true)
+		));
+		assertEquals("55@28,110,-89;57@28,110,-90:baby", out);
+	}
+
 	@Test
 	void shortTextIsUnchanged() {
 		assertEquals("a=1\nb=2", Observation.truncate(new StringBuilder("a=1\nb=2"), 0, "hint"));

@@ -1,8 +1,5 @@
 package blockagent.game.tasks;
 
-import baritone.api.BaritoneAPI;
-import baritone.api.utils.BlockOptionalMetaLookup;
-import blockagent.game.Bari;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -13,12 +10,16 @@ import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.component.SwingAnimation;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.PriorityQueue;
+import java.util.Set;
 import java.util.function.Predicate;
 
 /** 任務共用的小動作：轉頭、對方塊按右鍵、找附近的方塊、找放東西的位置。 */
@@ -96,27 +97,101 @@ public final class Moves {
 		return (int) Math.min(next, maxScan);
 	}
 
-	/** 用 Baritone 的掃描器在已載入的區塊裡找方塊，依距離排序。 */
+	/**
+	 * 直接掃描已載入的區塊區段(LevelChunkSection)，找出半徑內最近的 {@code max} 格目標方塊。
+	 * 不經由 Baritone 的 BlockOptionalMetaLookup，避免查詢戰利品表時在 26.3 觸發 ServerLevelStub NPE(如 tall_grass)。
+	 */
 	public static List<BlockPos> scan(Minecraft mc, List<Block> blocks, int radius, int max, Predicate<BlockPos> filter) {
-		if (blocks.isEmpty()) return List.of();
-		var ctx = Bari.b().getPlayerContext();
-		int chunkRadius = Math.max(2, (radius + 15) / 16 + 1); // Baritone 的範圍迴圈是 i < radius，要多加 1
-		var lookup = new BlockOptionalMetaLookup(blocks);
+		if (blocks.isEmpty() || max <= 0 || mc.level == null || mc.player == null) return List.of();
+		int cap = clampScanQuota(max, MAX_SCAN);
 		BlockPos me = mc.player.blockPosition();
-		List<BlockPos> out = new ArrayList<>();
-		// Baritone 先依數量上限截斷，才輪到這裡濾半徑和條件：上限被不合格的格子(例如深水裡的水下格)占滿時，
-		// 加大上限再掃一次，免得誤報找不到(H12)，同時夾限不超過 MAX_SCAN(P3-M9)
-		for (int quota = clampScanQuota(Math.max(max * 4, 64), MAX_SCAN); ; quota = nextScanQuota(quota, MAX_SCAN)) {
-			List<BlockPos> found = BaritoneAPI.getProvider().getWorldScanner().scanChunkRadius(ctx, lookup, quota, -1, chunkRadius);
-			out.clear();
-			for (BlockPos b : found) {
-				if (b.distManhattan(me) > radius * 2 || Math.sqrt(b.distSqr(me)) > radius) continue;
-				if (filter == null || filter.test(b)) out.add(b.immutable());
+		int mx = me.getX(), my = me.getY(), mz = me.getZ();
+		int minX = mx - radius, maxX = mx + radius;
+		int minY = Math.max(mc.level.getMinY(), my - radius);
+		int maxY = Math.min(mc.level.getMaxY() - 1, my + radius);
+		int minZ = mz - radius, maxZ = mz + radius;
+		if (minY > maxY) return List.of();
+		long rSq = (long) radius * radius;
+		Set<Block> wanted = Set.copyOf(blocks);
+		Predicate<BlockState> hasWanted = st -> wanted.contains(st.getBlock());
+
+		int minCx = minX >> 4, maxCx = maxX >> 4;
+		int minCz = minZ >> 4, maxCz = maxZ >> 4;
+		List<int[]> chunks = new ArrayList<>((maxCx - minCx + 1) * (maxCz - minCz + 1));
+		for (int cx = minCx; cx <= maxCx; cx++) {
+			int dx = axisDistToChunk(mx, cx);
+			for (int cz = minCz; cz <= maxCz; cz++) {
+				int dz = axisDistToChunk(mz, cz);
+				long minChunkDistSq = (long) dx * dx + (long) dz * dz;
+				if (minChunkDistSq <= rSq) chunks.add(new int[]{cx, cz, (int) Math.min(minChunkDistSq, Integer.MAX_VALUE)});
 			}
-			if (out.size() >= max || found.size() < quota || quota >= MAX_SCAN) break;
 		}
-		out.sort(Comparator.comparingDouble(b -> b.distSqr(me)));
-		return out.size() > max ? out.subList(0, max) : out;
+		chunks.sort(Comparator.comparingInt(c -> c[2]));
+
+		PriorityQueue<BlockPos> best = new PriorityQueue<>(Comparator.<BlockPos>comparingLong(b -> distSq(b, mx, my, mz)).reversed());
+		long worstDistSq = rSq;
+		BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+		var chunkSource = mc.level.getChunkSource();
+
+		for (int[] c : chunks) {
+			if (best.size() >= cap && c[2] > worstDistSq) break;
+			int cx = c[0], cz = c[1];
+			LevelChunk chunk = chunkSource.getChunkNow(cx, cz);
+			if (chunk == null) continue;
+			int baseX = cx << 4, baseZ = cz << 4;
+			int lx0 = Math.max(0, minX - baseX), lx1 = Math.min(15, maxX - baseX);
+			int lz0 = Math.max(0, minZ - baseZ), lz1 = Math.min(15, maxZ - baseZ);
+			int minSection = chunk.getMinSectionY();
+			LevelChunkSection[] sections = chunk.getSections();
+			int s0 = Math.max(0, (minY >> 4) - minSection);
+			int s1 = Math.min(sections.length - 1, (maxY >> 4) - minSection);
+			for (int si = s0; si <= s1; si++) {
+				LevelChunkSection sec = sections[si];
+				if (sec == null || sec.hasOnlyAir() || !sec.maybeHas(hasWanted)) continue;
+				int baseY = (minSection + si) << 4;
+				int ly0 = Math.max(0, minY - baseY), ly1 = Math.min(15, maxY - baseY);
+				for (int ly = ly0; ly <= ly1; ly++) {
+					int wy = baseY + ly;
+					long dySq = (long) (wy - my) * (wy - my);
+					if (dySq > worstDistSq) continue;
+					for (int lz = lz0; lz <= lz1; lz++) {
+						int wz = baseZ + lz;
+						long dyzSq = dySq + (long) (wz - mz) * (wz - mz);
+						if (dyzSq > worstDistSq) continue;
+						for (int lx = lx0; lx <= lx1; lx++) {
+							int wx = baseX + lx;
+							long dSq = dyzSq + (long) (wx - mx) * (wx - mx);
+							if (dSq > worstDistSq) continue;
+							if (!wanted.contains(sec.getBlockState(lx, ly, lz).getBlock())) continue;
+							cursor.set(wx, wy, wz);
+							if (filter != null && !filter.test(cursor)) continue;
+							best.add(cursor.immutable());
+							if (best.size() > cap) {
+								best.poll();
+								worstDistSq = distSq(best.peek(), mx, my, mz);
+							} else if (best.size() == cap) {
+								worstDistSq = distSq(best.peek(), mx, my, mz);
+							}
+						}
+					}
+				}
+			}
+		}
+
+		List<BlockPos> out = new ArrayList<>(best);
+		out.sort(Comparator.comparingLong(b -> distSq(b, mx, my, mz)));
+		return out;
+	}
+
+	private static int axisDistToChunk(int coord, int chunkCoord) {
+		int lo = chunkCoord << 4;
+		int hi = lo + 15;
+		return coord < lo ? lo - coord : coord > hi ? coord - hi : 0;
+	}
+
+	private static long distSq(BlockPos b, int mx, int my, int mz) {
+		long dx = b.getX() - mx, dy = b.getY() - my, dz = b.getZ() - mz;
+		return dx * dx + dy * dy + dz * dz;
 	}
 
 	/**

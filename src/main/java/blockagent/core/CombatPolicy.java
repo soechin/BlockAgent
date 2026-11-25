@@ -27,12 +27,13 @@ public final class CombatPolicy {
 	}
 
 	/**
-	 * 脫困反射結束時，是否應算作連續失敗 3 次並中斷原任務。
-	 * 被新任務替換({@code task_replaced})或取消({@code task_cancelled})時不算失敗(P3-M13)。
+	 * 脫困反射結束時，是否應算作在任務無進展下累計達 3 次而中斷原任務。
+	 * 即使當次脫困後退成功，只要任務本身仍未推進、反覆卡住達 3 次就必須中斷，避免「卡住 10 秒 → 後退 3 格 → 又卡回原點」死循環。
+	 * 被新任務替換({@code task_replaced})、取消({@code task_cancelled})或關閉({@code turned_off})時不算失敗(P3-M13)。
 	 */
-	public static boolean shouldReportUnstuckFailure(String how, boolean moved, int attempts) {
-		if (moved || attempts < 3) return false;
-		return !"task_replaced".equals(how) && !"task_cancelled".equals(how);
+	public static boolean shouldReportUnstuckFailure(String how, int stalledAttempts) {
+		if (stalledAttempts < 3) return false;
+		return !"task_replaced".equals(how) && !"task_cancelled".equals(how) && !"turned_off".equals(how);
 	}
 
 	/**

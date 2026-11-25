@@ -100,6 +100,7 @@ public final class Reflexes {
 	private int bucketsBefore;
 	private int landedAt;
 	private int unstuckAttempts;
+	private int unstuckProgressCount;
 	/** unstuck：開始挖時鎖定的起點與目標格，避免中途被擠偏方向，且挖通後遠離起點 >= 3 格(大於 movedSinceUnstuck 的 2 格門檻)。 */
 	private BlockPos unstuckStart;
 	private BlockPos unstuckFront;
@@ -169,8 +170,14 @@ public final class Reflexes {
 		if (cur != historyTask) {
 			history.clear();
 			historyTask = cur;
-			// 脫困失敗的次數只算同一個任務(H12)
-			if (active != Kind.UNSTUCK) unstuckAttempts = 0;
+			// 脫困累計次數只算同一個任務，且在任務實際推進後歸零(H12)
+			if (active != Kind.UNSTUCK) {
+				unstuckAttempts = 0;
+				unstuckProgressCount = cur == null ? 0 : cur.progressCount();
+			}
+		} else if (cur != null && active != Kind.UNSTUCK && cur.progressCount() != unstuckProgressCount) {
+			unstuckAttempts = 0;
+			unstuckProgressCount = cur.progressCount();
 		}
 		history.addLast(p.position());
 		while (history.size() > 200) history.removeFirst();
@@ -360,7 +367,10 @@ public final class Reflexes {
 					engagedPriority = pendingThreat.priority();
 				}
 			}
-			case UNSTUCK -> unstuckAttempts++;
+			case UNSTUCK -> {
+				if (t != null) unstuckProgressCount = t.progressCount();
+				unstuckAttempts++;
+			}
 			default -> {
 			}
 		}
@@ -561,10 +571,9 @@ public final class Reflexes {
 			text += (k.cancelsTask ? " task_cancelled=" : " task_resumed=") + blockagent.mcp.Kv.quote(interruptedTask);
 		}
 		if (k == Kind.UNSTUCK) {
-			boolean moved = history.size() >= 2 && movedSinceUnstuck();
-			if (moved) unstuckAttempts = 0;
-			else if (CombatPolicy.shouldReportUnstuckFailure(how, moved, unstuckAttempts)) {
+			if (CombatPolicy.shouldReportUnstuckFailure(how, unstuckAttempts)) {
 				unstuckAttempts = 0;
+				unstuckProgressCount = 0;
 				if (suspendedTask) {
 					agent.tasks.resume();
 					suspendedTask = false;
@@ -612,6 +621,7 @@ public final class Reflexes {
 		history.clear();
 		defenseCooldown.clear();
 		unstuckAttempts = 0;
+		unstuckProgressCount = 0;
 		if (mc.options != null) {
 			mc.options.keyJump.setDown(false);
 			mc.options.keyUse.setDown(false);

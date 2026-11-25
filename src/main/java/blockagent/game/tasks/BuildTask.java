@@ -94,9 +94,11 @@ public final class BuildTask extends Task {
 	/** 生存模式挖完之後，最多花 15 秒撿掉落物。 */
 	static final int COLLECT_TICKS = 15 * 20;
 
-	/** 擋在蓋建位置上、可以先清掉的方塊：天然、一碰就碎(花、草、蘑菇…)，而且規矩允許挖。 */
+	/** 擋在蓋建位置上、可以先清掉的方塊：天然、沒有流體，一碰就碎(花、草、蘑菇…)或可替換的薄層(如一層雪)，而且規矩允許挖。 */
 	public static boolean clearablePlant(Agent agent, Level level, BlockPos p, BlockState st) {
-		return !st.isAir() && st.getFluidState().isEmpty() && st.getDestroySpeed(level, p) == 0f
+		float speed = st.getDestroySpeed(level, p);
+		return !st.isAir() && st.getFluidState().isEmpty() && speed >= 0f
+			&& (speed == 0f || st.canBeReplaced())
 			&& agent.guard.isNatural(st) && agent.guard.canBreak(level, p).allowed();
 	}
 
@@ -250,11 +252,19 @@ public final class BuildTask extends Task {
 			int source = Inv.find(mc.player, stack -> stack.is(item));
 			if (source < 9) continue;
 			Item scaffoldItem = throwawayInHotbar(mc.player);
+			boolean[] occupied = new boolean[9];
+			boolean[] damageable = new boolean[9];
+			boolean[] protectedSlot = new boolean[9];
 			for (int slot = 0; slot < 9; slot++) {
-				Item old = inv.getItem(slot).getItem();
-				if (wanted.contains(old) || old == scaffoldItem) continue;
+				ItemStack cur = inv.getItem(slot);
+				occupied[slot] = !cur.isEmpty();
+				damageable[slot] = occupied[slot] && cur.isDamageableItem();
+				Item old = cur.getItem();
+				protectedSlot[slot] = wanted.contains(old) || old == scaffoldItem;
+			}
+			int slot = Inv.chooseHotbarSwapSlot(occupied, damageable, protectedSlot, -1);
+			if (slot >= 0) {
 				Inv.click(mc, mc.player.inventoryMenu, Inv.menuSlot(source), slot, ContainerInput.SWAP);
-				break;
 			}
 		}
 	}
@@ -287,14 +297,22 @@ public final class BuildTask extends Task {
 
 	public boolean permitsPlacement(Level level, BlockPos pos, Item item) {
 		if (occupiedDoorways.contains(pos)) return false;
-		if (doors.covers(pos)) return doors.allows(pos, item) && level.getBlockState(pos).isAir();
+		BlockState cur = level.getBlockState(pos);
+		boolean open = cur.isAir() || cur.canBeReplaced();
+		if (doors.covers(pos)) return doors.allows(pos, item) && open;
 		if (!protectedCells.contains(pos)) return true;
 		BuildTarget target = targets.get(pos);
-		return target != null && target.state().getBlock().asItem() == item && level.getBlockState(pos).isAir();
+		return target != null && target.state().getBlock().asItem() == item && open;
 	}
 
 	@Override
 	public String describe() {
+		return (targets.isEmpty() && doors.isEmpty() ? "拆" : "蓋") + what;
+	}
+
+	@Override
+	public Progress hudProgress() {
+		if (targets.isEmpty() && doors.isEmpty()) return new Progress(dug + demolished, dug + demolished + clearQueue.size());
 		Minecraft mc = Minecraft.getInstance();
 		return new Progress(mc.level == null ? 0 : placed(mc), targets.size());
 	}
@@ -306,12 +324,6 @@ public final class BuildTask extends Task {
 		if (dug + demolished > 0 || !clearQueue.isEmpty()) {
 			s += " cleared=" + (dug + demolished) + (clearQueue.isEmpty() ? "" : " to_clear=" + clearQueue.size());
 		}
-		return (targets.isEmpty() && doors.isEmpty() ? "拆" : "蓋") + what;
-	}
-
-	@Override
-	public Progress hudProgress() {
-		if (targets.isEmpty() && doors.isEmpty()) return new Progress(dug + demolished, dug + demolished + clearQueue.size());
 		if (doors.placed() > 0) s += " doors=" + doors.placed();
 		if (cleaning) s += " state=removing_scaffold";
 		else if (!scaffold.isEmpty()) s += " scaffold_left=" + scaffold.size();
@@ -328,7 +340,7 @@ public final class BuildTask extends Task {
 			@Override
 			public boolean inSchematic(int x, int y, int z, BlockState current) {
 				BuildTarget target = targets.get(origin.offset(x, y, z));
-				return target != null && (protectedCells.isEmpty() || current == null || current.isAir() || target.matches(current));
+				return target != null && (protectedCells.isEmpty() || current == null || current.isAir() || current.canBeReplaced() || target.matches(current));
 			}
 
 			@Override

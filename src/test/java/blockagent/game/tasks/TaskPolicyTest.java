@@ -48,4 +48,36 @@ class TaskPolicyTest {
 		assertEquals("2min", DayClock.duration(2399));
 		assertEquals("2min", DayClock.duration(2400));
 	}
+
+	@Test
+	void clearAreaSamplePointsHitThinSnowLayer() {
+		double[][] pts = ClearAreaTask.samplePoints(26.0, 110.0, -90.0, 27.0, 110.125, -89.0);
+		assertEquals(7, pts.length);
+		assertEquals(110.0625, pts[0][1], 1e-9, "中心點應落在一層雪內部中線");
+		for (double[] pt : pts) {
+			assertTrue(pt[0] > 26.0 && pt[0] < 27.0, "x 超出外框：" + pt[0]);
+			assertTrue(pt[1] > 110.0 && pt[1] < 110.125, "y 必須嚴格落在一層雪(0–0.125)之內：" + pt[1]);
+			assertTrue(pt[2] > -90.0 && pt[2] < -89.0, "z 超出外框：" + pt[2]);
+		}
+	}
+
+	@Test
+	void mineRadiusBoundsVerticalAndHorizontalDrift() {
+		// 小屋 (27,116,-57)，半徑 32：地底 y=35 必須被擋，邊界內允許
+		assertFalse(MineTask.withinRadius(27, 116, -57, 22, 35, -63, 32));
+		assertTrue(MineTask.withinRadius(27, 116, -57, 27, 84, -57, 32));
+		assertFalse(MineTask.withinRadius(27, 116, -57, 27, 83, -57, 32));
+		// 拔草 (0,106,-78)，半徑 48：73 格外必須被擋
+		assertFalse(MineTask.withinRadius(0, 106, -78, -73, 104, -52, 48));
+	}
+
+	@Test
+	void smeltOnlyClearsLeftoverFuelInOwnIdleEmptyFurnace() {
+		assertTrue(SmeltTask.canClearOwnLeftoverFuel(true, false, true, true, true, true));
+		assertFalse(SmeltTask.canClearOwnLeftoverFuel(false, false, true, true, true, true), "別人的熔爐不可取出燃料");
+		assertFalse(SmeltTask.canClearOwnLeftoverFuel(true, true, true, true, true, true), "燃燒中不可取");
+		assertFalse(SmeltTask.canClearOwnLeftoverFuel(true, false, false, true, true, true), "還有原料不可取");
+		assertFalse(SmeltTask.canClearOwnLeftoverFuel(true, false, true, false, true, true), "還有產物不可取");
+		assertFalse(SmeltTask.canClearOwnLeftoverFuel(true, false, true, true, true, false), "背包放不下不可取");
+	}
 }

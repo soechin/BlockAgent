@@ -121,7 +121,12 @@ class RecipesTest {
 	@Test
 	void fuelTable() {
 		assertEquals(1600, Recipes.burnTicks("coal", true));
-		assertEquals(200, Recipes.burnTicks("oak_planks", true));
+		assertEquals(300, Recipes.burnTicks("spruce_log", true));
+		assertEquals(300, Recipes.burnTicks("oak_planks", true));
+		assertEquals(150, Recipes.burnTicks("spruce_slab", true));
+		assertEquals(100, Recipes.burnTicks("stick", true));
+		assertEquals(50, Recipes.burnTicks("bamboo", true));
+		assertEquals(200, Recipes.burnTicks("wooden_pickaxe", true));
 		assertEquals(0, Recipes.burnTicks("dirt", false));
 	}
 }

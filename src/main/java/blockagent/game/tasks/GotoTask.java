@@ -32,6 +32,7 @@ public final class GotoTask extends Task {
 	private final Goal goal;
 	private final String where;
 	private int idleTicks;
+	private double bestHeuristic = Double.POSITIVE_INFINITY;
 
 	public GotoTask(Agent agent, String name, Goal goal, String where) {
 		super(agent, name);
@@ -60,6 +61,7 @@ public final class GotoTask extends Task {
 
 	@Override
 	protected void start(Minecraft mc) {
+		bestHeuristic = goal.heuristic(mc.player.blockPosition());
 		Bari.b().getCustomGoalProcess().setGoalAndPath(goal);
 	}
 
@@ -68,6 +70,11 @@ public final class GotoTask extends Task {
 		if (goal.isInGoal(mc.player.blockPosition())) {
 			done("arrived=" + where);
 			return;
+		}
+		double h = goal.heuristic(mc.player.blockPosition());
+		if (h + 4.0 < bestHeuristic) {
+			bestHeuristic = h;
+			markProgress();
 		}
 		var b = Bari.b();
 		if (!b.getCustomGoalProcess().isActive() && !b.getPathingBehavior().isPathing()) {
