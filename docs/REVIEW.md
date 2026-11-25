@@ -1,8 +1,8 @@
 # BlockAgent 專案審查紀錄
 
 > 日期：2026-11-25
-> 來源：Prism Launcher `26.3` 實機試玩紀錄(`sp-Live_2026_11_25-94c75847`，`2026-11-25 19:58–21:32`，`blockagent 2026.11.25-1957` + `codex-mcp-client 0.172.0` + 規劃模型 `gpt-6.2-sol`，區網與 `Anne201624` 雙人生存)。
-> 局況摘要：總計 90.8 分鐘(`RUNNING` 86.4 分、`PAUSED` 4.3 分)、1,616 筆紀錄、背景任務完成率 313/336(93.2%)、死亡 3 次(皆為骷髏射殺)、無 Java 例外或崩潰；規劃服務 17 次全數成功(平均 12.84 秒)。
+> 來源：Prism Launcher `26.3` 實機試玩紀錄(`sp-Live_2026_11_25-94c75847`，`2026-11-25 19:58–21:32`，`blockagent 2026.11.25-1957` + `codex-mcp-client 0.172.0` + 規劃模型 `gpt-6.2-sol`，區網與 `Anne201624` 雙人生存)及對應 Codex 對話紀錄(`~/.blockagent/codex-home/sessions/2026/11/25/`)。
+> 局況摘要：總計 90.8 分鐘(`RUNNING` 86.4 分、`PAUSED` 4.3 分)、遊戲端 1,616 筆紀錄、Codex 端 1,143 次 MCP 呼叫(46 次錯誤)、背景任務完成率 313/336(93.2%)、死亡 3 次(皆為骷髏射殺)、無 Java 例外或崩潰；規劃服務 17 次全數成功(平均 12.84 秒)。
 > 註：先前審查(`2026-11-22`–`2026-11-24` 之 C1–C7、H1–H13、M1–M17、L1–L6、A1–A15、Phase 2/3 複查)項目已全數修畢並移除，歷史紀錄留存於 git。
 
 ---
@@ -66,6 +66,18 @@
   - **問題**：`PathNode map size: 1` 表示起點周圍 22 個鄰近移動全被禁止(例如落入他人建物或受保護方塊圍住處)，而 `UNSTUCK` 僅挖天然方塊，無法脫離時仍反覆觸發並讓 Baritone 不斷黑名單合法資源。
   - **方向**：偵測到連續無法起步(`PATH_BLOCKED` / `Open set size: 0`)時提早失敗回報，並附上當前座標與周圍不可拆方塊提示，讓 AI 改由其他手段脫困或求助。
 
+- [ ] **R11. MC 26.3 副手拿盾牌導致 `till_and_plant` 與 `use_item`(鋤/斧/鏟)全面失效**
+  - **位置**：`src/main/java/blockagent/game/tasks/FarmTask.java:114-120`、`src/main/java/blockagent/game/Tools.java:1244-1269`、MC 26.3 `net/minecraft/core/component/BlockTransformer.class`
+  - **證據**：`20:45:19–20:45:31` 副手裝備盾牌(`offhand="shield"`)時，對上方為空氣的天然 `grass_block`(`85,65,231`、`85,65,232`、`86,65,231`)呼叫 `till_and_plant` 全報 `skipped=...:untillable`，單獨呼叫 `use_item(item="stone_hoe", x=85, y=65, z=232)` 也報 `ERR INVALID_ARGUMENT item=stone_hoe pos=85,65,232 block=grass_block | using the item had no effect`；使用者於 `20:45:37` 暫停後以同一把石鋤手動操作才成功鋤地。
+  - **問題**：MC 26.3 將斧、鏟、鋤統一進 `BlockTransformer` 元件，且內含 `getOffhandItem()` 具 `BLOCKS_ATTACKS` 且 `!isSecondaryUseActive()` 時直接回傳 `InteractionResult.PASS`(讓位給舉盾)的判斷。生存模式 AI 幾乎全程持盾，`FarmTask` 與 `Tools.useItem` 未蹲下或暫卸盾牌，導致鋤地、削樹皮、鏟草徑等動作失效。
+  - **方向**：使用具 `DataComponents.BLOCK_TRANSFORMER` 的工具且副手具 `BLOCKS_ATTACKS` 時，於互動前暫時蹲下(`isSecondaryUseActive`)或暫將副手盾牌移回背包後再還原。
+
+- [ ] **R12. 副手物品對 `craft`、`equip` 與 `Inv` 查詢完全隱形，引發連續假缺料**
+  - **位置**：`src/main/java/blockagent/game/Inv.java:21,39-61,210-225`、`src/main/java/blockagent/game/Tools.java:1272-1295`
+  - **證據**：`20:00:50–20:01:12` 開局剛砍完的 16 塊 `jungle_log` 位於副手(`hand=cocoa_beans:2 offhand=jungle_log:16`)，AI 連續 9 次呼叫 `craft` 全報 `ERR MISSING_MATERIALS missing="jungle_log|#jungle_logs:8"`，連呼叫 `equip(item="jungle_log", slot="mainhand")` 都回報 `ERR MISSING_MATERIALS item=jungle_log have=0 need=1`；最後 AI 靠 `equip(item="cocoa_beans", slot="offhand")` 把副手硬頂回主背包才解除卡關。
+  - **問題**：`Inv.MAIN_SIZE=36` 僅掃描 0–35 格，`Inv.find()`、`Inv.count()`、`Inv.summary()`、`Inv.selectInHand()` 全部忽略副手槽(slot 40)。
+  - **方向**：`equip(slot="mainhand")` 在主背包找不到時檢查副手並直接對調；`craft` 預檢/取料或 `Inv` 工具方法納入副手槽(或自動移回主背包再合成)。
+
 ---
 
 ## Medium(規劃服務與觀測紀錄)
@@ -79,3 +91,19 @@
   - **位置**：`src/main/java/blockagent/mixin/MultiPlayerGameModeMixin.java:85-91`
   - **問題**：`ActionLog` 僅記錄 MCP 工具呼叫(`break_block`)，Baritone 尋路經 `destroyBlock` 拆掉自有非天然方塊時無任何紀錄，導致屋頂(`88,70,227`)、東牆(`89,67–68,227`)與南牆(`93,67–68,229`)被拆卻查無直接動作紀錄。
   - **方向**：除 R5 從尋路層根本防止外，可在 `RUNNING` 狀態下於 `destroyBlock` 拆掉非天然自有方塊且當前任務非 `BreakTask`/`BuildTask`/`ClearAreaTask` 時補記一筆 `ActionLog`，方便事後診斷。
+
+- [ ] **R13. `find_blocks` 群組別名不一致與 `unknown block id` 缺引導，加上參數上限與錯誤訊息易誤導**
+  - **位置**：`src/main/java/blockagent/game/Tools.java:200-258`(`parseItem`/`parseBlock`/`blockGroupTag`/`parseBlockGroup`)、`src/main/java/blockagent/game/Tools.java`(`inspect_area`/`mine`/`get_surroundings`/`useItem`)、`src/main/java/blockagent/core/Recipes.java`
+  - **證據(Codex 對話紀錄)**：
+    - `find_blocks(type="ladder,door,stairs")` → `ERR INVALID_ARGUMENT | unknown block id: stairs`(`blockGroupTag` 支援 `door`/`bed`/`plank`/`wool`/`leaves` 與 `log`/`chests`/`furnaces`/`*_ore`，卻不含 `stairs`/`slabs`/`fences`/`trapdoors`)。
+    - `find_blocks(type="wheat_seeds,short_grass")` → `ERR INVALID_ARGUMENT | unknown block id: wheat_seeds`(把物品 ID 誤傳成方塊 ID，錯誤訊息未提示它是物品而非方塊)。
+    - `inspect_area` 單局撞牆 **7 次** `ERR INVALID_ARGUMENT | limit must be between 1 and 32`(檢查 5×5 屋頂或整個房間時反覆傳 `limit=40–250`，另 1 次誤傳 `center`/`radius` 報 `missing required argument: from`)；另出現 `mine(radius=6)` 報 `radius must be between 8 and 96`、`get_surroundings(radius=64)` 報 `radius must be between 4 and 48`。
+    - `craft(wooden_pickaxe)` 缺料輸出 `missing="oak_planks|#wooden_tool_materials:3,stick:2,oak_planks|#planks:4"`，同一個 `oak_planks` 出現兩次(未標示第二項是隱含子步驟工作台所需)。
+    - `use_item(item="bucket", x=56, y=62, z=225)` 撈流動水(`water[level>0]`)只回 `block=water | using the item had no effect`，未顯示 `level` 或提示必須撈水源(`level=0`)。
+  - **方向**：`blockGroupTag` 補齊常見建築/農作 tag(`stairs`/`slabs`/`fences`/`trapdoors`/`crops` 等)，`parseBlock` 發現傳入的是合法物品 ID 時於 hint 說明；評估放寬或自動夾限 `inspect_area.limit`(裁切並標記 `truncated` 而非直接失敗重呼)；`craft` 缺料合併或標註子步驟；空桶對流動水失敗時附註 `level` 與水源提示。
+
+- [ ] **R14. `ActionLog` 漏記 `Args.BadArgument` 錯誤，遊戲端日誌看不到 ID 與參數失敗**
+  - **位置**：`src/main/java/blockagent/mcp/ToolRegistry.java:102-109`
+  - **證據**：上述 `unknown block id`、`limit must be between 1 and 32`、`radius must be between 8 and 96`、`missing required argument: from` 等錯誤全未記錄於 `blockagent/logs/*.jsonl`，只能從 Codex 端 rollout 紀錄查出。
+  - **問題**：參數解析(`parseItem`/`parseBlock`/`Args`)在進入 `act(...)` 前拋出 `Args.BadArgument`，由 `ToolRegistry.call()` 直接轉成 `ERR INVALID_ARGUMENT` 回傳，未寫入 `ActionLog`。
+  - **方向**：在 `ToolRegistry` 捕獲 `Args.BadArgument` 與 `INTERNAL` 例外時透過回呼補記一筆 `ActionLog`，讓遊戲端日誌完整保存所有工具呼叫失敗紀錄。
