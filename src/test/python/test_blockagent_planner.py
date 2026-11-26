@@ -82,7 +82,7 @@ class PlannerTest(unittest.TestCase):
             release.wait(2)
             return PLAN
 
-        bridge = FakeBridge("[self]\nhp=20")
+        bridge = FakeBridge("[self]\nhp=20", {"world": 1, "revision": 2})
         output = io.StringIO()
         server = planner.Server("gpt-6.2-sol", backend, bridge, output)
         params = {"name": "request_plan", "arguments": REQUEST}
@@ -101,7 +101,7 @@ class PlannerTest(unittest.TestCase):
         self.assertFalse(rows[2]["isError"])
         self.assertEqual("BUSY", json.loads(rows[3]["content"][0]["text"])["code"])
         self.assertEqual([dict(REQUEST, game_snapshot="[self]\nhp=20")], seen)
-        self.assertEqual([dict(PLAN, goal="蓋屋")], bridge.delivered)
+        self.assertEqual([dict(PLAN, goal="蓋屋", basis={"world": 1, "revision": 2})], bridge.delivered)
         record = log.call_args.args[0]
         self.assertEqual({"input_tokens": 11}, record["usage"])
         self.assertTrue(record["delivered"])
@@ -171,15 +171,16 @@ class PlannerTest(unittest.TestCase):
 
 
 class FakeBridge:
-    def __init__(self, snapshot):
+    def __init__(self, snapshot, basis=None):
         self.snapshot = snapshot
+        self.basis = basis
         self.delivered = []
         self.fail_delivery = False
 
     def context(self):
         if self.snapshot is None:
             raise OSError("game is gone")
-        return self.snapshot
+        return self.snapshot, self.basis
 
     def deliver(self, payload):
         self.delivered.append(payload)

@@ -159,3 +159,133 @@
   - **位置**：`src/main/java/blockagent/game/combat/Combat.java:258-268,579-610`
   - **證據**：`NaturalCombatGameTest`(`seed=wild-158210`)密林情境中，最後一隻骷髏落入深水坑(`y=56`)，角色在 75 秒內反覆下水追擊並被 `drowning` 搶佔 3 次(雖 0 死亡且剩 12.5 HP，但大幅拉長交戰時間)。
   - **方向**：目標位於深水中時，有弓優先在岸上射擊；無弓且自身需要潛水才能追上時，縮短追擊時間或改為脫離，避免反覆下水與 `drowning` 循環。
+
+---
+
+## 2026-11-26 正式環境試玩審查(Prism Launcher)
+
+> 日期：2026-11-26
+> 來源：Prism Launcher `26.3` 實機試玩紀錄(`sp-Live_2026_11_25-94c75847`，`2026-11-26 19:42–20:50`，`blockagent 2026.11.26-1742` + `codex-mcp-client 0.172.0` + 規劃模型 `gpt-6.2-sol`，區網與 `Anne201624` 雙人生存)及對應 Codex 對話紀錄(`~/.blockagent/codex-home/sessions/2026/11/26/`)。
+> 局況摘要：總計 67.8 分鐘(`RUNNING` 66.8 分、`PAUSED` 0.6 分)、遊戲端 698 筆紀錄、Codex 端 585 次 MCP 呼叫(14 次錯誤，2.4%)、背景任務完成率 137/155(88.4%，不含 AI 主動取消為 137/150=91.3%)、死亡 0 次、無遊戲內 Java 例外或崩潰、0 次 `RULE_PROTECTED_*` 誤擋、0 次 `path_break`；自衛戰 5/5 擊殺(對骷髏成功格擋 4 箭、暴擊 11/22)；規劃服務 11 次全數成功(平均 13.04 秒)。
+
+### High(功能失效與嚴重體驗卡關)
+
+- [x] **R21. `equip(slot="armor")` 無法替換身上已穿的護甲**
+  - **位置**：`src/main/java/blockagent/game/Inv.java:400-405`、`src/main/java/blockagent/game/Tools.java:1317-1356`
+  - **證據**：`20:25:28` AI 合成全套鑽石護甲後連續呼叫 4 次 `equip(item="diamond_*", slot="armor")`，全數回報 `ERR INVALID_ARGUMENT ... now=iron_* | item was not equipped`；清完背包於 `20:25:39` 重試頭盔依舊失敗，最後 AI 改用 `use_item("diamond_*")` 右鍵才成功換裝(`20:47:28` 穿金靴時亦直接改用 `use_item`)。
+  - **問題**：`Inv.wear()` 使用 `ContainerInput.QUICK_MOVE`(Shift+左鍵)，Minecraft 原版僅在對應護甲欄為空時才會穿上；身上已穿舊護甲時只會在快捷列與主背包間移動物品，完全不會替換。
+  - **方向**：當目標護甲欄非空時，改以正常容器點擊對調(`PICKUP` 拿起新護甲 → `PICKUP` 點目標護甲槽 5/6/7/8 對調 → `PICKUP` 將換下的舊護甲放回原格)。
+  - **處理(2026-11-26)**：護甲欄有舊裝備時，透過容器點擊換穿新裝，舊裝回原格。空欄沿用快速移動。
+
+- [x] **R22. `get_players` 缺少睡眠狀態且無隊友入睡事件，導致夜間多次卡關**
+  - **位置**：`src/main/java/blockagent/game/Observation.java:475-520,539-600`
+  - **證據**：在「等 `Anne201624` 先睡再睡」的約定下，本局 3 個夜晚全數卡住：`19:57:21` 與 `20:08:04` `get_players` 皆僅回報 `activity=idle`，最後兩度由使用者手動接手(`19:57:27`、`20:10:19`)去睡；`20:42:23` 仍只回 `activity=idle`，AI 邀睡後原地乾等 75 秒，直到 `20:44:22` 使用者提醒「他睡了啊」才上床。
+  - **問題**：`Observation.activity()` 未檢查 `o.isSleeping()`，且 `Observation.tick()` 未在偵測到其他玩家入睡時發送喚醒事件。
+  - **方向**：在 `get_players` / `activity()` 加入 `sleeping` 狀態(`o.isSleeping()`)，並於夜間偵測到追蹤範圍內玩家入睡時送出 `PROMPT` 級事件(如 `player_sleeping`)喚醒 `wait_events`。
+  - **處理(2026-11-26)**：`get_players` 直接回報客戶端同步到的 `activity=sleeping`，每位追蹤玩家入睡時發送一次即時級 `player_sleeping`。
+
+- [x] **R23. 切換維度未喚醒 `wait_events`，且地獄門冷卻處理易空等 60 秒**
+  - **位置**：`src/main/java/blockagent/game/Observation.java:160-200,539-600`
+  - **證據**：本局 4 次穿越地獄門有 3 次白等 30–60 秒：`20:28:54` 返抵主世界後 `wait_events` 未喚醒，空等 60 秒至 `20:29:52` `idle_reminder`；`20:47:47` 進入地獄後同樣未喚醒，直到 31 秒後因朋友離線系統訊息才醒；`20:48:30` AI 只走出門框 1 格`(30,49,20)` 並在 0.1 秒後立刻折返`(29,49,20)`，未清掉傳送門冷卻便原地空等 60 秒，重試於 `20:49:48` 傳回主世界後又空等 31 秒直至使用者中斷。
+  - **問題**：`Observation.tick()` 未追蹤 `mc.level.dimension()` 變更並推送事件；`get_self` 亦未揭露傳送門冷卻狀態。
+  - **方向**：維度切換時於 `Observation.tick()` 立刻發送 `PROMPT` 級 `dimension_changed` 事件(附新維度與座標)；評估於 `get_self` 標示 `portal_cooldown`，避免剛出門框立刻折返無效。
+  - **處理(2026-11-26)**：維度變更推送即時級 `dimension_changed`，包含新舊維度、座標和冷卻。`get_self` 回報 `portal_cooldown` 剩餘 tick，冷卻期間提示留在門外。
+
+- [x] **R24. `use_block` 對門等可切換方塊未回報開關狀態，導致誤將大門重開**
+  - **位置**：`src/main/java/blockagent/game/Tools.java:1135-1146`
+  - **證據**：`20:24:52` 返家時新屋東門`(102,64,74)` 原本已開啟，`20:24:56` 呼叫 `use_block` 僅回 `OK used block=oak_door now=oak_door`(未顯示 `open=true/false`)，AI 誤關大門後於 `20:25:03` 進屋想關門又按一次反而把門重新打開，在門外有豬布林的情況下大門敞開達 1 分半(至 `20:26:37` `inspect_area` 才發現 `open=true`)。
+  - **問題**：`Tools.useBlock()` 僅以 `RuleGuard.shortId(...)` 回報方塊名稱，未附上開關類方塊的狀態屬性。
+  - **方向**：對具 `BlockStateProperties.OPEN` / `POWERED` / `LIT` 等互動狀態的方塊，在 `use_block` 回傳結果中附上操作後狀態(如 `open=false`)。
+  - **處理(2026-11-26)**：`use_block` 回報適用的 `open`、`powered`、`lit`。尚待伺服器更新的按鈕或拉桿先等狀態更新，逾時標記 `state_pending=true`。
+
+- [ ] **R25. 屋內積水/站於床格上導致 `goto` 陷入 `PathNode map size: 1` 鎖死且缺診斷資訊**
+  - **位置**：`src/main/java/blockagent/game/tasks/GotoTask.java:89-105`、`src/main/java/blockagent/mixin/CalculationContextMixin.java:19-28`
+  - **證據**：新屋內`(101,65,73)` 出現水源積水(AI 本身水桶全程未倒出，旁有 `owner=other` 牆火把 `(101,66,72)`)，AI 在 `20:24:59`(`98,64,76` 水流中)、`20:26:24` 與 `20:26:31`(`97,64,76` 棕色床頭格、旁有 `water[level=5]` 與自有木板牆)連續 3 次 `goto` 均於 `latest.log:471-498` 印出 `22 movements considered / Open set size: 0 / PathNode map size: 1`，在 5×5 屋內完全無法移動，最後由使用者於 `20:26:35` 暫停清掉水源。
+  - **問題**：在自有不可拆方塊包圍的室內站於床格/淺水流中時，Baritone 無法產生任何起步節點；且 `GotoTask` 失敗僅回傳通用訊息 `no path to ... (blocked, too far, or chunks not loaded)`，缺乏如 R8 `MineTask` 的周圍阻擋物診斷。
+  - **方向**：釐清 Baritone 在床格/室內水流搭配 `canPathBreak` 產生 `PathNode map size: 1` 的成因並修正起步限制；`GotoTask` 失敗時補上當前座標與腳下/周圍阻擋方塊摘要。
+  - **決定(2026-11-26)**：屋內積水與床格案例依使用者指定略過。
+  - **室外驗證與處理(2026-11-26)**：角色站在露天的一格深水流，或站在四周皆為水流的單一水源，均可重現 `PathNode map size: 1`。`goto` 正常尋路失敗時，從仍可踩地的室外淺水找最多 8 步的上岸路線，落地後重新尋路到原目標。遊戲測試驗證同高度的岸、高一格的岸、中止後放開移動鍵，以及有屋頂時沿用原本行為。
+
+- [ ] **R33. 豬布林(`Piglin`)一律歸為 `NEUTRAL` 且受限 6 格距離，遠程開弩或無金甲遇襲皆無自衛反應**
+  - **位置**：`src/main/java/blockagent/game/combat/Threats.java:71-76`、`src/main/java/blockagent/game/combat/Combat.java:167-180`、`src/main/java/blockagent/game/combat/ShieldGuard.java:137-148`
+  - **證據**：`20:24:52` 角色身穿全套鐵甲(無金甲)，門口 `piglin id=10929` 距離 7 格；`20:24:56` 遭該豬布林擊中(`[URGENT] attacked: by=piglin id=10929 lost=2 hp=18`)，全程未觸發 `self_defense`，也未舉盾或反擊。
+  - **問題**：`Threats.kind()` 將 `AbstractPiglin` 排在 `if (ranged(e))` 之前並一律歸類為 `Kind.NEUTRAL`，而 `Combat.pickThreat()` 對 `NEUTRAL` 限制 `d <= 6`，導致 7–16 格開弩射擊或追打的豬布林即使已打傷玩家(`hurtMe=true`)仍不觸發自衛；就算進入 6 格內也走 `melee()` 而非 `ranged()`，`ShieldGuard.canSafelyStop()` 亦未將其視為遠程威脅，且未依玩家是否穿戴金甲區分敵意。
+  - **方向**：依玩家是否穿戴金甲區分一般豬布林是否中立；敵對或已攻擊玩家的拿弩豬布林應視為 `RANGED`(16 格內觸發、舉盾與 `rangedStance` 應對)，近戰豬布林在 `hurtMe` 時比照 `MELEE` 套用 `MELEE_RANGE`(8 格)。
+
+- [x] **R34. 地獄/終界仍推送主世界日夜與 `can_sleep` 事件，且 `sleep` 未封鎖會引爆床的維度**
+  - **位置**：`src/main/java/blockagent/game/Observation.java:122-124,143,572-601`、`src/main/java/blockagent/game/Tools.java:1375-1402`
+  - **證據**：`20:28:36`、`20:48:21`、`20:49:40` 位於地獄(`dim=the_nether`)時，`get_surroundings` 與 `get_self` 仍顯示 `time=night day_in=83s` / `time=day dusk_in=6min weather=clear`。
+  - **問題**：`Observation.tick()` 未檢查維度是否為主世界，在地獄或終界待到主世界黃昏會照常推送 `can_sleep`(提示「可以上床睡覺」)與 `night_falling`/`daybreak`；`Tools.sleep()` 亦未擋下非主世界維度，一旦於地獄/終界嘗試 `sleep` 會引爆床炸死角色。
+  - **方向**：僅在主世界(或 `bedWorks()` 為 true 的維度)發送日夜/可睡事件與顯示主世界天色；`Tools.sleep()` 在不可睡床的維度直接回傳錯誤並說明原因。
+  - **處理(2026-11-26)**：非主世界省略主世界日夜與可睡事件。`sleep` 及實際互動前依原版床頭位置的床規則檢查，拒用會爆炸或不可睡的床。
+
+- [x] **R35. Baritone 預設 `allowWaterBucketFall=true` 主動跳深坑並與 `FALL` 反射互打，且 `FALL` 未排除地獄蒸發**
+  - **位置**：`src/main/java/blockagent/game/Bari.java:16-40`、`src/main/java/blockagent/game/reflex/Reflexes.java:59,296-300,534-556`
+  - **證據**：`20:37:41` `goto` 下樓跨落 4 格、`20:45:13` `mine(gold_ore)` 途中 Baritone 從 `y=34` 直接跳下 `y=24`(落差 10 格)的全黑洞穴(`light=0`，隨即觸發 `danger_rising: dark,hostiles:3`)；兩次 `FALL` 反射各只花 0.26 秒與 0.60 秒便安全水桶落地並舀回水，卻因 `FALL("survival", true)` 設為 `cancelsTask=true` 直接強制取消任務(`INTERRUPTED`)。
+  - **問題**：`Bari.java` 未關閉 Baritone 預設的 `allowWaterBucketFall=true`，導致身上帶水桶時尋路主動規劃跳深洞，起跳後又立刻被 `FALL` 反射接管並中止任務；另 `Reflexes.FALL` 未檢查維度是否禁水(地獄倒水會瞬間蒸發並卡等 2 秒嘗試舀回)。
+  - **方向**：評估於 `Bari.applySettings()` 關閉 `allowWaterBucketFall`(避免尋路主動規劃高落差跳躍)；`Reflexes.FALL` 在不可放水的維度(地獄)不觸發倒水，並評估安全落地後改為暫停恢復而非一律取消任務。
+  - **處理(2026-11-26)**：關閉 Baritone 主動規劃水桶跳落。在水會蒸發的位置不執行水桶反射。正常落地後恢復任務，確認不了落地才回報中斷。
+
+### Medium(規劃快取、採礦與跟隨體驗)
+
+- [ ] **R26. Planner(`gpt-6.2-sol`)Prompt Cache 命中率仍為 0%(R9 修正未生效)，且過時計畫會覆蓋新進度**
+  - **位置**：`bin/blockagent-planner:158-203`、`src/main/java/blockagent/game/Agent.java:394-440`
+  - **證據**：本局 11 次規劃總計 62,632 input tokens(其中 4 組相鄰間隔僅 81–103 秒)，但 `blockagent-planner-usage.jsonl` 顯示 11 次 `cached_input_tokens` 全數為 `0`(對比主遊戲 Codex 對話串快取命中率達 97.6%)。另 `20:28:31` 與 `20:37:50` 兩次 `plan_ready` 到達時 AI 已在 11–13 秒等待期間切換維度或移動到岸邊，新計畫第 1 步已過時卻仍覆蓋目前步驟。
+  - **問題**：雖已固定 `planner-workdir` 與輸入順序，但每次仍啟動全新 `codex exec --ephemeral`，每次產生新的 session/thread UUID(作為 `prompt_cache_key`)，導致無法跨次命中快取；且 `acceptPlan` 未比對快照與當前狀態差異。
+  - **方向**：評估讓規劃服務重用長駐 session/固定 `prompt_cache_key`(或確認 Codex CLI 支援參數)以實際啟用 Prompt Cache；檢查非同步規劃抵達時若維度或情境已變，標註快照時間差或提醒 AI 跳過已完成步驟。
+  - **部分處理(2026-11-26)**：跨維度、離開快照位置超過 8 格或已有計畫進展時，送出 `plan_stale` 建議並保留現在的計畫。不同世界的結果直接拒絕。另用本機假模型驗證 Codex CLI 0.172.0 兩次相同規劃請求送出不同 `prompt_cache_key`。快取命中率及跨請求重用仍待驗證。
+
+- [x] **R27. `mine` 遇埋藏岩層內礦脈被 Baritone 回報 `No locations known` 時，誤報為他人方塊擋路**
+  - **位置**：`src/main/java/blockagent/game/tasks/MineTask.java:168-179`
+  - **證據**：`20:18:14`、`20:18:31` 在地下 `y=-12` 想採 4 格外的 4 塊 `deepslate_diamond_ore`(周圍全為天然深板岩與礫石，`air=0`)，Baritone 1 秒內印出 `No locations for diamond_ore known, cancelling`(`latest.log:426-427`)，`MineTask` 卻回報 `PATH_BLOCKED ... (terrain or others' blocks in the way; the rules forbid breaking those)`；AI 改以 `break_block` 挖露出一格後，`20:19:01` `mine` 隨即成功。
+  - **問題**：`MineTask` 在 `!isActive()` 時只要 `Moves.scan` 找得到目標方塊，就一律套用暗示「他人方塊擋路」的錯誤文字，未區分實際是否有受保護方塊阻擋或僅為 Baritone 未掃描/黑名單。
+  - **方向**：區分「周圍存在不可破壞方塊」與「目標埋在岩層中/未被 Baritone 掃描到」，回報準確原因與下一步建議(如先 `break_block` 挖露或改用 `goto` 靠近)。
+  - **處理(2026-11-26)**：分別回報目標受規則保護、找不到目標或有礦但路徑不可達。不可達時附上礦脈座標、露出狀態、受保護面數和周圍方塊，依現況提示靠近或挖露。
+
+- [x] **R28. `till_and_plant` 與 `harvest` 不支援西瓜/南瓜，與規劃步驟脫節**
+  - **位置**：`src/main/java/blockagent/game/tasks/FarmTask.java:32-35`、`src/main/java/blockagent/game/Tools.java:933-967`
+  - **證據**：`19:58:19` Planner 明確指示用 `till_and_plant` 種植西瓜種子，但 `FarmTask.CROP_OF` 僅列小麥/胡蘿蔔/馬鈴薯/甜菜根，AI 於 `19:58:43` 自行發現工具不支援，改以手動 `use_item` 鋤地、播種並清落葉。
+  - **方向**：評估讓 `till_and_plant` 支援 `melon_seeds`/`pumpkin_seeds`(或於工具說明/規劃提示詞明確標示支援作物清單)，並補上對應果實採收說明。
+  - **處理(2026-11-26)**：播種支援西瓜與南瓜。採收只收與自有藤蔓相連的果實，藤蔓掛果及恢復時保留所有權。
+
+- [x] **R29. `follow` 目標在無法抵達樓層時持續重算尋路並連觸發 `unstuck`，耗滿逾時仍報完成**
+  - **位置**：`src/main/java/blockagent/game/tasks/FollowTask.java:54-80`
+  - **證據**：`20:36:37–20:37:11` 呼叫 `follow(Anne201624, distance=2, max_sec=30)` 欲送魚給樓上(`y=73`)的朋友，角色卡在樓下(`y=70`)無法上樓；`FollowTask` 每 10 tick 不斷重送同一目標，使 Baritone 連續 10 次跑完約 660 萬 movements 的高耗時搜索(`latest.log:585-620`)並觸發 2 次 `unstuck`，拖滿 30 秒後仍回 `task_done`(`followed=30/30s dist=3`)。
+  - **問題**：`FollowTask` 未偵測對同一無法抵達座標連續尋路失敗或反覆觸發 `unstuck`，導致白耗 CPU 與等待時間。
+  - **方向**：對未移動的目標連續尋路無路可走或連續觸發 `unstuck` 達上限時，提早以 `PATH_BLOCKED` 結束並回報雙方座標與高度差。
+  - **處理(2026-11-26)**：到達判斷納入高度差。同一帶反覆尋路失敗或原地無進展時，提早以 `PATH_BLOCKED` 回報雙方座標和高度差。
+
+- [x] **R36. `craft` 只挑直線最近工作台，夜間帶 AI 走出安全屋去用屋外別人的工作台**
+  - **位置**：`src/main/java/blockagent/game/Tools.java:812-813`
+  - **證據**：`19:43:14` 夜間屋外 `danger=high`(3 隻敵怪)，AI 原本待在照明良好的舊屋內`(87,67,226)` 且背包剛做好一張 `crafting_table`，接著呼叫 `craft(chest)` 與 `craft(furnace)` 時，`Tools.craft` 掃到屋外 6 格別人放的工作台`(91,66,230 owner=other)`，直接開門走進黑夜怪堆合成(`19:43:22` AI 回報「合成時走到了屋外，我先回到舊屋避開附近怪物」)。
+  - **問題**：不同於 `SmeltTask` 會優先挑自有設施，`Tools.craft` 僅以 `Moves.scan(..., 16, 1, null)` 取直線最近的一張，不區分自有/他人、室內/室外或夜間高危險環境。
+  - **方向**：比照 `SmeltTask` 優先選自有且不需離開安全區域的近處工作台，或在夜間/高危險且背包已有工作台時優先就近放置使用。
+  - **處理(2026-11-26)**：合成優先選有清楚視線且伸手可及的工作台，低或中危險時再考慮附近自有或他人工作台，高危險時優先在原地放置。
+
+- [x] **R37. `find_blocks` 缺少高度範圍(`min_y`/`max_y`)篩選，迫使 AI 連刷 27 次 `inspect_area` 切片掃地表**
+  - **位置**：`src/main/java/blockagent/game/Tools.java:395-401,1112-1133`
+  - **證據**：`20:06–20:09` 尋找地表熔岩池時，`find_blocks(type="lava", radius=96, max=20)` 結果全被地底 `y=17–27` 佔滿；因無法限定高度，AI 在 3 分鐘內連續呼叫 27 次 `inspect_area` 手動切 `64×8×64` 方盒掃描(全場 70 次居冠，且撞上 `area is larger than 32768 blocks` 與 `max must be between 1 and 50`)，加速對話 context 膨脹(67 分鐘內觸發 3 次 compaction)。
+  - **方向**：於 `find_blocks` 新增可選的 `min_y`/`max_y` 高度篩選參數(必要時支援 `source_only` 過濾流體來源)，一次即可精準定位地表或目標礦層。
+  - **處理(2026-11-26)**：`find_blocks` 支援 `min_y`、`max_y` 與 `source_only`，先篩選再套用每種方塊的 `max`。
+
+### Low(日誌與細節修正)
+
+- [x] **R30. `Tools.smelt` 啟動回傳之 `furnace=` 與 `SmeltTask` 實際優先選用的自有熔爐不一致**
+  - **位置**：`src/main/java/blockagent/game/Tools.java:1452-1458`、`src/main/java/blockagent/game/tasks/SmeltTask.java:89-91`
+  - **證據**：`20:36:10` 在岸邊`(122,63,73)` 呼叫 `smelt(cod, count=2)`，`Tools.smelt` 以 `Moves.scan(..., 32, 1, null)` 抓直線最近者而回報 `furnace=110,74,74`(朋友家樓上)，但 `SmeltTask` 內部會優先挑選自有熔爐(`isOwned`)，實際走回自家熔爐`(99,64,72)` 完成。
+  - **方向**：抽出共用的熔爐挑選邏輯(優先自有熔爐)，讓預檢回傳與實際執行一致。
+  - **處理(2026-11-26)**：預檢與任務共用熔爐選擇，啟動回應列出的自有熔爐就是實際優先嘗試的位置。
+
+- [x] **R31. `CraftTask` 於 `task_start` 日誌將合成前既有庫存算進 `made=`**
+  - **位置**：`src/main/java/blockagent/game/tasks/TaskRunner.java:89-91`、`src/main/java/blockagent/game/tasks/CraftTask.java:79-96`
+  - **證據**：`20261126-194237.jsonl` 多次於 `task_start` 印出 `craft item=torch made=14/8 step=0/1`、`made=17/16`、`made=8/4`。
+  - **問題**：`TaskRunner.start()` 在呼叫 `t.start(mc)` 之前即先記錄 `t.progress()`，此時 `CraftTask.startTargetCount` 尚未初始化(為 `0`)，導致 `Inv.count - startTargetCount` 誤計為既有數量。
+  - **方向**：改於 `t.start(mc)` 完成初始化後(或在建構子/進入前先初始化基準值)再寫入 `task_start` 進度。
+  - **處理(2026-11-26)**：`task_start` 在任務初始化後記錄，合成進度以起始庫存為基準。
+
+- [ ] **R32. 混戰收尾 13ms 後立刻重啟 `self_defense`，且對非強制工具方塊缺工具提醒**
+  - **位置**：`src/main/java/blockagent/game/combat/Combat.java:256-275`、`src/main/java/blockagent/game/tasks/MineTask.java:120-130`
+  - **證據**：`19:54:26.632` 混戰擊殺第一隻骷髏與蜘蛛後結束自衛反射，僅 13ms 後(`19:54:26.645`)即對 5.8 格外的第二隻骷髏再次觸發 `self_defense_start`；另 `19:45:27` AI 在背包無斧頭時直接徒手 `mine(jungle_log)`，直至 `19:46:06` 使用者提醒「採集工具呢」才中止改做石斧。
+  - **方向**：`Combat.finished()` 在目標陣亡時檢查交戰範圍內是否已有其他立即威脅，若有則直接轉目標避免反覆進出反射；`MineTask` 開始採集原木/泥土等有加速工具的方塊時，若無對應工具可於回傳附上 `warn="no axe/shovel in inventory"` 提醒 AI。
+
+  - **部分處理(2026-11-26)**：缺斧或鏟時在 `mine` 啟動回應附提醒。混戰接續留在戰鬥批次。

@@ -128,6 +128,13 @@ public final class StationTask extends Task {
 				}
 			}
 			case USE -> {
+				if (mode == Mode.SLEEP) {
+					var state = mc.level.getBlockState(pos);
+					if (!state.is(net.minecraft.tags.BlockTags.BEDS) || !blockagent.game.Observation.bedUsable(mc.level, pos, state)) {
+						fail(ErrorCode.INVALID_ARGUMENT, "bed cannot be used safely here");
+						return;
+					}
+				}
 				Inv.selectInHand(mc, ItemStack::isEmpty);
 				var r = Moves.useOn(mc, pos, Moves.faceToward(mc.player, pos));
 				if (!r.consumesAction() && mode != Mode.SLEEP) {

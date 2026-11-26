@@ -112,6 +112,19 @@
           "minimum": 1,
           "maximum": 50,
           "default": 10
+        },
+        "min_y": {
+          "type": "integer",
+          "description": "Minimum Y (inclusive)"
+        },
+        "max_y": {
+          "type": "integer",
+          "description": "Maximum Y (inclusive)"
+        },
+        "source_only": {
+          "type": "boolean",
+          "description": "Only fluid source blocks",
+          "default": false
         }
       },
       "additionalProperties": false,
@@ -281,7 +294,7 @@
   },
   {
     "name": "plan",
-    "description": "Your current plan (kept by the mod; plan_ready from request_plan replaces it). Task results and idle reminders show the current step as plan_step\u003dn/m. show (default); done \u003d the current step is complete, move to the next; set \u003d write your own plan (replaces it); clear.",
+    "description": "Your current plan (kept by the mod; a fresh result from request_plan replaces it). Task results and idle reminders show the current step as plan_step\u003dn/m. show (default); done \u003d the current step is complete, move to the next; set \u003d write your own plan (replaces it); clear.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -614,7 +627,7 @@
   },
   {
     "name": "use_block",
-    "description": "Right-click a block within reach: doors, buttons, levers, containers, stations.",
+    "description": "Right-click a block within reach and report open/powered/lit when applicable.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -918,7 +931,7 @@
   },
   {
     "name": "craft",
-    "description": "Craft items. Uses a crafting table within 16 blocks (anyone\u0027s) or places one from inventory materials. Missing materials are reported up front; it never gathers.",
+    "description": "Craft items. Prefers a reachable or owned crafting table; can place one nearby from inventory materials. Missing materials are reported up front; it never gathers.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1270,7 +1283,7 @@
   },
   {
     "name": "till_and_plant",
-    "description": "Till natural dirt or grass in an area into farmland and plant seeds. y \u003d ground level.",
+    "description": "Till natural dirt or grass and plant seeds. Use ground-level y. Leave an empty adjacent cell over soil for melons/pumpkins to grow.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1288,7 +1301,9 @@
             "wheat_seeds",
             "carrot",
             "potato",
-            "beetroot_seeds"
+            "beetroot_seeds",
+            "melon_seeds",
+            "pumpkin_seeds"
           ]
         },
         "replace": {
@@ -1318,7 +1333,7 @@
   },
   {
     "name": "harvest",
-    "description": "Harvest ripe crops you planted in an area and replant.",
+    "description": "Harvest ripe crops you planted and fruits linked to your melon or pumpkin stems. Keeps the stems for regrowth.",
     "inputSchema": {
       "type": "object",
       "properties": {

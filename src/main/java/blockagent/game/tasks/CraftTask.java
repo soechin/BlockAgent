@@ -1,6 +1,7 @@
 package blockagent.game.tasks;
 
 import baritone.api.pathing.goals.GoalGetToBlock;
+import blockagent.core.CombatPolicy;
 import blockagent.core.Recipes;
 import blockagent.game.Agent;
 import blockagent.game.Bari;
@@ -15,7 +16,10 @@ import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.CraftingMenu;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -39,7 +43,7 @@ public final class CraftTask extends Task {
 	private List<int[]> cells; // {gridIndex, ingredientIndex}
 	private int cellIdx;
 	private int waitTicks;
-	private int startTargetCount;
+	private int startTargetCount = -1;
 	private boolean ownTableUsed;
 	/** 剛拿出產物：拿的是什麼、拿之前背包裡有幾個(null 表示這一批還沒拿)。 */
 	private Item takeItem;
@@ -66,6 +70,32 @@ public final class CraftTask extends Task {
 		return BuiltInRegistries.ITEM.getValue(Identifier.parse(id));
 	}
 
+	public static BlockPos findTable(Agent agent, Minecraft mc) {
+		BlockPos reachable = Moves.scan(mc, List.of(Blocks.CRAFTING_TABLE), 6, 1, p -> tableInReach(mc, p)).stream().findFirst().orElse(null);
+		if (reachable != null) return reachable;
+		if (avoidWalkingForTable(agent, mc)) return null;
+		BlockPos owned = Moves.scan(mc, List.of(Blocks.CRAFTING_TABLE), 16, 1, agent.guard::isOwned).stream().findFirst().orElse(null);
+		if (owned != null) return owned;
+		return Moves.scan(mc, List.of(Blocks.CRAFTING_TABLE), 16, 1, null).stream().findFirst().orElse(null);
+	}
+
+	private static boolean avoidWalkingForTable(Agent agent, Minecraft mc) {
+		return !mc.player.getAbilities().invulnerable && agent.observation.danger(mc).level() == CombatPolicy.DangerLevel.HIGH;
+	}
+
+	private static boolean localPlacementVisible(Minecraft mc, BlockPos pos) {
+		var hit = mc.level.clip(new ClipContext(mc.player.getEyePosition(), Vec3.atCenterOf(pos.below()),
+			ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, mc.player));
+		return hit.getBlockPos().equals(pos.below()) && hit.getDirection() == Direction.UP;
+	}
+
+	private static boolean tableInReach(Minecraft mc, BlockPos table) {
+		if (!Moves.canReach(mc.player, table)) return false;
+		var hit = mc.level.clip(new ClipContext(mc.player.getEyePosition(), Vec3.atCenterOf(table),
+			ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, mc.player));
+		return hit.getBlockPos().equals(table) && hit.getType() == HitResult.Type.BLOCK;
+	}
+
 	@Override
 	public String describe() {
 		return "合成 " + name(item(target)) + "×" + count;
@@ -78,7 +108,7 @@ public final class CraftTask extends Task {
 	@Override
 	public String progress() {
 		Minecraft mc = Minecraft.getInstance();
-		int have = mc.player == null ? 0 : Inv.count(mc.player, item(target)) - startTargetCount;
+		int have = mc.player == null || startTargetCount < 0 ? 0 : Inv.count(mc.player, item(target)) - startTargetCount;
 		return "item=" + shortId(target) + " made=" + Math.max(0, have) + "/" + count + " step=" + Math.min(plan.steps().size(), Math.max(0, stepIdx + 1)) + "/" + plan.steps().size();
 	}
 
@@ -124,10 +154,11 @@ public final class CraftTask extends Task {
 				Recipes.Step s = step();
 				craftsLeft = s.crafts();
 				if (s.recipe().needsTable() && !onTable()) {
-					if (tablePos == null || !mc.level.getBlockState(tablePos).is(Blocks.CRAFTING_TABLE)) {
+					if (tablePos == null || !mc.level.getBlockState(tablePos).is(Blocks.CRAFTING_TABLE)
+						|| !tableInReach(mc, tablePos) && avoidWalkingForTable(agent, mc)) {
 						phase = Phase.PLACE_TABLE;
 					} else {
-						phase = Moves.canReach(mc.player, tablePos) ? Phase.OPEN : Phase.WALK;
+						phase = tableInReach(mc, tablePos) ? Phase.OPEN : Phase.WALK;
 						if (phase == Phase.WALK) path(new GoalGetToBlock(tablePos));
 					}
 				} else {
@@ -138,7 +169,9 @@ public final class CraftTask extends Task {
 			case PLACE_TABLE -> {
 				MenuOps.close(mc);
 				if (waitTicks++ == 0) {
-					BlockPos spot = Moves.findPlaceSpot(mc, p -> agent.guard.canPlaceInto(mc.level, p).allowed());
+					boolean sheltered = avoidWalkingForTable(agent, mc) && !mc.level.canSeeSky(mc.player.blockPosition().above());
+					BlockPos spot = Moves.findPlaceSpot(mc, p -> agent.guard.canPlaceInto(mc.level, p).allowed()
+						&& (!sheltered || !mc.level.canSeeSky(p.above()) && localPlacementVisible(mc, p)));
 					if (spot == null || !Inv.selectInHand(mc, s -> s.is(Items.CRAFTING_TABLE))) {
 						fail(ErrorCode.NO_STATION, spot == null ? "no free spot to place a crafting table" : "no crafting table in inventory");
 						return;
@@ -154,7 +187,12 @@ public final class CraftTask extends Task {
 				}
 			}
 			case WALK -> {
-				if (Moves.canReach(mc.player, tablePos)) {
+				boolean inReach = tableInReach(mc, tablePos);
+				if (!inReach && avoidWalkingForTable(agent, mc)) {
+					Bari.stopAll();
+					phase = Phase.PLACE_TABLE;
+					waitTicks = 0;
+				} else if (inReach) {
 					Bari.stopAll();
 					phase = Phase.OPEN;
 					waitTicks = 0;
@@ -334,7 +372,7 @@ public final class CraftTask extends Task {
 					phase = Phase.NEXT_STEP;
 				} else if (step().recipe().needsTable()) {
 					if (tablePos == null || !mc.level.getBlockState(tablePos).is(Blocks.CRAFTING_TABLE)) phase = Phase.PLACE_TABLE;
-					else if (Moves.canReach(mc.player, tablePos)) phase = Phase.OPEN;
+					else if (tableInReach(mc, tablePos)) phase = Phase.OPEN;
 					else {
 						phase = Phase.WALK;
 						path(new GoalGetToBlock(tablePos));
@@ -346,7 +384,7 @@ public final class CraftTask extends Task {
 			// 已經放好的工作台不要再放一次；若被反射拉遠，先走回工作台旁再開(P3-H7)
 			case PLACE_TABLE -> {
 				if (tablePos != null && mc.level.getBlockState(tablePos).is(Blocks.CRAFTING_TABLE)) {
-					if (Moves.canReach(mc.player, tablePos)) phase = Phase.OPEN;
+					if (tableInReach(mc, tablePos)) phase = Phase.OPEN;
 					else {
 						phase = Phase.WALK;
 						path(new GoalGetToBlock(tablePos));

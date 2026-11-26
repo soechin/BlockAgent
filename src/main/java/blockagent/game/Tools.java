@@ -45,6 +45,8 @@ import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.ItemTags;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.attribute.EnvironmentAttributes;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
@@ -58,6 +60,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
@@ -390,14 +393,19 @@ public final class Tools {
 			});
 		t.register("find_blocks", "Find the nearest blocks of given types in loaded chunks, with owner.",
 			Hints.READ, Schema.object().string("type", "Block id or group (log, bed, door, stairs, slab, fence, trapdoor, plank, wool, crop, sapling, iron_ore incl. deepslate); comma-separate up to 8", true)
-				.integer("radius", null, false).range(4, 96).def(48).integer("max", "Per type", false).range(1, 50).def(10).build(),
+				.integer("radius", null, false).range(4, 96).def(48).integer("max", "Per type", false).range(1, 50).def(10)
+				.integer("min_y", "Minimum Y (inclusive)", false).integer("max_y", "Maximum Y (inclusive)", false)
+				.bool("source_only", "Only fluid source blocks", false).def(false).build(),
 			args -> {
 				Args g = new Args(args);
 				List<String> types = parseTypeList(g.str("type"), "type");
 				Map<String, List<Block>> groups = new LinkedHashMap<>();
 				for (String s : types) groups.put(s, parseBlockGroup(s));
 				int r = g.integer("radius", 48, 4, 96), max = g.integer("max", 10, 1, 50);
-				return observe(mc -> findBlocks(a, mc, groups, r, max));
+				int minY = g.integer("min_y", Integer.MIN_VALUE), maxY = g.integer("max_y", Integer.MAX_VALUE);
+				if (minY > maxY) throw new Args.BadArgument("min_y must be <= max_y");
+				boolean sourceOnly = g.bool("source_only", false);
+				return observe(mc -> findBlocks(a, mc, groups, r, max, minY, maxY, sourceOnly));
 			});
 		t.register("get_players", "Other players in tracking range: pos, direction, held item, armor, recent activity (guessed).",
 			Hints.READ, Schema.object().build(), args -> observe(mc -> ToolResult.ok(a.observation.players(mc))));
@@ -474,7 +482,7 @@ public final class Tools {
 			});
 
 		// ===== 計畫(S5.6) =====
-		t.register("plan", "Your current plan (kept by the mod; plan_ready from request_plan replaces it). "
+		t.register("plan", "Your current plan (kept by the mod; a fresh result from request_plan replaces it). "
 				+ "Task results and idle reminders show the current step as plan_step=n/m. "
 				+ "show (default); done = the current step is complete, move to the next; set = write your own plan "
 				+ "(replaces it); clear.",
@@ -662,11 +670,11 @@ public final class Tools {
 				if (facing != null) return act(a, "place_block", args, mc -> placeFacing(a, mc, p, item, facing, replace));
 				return actConfirmed(a, "place_block", args, mc -> placeBlock(a, mc, p, item, replace));
 			});
-		t.register("use_block", "Right-click a block within reach: doors, buttons, levers, containers, stations.",
+		t.register("use_block", "Right-click a block within reach and report open/powered/lit when applicable.",
 			Hints.ACTION, xyz(Schema.object()).build(),
 			args -> {
 				BlockPos p = pos(new Args(args), "");
-				return act(a, "use_block", args, mc -> useBlock(a, mc, p));
+				return actConfirmed(a, "use_block", args, mc -> useBlock(a, mc, p));
 			});
 		t.register("equip", "Equip an item to the main hand, off hand, or its armor slot.",
 			Hints.IDEMPOTENT, Schema.object().string("item", null, true)
@@ -794,13 +802,19 @@ public final class Tools {
 					}
 					List<BlockPos> found = Moves.scan(mc, blocks, r, count, p -> a.guard.canBreak(mc.level, p).allowed());
 					if (found.isEmpty() && !search) return notFoundBlocks(label, r);
+					List<String> warnings = new ArrayList<>();
+					if (found.size() < count) warnings.add(search ? "not enough loaded; will search outward" : "not enough loaded; may stop early");
+					if (!creative && !st.requiresCorrectToolForDrops()) {
+						var tag = st.is(BlockTags.MINEABLE_WITH_AXE) ? ItemTags.AXES
+							: st.is(BlockTags.MINEABLE_WITH_SHOVEL) ? ItemTags.SHOVELS : null;
+						if (tag != null && Inv.find(mc.player, stack -> stack.is(tag)) < 0) warnings.add("no " + toolHint(st) + " in inventory");
+					}
 					Kv pre = Kv.of().put("found", found.size() + (found.size() >= count ? "+" : ""))
-						.putIf(found.size() < count, "warn", search ? "not enough loaded; will search outward" : "not enough loaded; may stop early")
-						.raw(Creative.noDropsNote(mc));
+						.putIf(!warnings.isEmpty(), "warn", String.join("; ", warnings)).raw(Creative.noDropsNote(mc));
 					return a.tasks.start(new MineTask(a, blocks, label, count, r, search), g.bool("replace", false), pre.toString());
 				});
 			});
-		taskTool(t, a, "craft", "Craft items. Uses a crafting table within 16 blocks (anyone's) or places one from inventory "
+		taskTool(t, a, "craft", "Craft items. Prefers a reachable or owned crafting table; can place one nearby from inventory "
 				+ "materials. Missing materials are reported up front; it never gathers.",
 			Hints.ACTION, Schema.object().string("item", null, true).integer("count", null, false).range(1, 64 * 9).def(1),
 			args -> {
@@ -809,8 +823,7 @@ public final class Tools {
 				int count = g.integer("count", 1, 1, 64 * 9);
 				return act(a, "craft", args, mc -> {
 					String id = BuiltInRegistries.ITEM.getKey(item).toString();
-					List<BlockPos> tables = Moves.scan(mc, List.of(Blocks.CRAFTING_TABLE), 16, 1, null);
-					BlockPos table = tables.isEmpty() ? null : tables.getFirst();
+					BlockPos table = CraftTask.findTable(a, mc);
 					Map<String, Integer> inv = new HashMap<>();
 					Inv.summaryWithOffhand(mc.player).forEach((k, v) -> inv.put("minecraft:" + k, v));
 					if (a.recipes.craftingRecipesFor(id).isEmpty()) {
@@ -930,8 +943,8 @@ public final class Tools {
 				if (action.equals("list") || action.equals("show") || action.equals("delete")) return observe(mc -> Blueprints.run(a, mc, g, action));
 				return act(a, "build_blueprint", args, mc -> Blueprints.run(a, mc, g, action));
 			});
-		taskTool(t, a, "till_and_plant", "Till natural dirt or grass in an area into farmland and plant seeds. y = ground level.",
-			Hints.ACTION, area(Schema.object()).enumString("seed", null, true, "wheat_seeds", "carrot", "potato", "beetroot_seeds"),
+		taskTool(t, a, "till_and_plant", "Till natural dirt or grass and plant seeds. Use ground-level y. Leave an empty adjacent cell over soil for melons/pumpkins to grow.",
+			Hints.ACTION, area(Schema.object()).enumString("seed", null, true, "wheat_seeds", "carrot", "potato", "beetroot_seeds", "melon_seeds", "pumpkin_seeds"),
 			args -> {
 				Args g = new Args(args);
 				BlockPos c1 = corner(g, "from"), c2 = corner(g, "to");
@@ -939,7 +952,7 @@ public final class Tools {
 				if (!FarmTask.CROP_OF.containsKey(seed)) throw new Args.BadArgument("unsupported seed: " + g.str("seed"));
 				return act(a, "till_and_plant", args, mc -> tillAndPlant(a, mc, c1, c2, seed, g.bool("replace", false)));
 			});
-		taskTool(t, a, "harvest", "Harvest ripe crops you planted in an area and replant.",
+		taskTool(t, a, "harvest", "Harvest ripe crops you planted and fruits linked to your melon or pumpkin stems. Keeps the stems for regrowth.",
 			Hints.ACTION, area(Schema.object()).bool("replant", null, false).def(true),
 			args -> {
 				Args g = new Args(args);
@@ -955,7 +968,7 @@ public final class Tools {
 					List<BlockPos> crops = new ArrayList<>();
 					for (BlockPos p : scan.positions()) {
 						BlockState st = mc.level.getBlockState(p);
-						if (st.getBlock() instanceof net.minecraft.world.level.block.CropBlock cb && cb.isMaxAge(st) && a.guard.isOwned(p)) crops.add(p.immutable());
+						if (FarmTask.harvestable(a, mc.level, p, st)) crops.add(p.immutable());
 					}
 					if (crops.isEmpty()) {
 						return ToolResult.error(ErrorCode.NOT_FOUND, Kv.of().put("from", Fmt.pos(c1)).put("to", Fmt.pos(c2)),
@@ -1109,12 +1122,12 @@ public final class Tools {
 			"explore elsewhere, or mine with search=true");
 	}
 
-	private static ToolResult findBlocks(Agent a, Minecraft mc, Map<String, List<Block>> groups, int r, int max) {
+	private static ToolResult findBlocks(Agent a, Minecraft mc, Map<String, List<Block>> groups, int r, int max, int minY, int maxY, boolean sourceOnly) {
 		List<String> missing = new ArrayList<>();
 		StringBuilder sb = new StringBuilder();
 		Vec3 me = mc.player.position();
 		for (var en : groups.entrySet()) {
-			List<BlockPos> found = Moves.scan(mc, en.getValue(), r, max, null);
+			List<BlockPos> found = Moves.scan(mc, en.getValue(), r, max, minY, maxY, sourceOnly ? p -> mc.level.getFluidState(p).isSource() : null);
 			if (found.isEmpty()) {
 				missing.add(en.getKey());
 				continue;
@@ -1127,22 +1140,47 @@ public final class Tools {
 					.put("owner", Fmt.owner(a, p, st)));
 			}
 		}
-		if (sb.isEmpty()) return notFoundBlocks(String.join(",", missing), r);
+		if (sb.isEmpty()) {
+			if (minY == Integer.MIN_VALUE && maxY == Integer.MAX_VALUE && !sourceOnly) return notFoundBlocks(String.join(",", missing), r);
+			return ToolResult.error(ErrorCode.NOT_FOUND, Kv.of().put("type", String.join(",", missing)).put("radius", r)
+				.putIf(minY != Integer.MIN_VALUE, "min_y", minY).putIf(maxY != Integer.MAX_VALUE, "max_y", maxY)
+				.putIf(sourceOnly, "source_only", true), "none found in loaded chunks matching the filters");
+		}
 		if (!missing.isEmpty()) sb.append('\n').append(Kv.of().put("not_found", String.join(",", missing)).put("radius", r));
 		return ToolResult.ok(sb.toString());
 	}
 
-	private static ToolResult useBlock(Agent a, Minecraft mc, BlockPos p) {
-		if (!Moves.canReach(mc.player, p)) return tooFar(p);
+	private static CompletableFuture<ToolResult> useBlock(Agent a, Minecraft mc, BlockPos p) {
+		if (!Moves.canReach(mc.player, p)) return CompletableFuture.completedFuture(tooFar(p));
 		BlockState st = mc.level.getBlockState(p);
+		Kv at = Kv.of().put("block", RuleGuard.shortId(st)).put("pos", Fmt.pos(p));
+		if (a.tracker.placementPending(p)) {
+			return CompletableFuture.completedFuture(ToolResult.error(ErrorCode.BUSY, at, "still confirming a block change here"));
+		}
 		long mark = a.guard.blockMark();
 		var r = Moves.useOn(mc, p, Moves.faceToward(mc.player, p));
-		Kv at = Kv.of().put("block", RuleGuard.shortId(st)).put("pos", Fmt.pos(p));
-		// 被規矩擋下時照實說原因，不要包成「沒有反應」(A14、M10)
 		var blocked = a.guard.blockedAfter(mark);
-		if (blocked != null) return ToolResult.error(blocked.code(), at, blocked.reason(), blocked.hint());
-		if (!r.consumesAction()) return ToolResult.error(ErrorCode.INVALID_ARGUMENT, at, "right-click had no effect");
-		return ToolResult.ok(Kv.of("OK used").add(at).put("now", RuleGuard.shortId(mc.level.getBlockState(p))));
+		if (blocked != null) return CompletableFuture.completedFuture(ToolResult.error(blocked.code(), at, blocked.reason(), blocked.hint()));
+		if (!r.consumesAction()) {
+			return CompletableFuture.completedFuture(ToolResult.error(ErrorCode.INVALID_ARGUMENT, at, "right-click had no effect"));
+		}
+		BlockState now = mc.level.getBlockState(p);
+		// 拉桿的 POWERED 只在伺服器更新；按鈕可能在網路同步前仍維持未按下的狀態。
+		if (now == st && (st.is(Blocks.LEVER) || st.getBlock() instanceof net.minecraft.world.level.block.ButtonBlock
+			&& !st.getValue(BlockStateProperties.POWERED))) {
+			return a.tracker.confirmPlacement(mc.level, p).thenApply(state -> state == null
+				? ToolResult.ok(Kv.of("OK used").add(at).put("state_pending", true))
+				: usedBlock(at, state));
+		}
+		return CompletableFuture.completedFuture(usedBlock(at, now));
+	}
+
+	private static ToolResult usedBlock(Kv at, BlockState state) {
+		Kv result = Kv.of("OK used").add(at).put("now", RuleGuard.shortId(state));
+		for (var property : List.of(BlockStateProperties.OPEN, BlockStateProperties.POWERED, BlockStateProperties.LIT)) {
+			if (state.hasProperty(property)) result.put(property.getName(), state.getValue(property));
+		}
+		return ToolResult.ok(result);
 	}
 
 	private static CompletableFuture<ToolResult> placeBlock(Agent a, Minecraft mc, BlockPos p, Item item, boolean replace) {
@@ -1373,14 +1411,6 @@ public final class Tools {
 	}
 
 	private static ToolResult sleep(Agent a, Minecraft mc, BlockPos chosen, boolean replace) {
-		long clock = mc.level.getOverworldClockTime();
-		if (!blockagent.core.DayClock.canSleep(clock, mc.level.isThundering())) {
-			String sleepIn = blockagent.core.DayClock.sleepCountdown(clock);
-			Kv data = Kv.of().raw(Observation.timeOfDay(mc));
-			if (sleepIn != null) data.raw(sleepIn);
-			return ToolResult.error(ErrorCode.INVALID_ARGUMENT, data,
-				"can only sleep at night or in a thunderstorm", "do something else, or wait_events until can_sleep");
-		}
 		BlockPos bed;
 		if (chosen != null) {
 			BlockState st = mc.level.getBlockState(chosen);
@@ -1389,13 +1419,34 @@ public final class Tools {
 			if (Math.sqrt(chosen.distSqr(mc.player.blockPosition())) > 32) {
 				return ToolResult.error(ErrorCode.PATH_BLOCKED, at, "bed is more than 32 blocks away", "goto closer first");
 			}
+			if (!Observation.bedUsable(mc.level, chosen, st)) {
+				return ToolResult.error(ErrorCode.INVALID_ARGUMENT, at, "this bed cannot be used safely here");
+			}
 			if (st.getValue(BedBlock.OCCUPIED)) return ToolResult.error(ErrorCode.NO_STATION, at, "bed is occupied", "pick another bed");
 			bed = chosen;
 		} else {
 			List<BlockPos> beds = Moves.scan(mc, blocksInTag(BlockTags.BEDS), 32, 16, null);
+			if (beds.isEmpty() && !Observation.bedUsable(mc.level.environmentAttributes().getValue(
+				EnvironmentAttributes.BED_RULE, mc.player.blockPosition()))) {
+				return ToolResult.error(ErrorCode.INVALID_ARGUMENT, "beds cannot be used safely in this dimension");
+			}
 			if (beds.isEmpty()) return ToolResult.error(ErrorCode.NO_STATION, Kv.of().put("radius", 32), "no bed nearby", "craft a bed (3 wool + 3 planks)");
-			bed = beds.stream().filter(b -> !mc.level.getBlockState(b).getValue(BedBlock.OCCUPIED)).findFirst().orElse(null);
-			if (bed == null) return ToolResult.error(ErrorCode.NO_STATION, Kv.of().put("radius", 32), "all nearby beds are occupied");
+			bed = beds.stream().filter(b -> {
+				BlockState state = mc.level.getBlockState(b);
+				return Observation.bedUsable(mc.level, b, state) && !state.getValue(BedBlock.OCCUPIED);
+			}).findFirst().orElse(null);
+			if (bed == null) return ToolResult.error(ErrorCode.NO_STATION, Kv.of().put("radius", 32), "no safe, unoccupied bed nearby");
+		}
+		var bedRule = Observation.bedRule(mc.level, bed, mc.level.getBlockState(bed));
+		if (!bedRule.canSleep(mc.level)) {
+			if (!mc.level.dimension().equals(Level.OVERWORLD)) {
+				return ToolResult.error(ErrorCode.INVALID_ARGUMENT, "this bed's rules do not allow sleep right now");
+			}
+			String sleepIn = blockagent.core.DayClock.sleepCountdown(mc.level.getOverworldClockTime());
+			Kv data = Kv.of().raw(Observation.timeOfDay(mc));
+			if (sleepIn != null) data.raw(sleepIn);
+			return ToolResult.error(ErrorCode.INVALID_ARGUMENT, data,
+				"can only sleep at night or in a thunderstorm", "do something else, or wait_events until can_sleep");
 		}
 		return a.tasks.start(new StationTask(a, StationTask.Mode.SLEEP, bed, Map.of()), replace,
 			Kv.of().put("bed", Fmt.pos(bed)).put("owner", Fmt.owner(a, bed, mc.level.getBlockState(bed))).toString());
@@ -1449,13 +1500,13 @@ public final class Tools {
 		int need = SmeltTask.fuelNeeded(fuel, count);
 		int haveFuel = Inv.count(mc.player, fuel) - (fuel == input ? count : 0);
 		if (haveFuel < need) return missingItem(fuel, haveFuel, need);
-		List<BlockPos> furnaces = Moves.scan(mc, List.of(Blocks.FURNACE), 32, 1, null);
-		if (furnaces.isEmpty() && Inv.count(mc.player, Items.FURNACE) == 0) {
+		BlockPos furnace = SmeltTask.findFurnace(a, mc, Set.of());
+		if (furnace == null && Inv.count(mc.player, Items.FURNACE) == 0) {
 			return ToolResult.error(ErrorCode.NO_STATION, Kv.of().put("radius", 32), "no furnace nearby or in inventory", "craft furnace (8 cobblestone)");
 		}
 		Kv pre = Kv.of().put("input", Inv.id(input) + ":" + count).put("fuel", Inv.id(fuel) + ":" + need)
-			.put("furnace", furnaces.isEmpty() ? "from_inventory" : Fmt.pos(furnaces.getFirst()));
-		return a.tasks.start(new SmeltTask(a, input, result, count, fuel, need), replace, pre.toString());
+			.put("furnace", furnace == null ? "from_inventory" : Fmt.pos(furnace));
+		return a.tasks.start(new SmeltTask(a, input, result, count, fuel, need, furnace), replace, pre.toString());
 	}
 
 	private static ToolResult clearArea(Agent a, Minecraft mc, AreaInspection.Region region, Set<Block> blocks, boolean replace) {

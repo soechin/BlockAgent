@@ -397,11 +397,26 @@ public final class Inv {
 		return Math.max(p.getArmorValue(), (int) Math.round(sum));
 	}
 
-	/** 把背包第 idx 格的護甲穿上(跟玩家在背包按 Shift 點一下一樣)。開著別的容器時不做。 */
+	/** 穿上或換下護甲。只有游標空著時才移動物品。 */
 	public static void wear(Minecraft mc, int idx) {
 		Player p = mc.player;
-		if (p.containerMenu != p.inventoryMenu) return;
-		click(mc, p.inventoryMenu, menuSlot(idx), 0, ContainerInput.QUICK_MOVE);
+		var menu = p.inventoryMenu;
+		if (p.containerMenu != menu || !menu.getCarried().isEmpty()) return;
+		ItemStack stack = p.getInventory().getItem(idx);
+		var equip = stack.get(DataComponents.EQUIPPABLE);
+		if (equip == null || equip.slot().getType() != EquipmentSlot.Type.HUMANOID_ARMOR) return;
+		int source = menuSlot(idx);
+		int destination = net.minecraft.world.inventory.InventoryMenu.ARMOR_SLOT_END - 1 - equip.slot().getIndex();
+		var armor = menu.getSlot(destination);
+		if (!armor.mayPlace(stack) || !armor.mayPickup(p)) return;
+		if (!armor.hasItem()) {
+			click(mc, menu, source, 0, ContainerInput.QUICK_MOVE);
+			return;
+		}
+		if (stack.getCount() != 1) return;
+		click(mc, menu, source, 0, ContainerInput.PICKUP);
+		click(mc, menu, destination, 0, ContainerInput.PICKUP);
+		if (!menu.getCarried().isEmpty()) click(mc, menu, source, 0, ContainerInput.PICKUP);
 	}
 
 	/**

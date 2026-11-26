@@ -25,6 +25,7 @@ import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.attribute.EnvironmentAttributes;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.food.FoodProperties;
@@ -56,7 +57,7 @@ public final class Reflexes {
 	 * 著火反射只會原地找水，留在岩漿裡會燒死(docs/REVIEW.md C4)。
 	 */
 	public enum Kind {
-		DROWNING("survival", true), LAVA_AVOID("survival", true), ON_FIRE("survival", true), FALL("survival", true),
+		DROWNING("survival", true), LAVA_AVOID("survival", true), ON_FIRE("survival", true), FALL("survival", false),
 		// 撤退暫停任務，回血後接著做；同一個任務撤退第二次或回不了血才取消(R3、CombatPolicy.retreatOutcome)
 		RETREAT("retreat", false, 60), SELF_DEFENSE("defense", false), EAT("eat", false), UNSTUCK("unstuck", false);
 
@@ -276,6 +277,10 @@ public final class Reflexes {
 		return p.getAbilities().invulnerable;
 	}
 
+	private static boolean waterWorks(Minecraft mc) {
+		return !mc.level.environmentAttributes().getValue(EnvironmentAttributes.WATER_EVAPORATES, mc.player.blockPosition());
+	}
+
 	/** 觸發條件；回傳 null 表示沒有觸發，否則是原因。 */
 	private String trigger(Minecraft mc, Kind k) {
 		LocalPlayer p = mc.player;
@@ -294,7 +299,7 @@ public final class Reflexes {
 				if (!lavaNear(mc, 1).isEmpty()) return "lava_adjacent";
 			}
 			case FALL -> {
-				if (!p.onGround() && p.fallDistance > 4 && p.getDeltaMovement().y < -0.5 && Inv.count(p, Items.WATER_BUCKET) > 0) {
+				if (waterWorks(mc) && !p.onGround() && p.fallDistance > 4 && p.getDeltaMovement().y < -0.5 && Inv.count(p, Items.WATER_BUCKET) > 0) {
 					return "falling=" + Math.round(p.fallDistance);
 				}
 			}
@@ -534,6 +539,7 @@ public final class Reflexes {
 			case FALL -> {
 				if (p.onGround() && landedAt < 0) landedAt = activeTicks;
 				if (!bucketPlaced) {
+					if (p.onGround() || !waterWorks(mc)) return;
 					BlockPos ground = null;
 					for (int i = 1; i <= 4; i++) {
 						BlockPos b = p.blockPosition().below(i);
@@ -546,8 +552,7 @@ public final class Reflexes {
 						Moves.lookAt(p, Vec3.atCenterOf(ground).add(0, 0.5, 0));
 						p.setXRot(90f);
 						if (p.blockPosition().getY() - ground.getY() <= 3) {
-							mc.gameMode.useItem(p, InteractionHand.MAIN_HAND);
-							bucketPlaced = true;
+							bucketPlaced = mc.gameMode.useItem(p, InteractionHand.MAIN_HAND).consumesAction();
 						}
 					}
 				} else if (p.onGround() && Inv.selectInHand(mc, s -> s.is(Items.BUCKET))) {
@@ -753,6 +758,11 @@ public final class Reflexes {
 		String text = "reflex=" + k.id() + " kind=" + k.type + " trigger=" + blockagent.mcp.Kv.quote(String.valueOf(activeReason))
 			+ " action=" + action + " result=" + how;
 		boolean cancelTask = k.cancelsTask;
+		if (k == Kind.FALL && how.startsWith("gave_up") && suspendedTask) {
+			agent.tasks.interrupt("fall (could not confirm a safe landing)");
+			suspendedTask = false;
+			cancelTask = true;
+		}
 		if (k == Kind.RETREAT) {
 			CombatPolicy.RetreatOutcome outcome = CombatPolicy.retreatOutcome(how, retreatCount);
 			text += " phase=" + (retreatPhase == null ? "run" : retreatPhase.name().toLowerCase(Locale.ROOT)) + " retreats=" + retreatCount;

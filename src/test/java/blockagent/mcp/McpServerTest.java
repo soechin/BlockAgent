@@ -82,8 +82,11 @@ class McpServerTest {
 		var accepted = new java.util.ArrayList<JsonObject>();
 		server.setPlanBridge(planToken, new McpServer.PlanBridge() {
 			@Override
-			public String context() {
-				return "[self]\nhp=20";
+			public JsonObject context() {
+				var context = new JsonObject();
+				context.addProperty("snapshot", "[self]\nhp=20");
+				context.addProperty("basis", "test-basis");
+				return context;
 			}
 
 			@Override

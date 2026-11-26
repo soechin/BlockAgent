@@ -25,8 +25,8 @@ SNAPSHOT_LIMIT = 12000
 GAME_TIMEOUT = 10
 TOOL = {
     "name": "request_plan",
-    "description": ("請規劃模型定一份計畫。立刻回傳 pending，不用等；約 10 到 60 秒後結果以 plan_ready "
-                    "(失敗時 plan_failed)事件送到 wait_events，並成為目前計畫(plan 工具)。"
+    "description": ("請規劃模型定一份計畫。立刻回傳 pending，不用等；約 10 到 60 秒後結果以 plan_ready 或 plan_stale "
+                    "(失敗時 plan_failed)事件送到 wait_events。只有 plan_ready 會更新目前計畫(plan 工具)。"
                     "你的狀態、背包、記憶、目前計畫和最近的失敗會自動附上，只要寫目標，"
                     "有快照看不出的考量(使用者或朋友的要求、你的判斷)再寫 context。"),
     "inputSchema": {
@@ -220,10 +220,12 @@ class GameBridge:
             return json.loads(response.read().decode("utf-8"))
 
     def context(self):
-        snapshot = self._request("/context").get("snapshot")
-        if not isinstance(snapshot, str):
+        response = self._request("/context")
+        snapshot = response.get("snapshot")
+        basis = response.get("basis")
+        if not isinstance(snapshot, str) or (basis is not None and not isinstance(basis, dict)):
             raise ValueError("bad snapshot")
-        return snapshot[:SNAPSHOT_LIMIT]
+        return snapshot[:SNAPSHOT_LIMIT], basis
 
     def deliver(self, payload):
         self._request("/result", payload)
@@ -274,9 +276,10 @@ class Server:
         usage = {}
         outcome = "ok"
         request = dict(args)
+        basis = None
         try:
             try:
-                request["game_snapshot"] = self.bridge.context()
+                request["game_snapshot"], basis = self.bridge.context()
             except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError, http.client.HTTPException):
                 request["game_snapshot"] = "unavailable"
             payload = dict(self.backend(self.model, request, usage), goal=args["goal"])
@@ -286,6 +289,8 @@ class Server:
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, http.client.HTTPException):
             outcome = "INTERNAL"
             payload = {"goal": args["goal"], "error": {"code": outcome, "message": "規劃服務設定錯誤。"}}
+        if basis is not None:
+            payload["basis"] = basis
         delivered = True
         try:
             self.bridge.deliver(payload)
@@ -330,11 +335,11 @@ class Server:
             self.send(ident, error_result(exc.code, str(exc)))
             return
         if self.pending is not None and not self.pending.done():
-            self.send(ident, error_result("BUSY", "已有一個規劃請求進行中，結果會以 plan_ready 事件送到 wait_events。"))
+            self.send(ident, error_result("BUSY", "已有一個規劃請求進行中，結果會以規劃事件送到 wait_events。"))
             return
         self.pending = self.pool.submit(self.run_plan, args)
         self.send(ident, tool_result({"status": "pending", "message": (
-            "規劃中。不用等：先做安全、跟目標有關的事，結果會以 plan_ready(失敗時 plan_failed)事件送到 wait_events。")}))
+            "規劃中。不用等：先做安全、跟目標有關的事，結果會以 plan_ready、plan_stale 或 plan_failed 事件送到 wait_events。")}))
 
     def serve(self):
         with self.pool:

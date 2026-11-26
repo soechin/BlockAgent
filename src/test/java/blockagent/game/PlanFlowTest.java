@@ -3,6 +3,7 @@ package blockagent.game;
 import blockagent.Config;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import net.minecraft.core.BlockPos;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -15,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** 規劃結果送回遊戲、plan 工具和事件上的步驟提醒(docs/SPEC.md S5.6、S11.7)。 */
 class PlanFlowTest {
+	private static final Agent.PlanLocation HERE = new Agent.PlanLocation(1, "minecraft:overworld", new BlockPos(1, 64, 2));
 	@TempDir
 	Path tmp;
 
@@ -28,6 +30,7 @@ class PlanFlowTest {
 		JsonObject o = new JsonObject();
 		o.addProperty("goal", goal);
 		o.addProperty("recommendation", "先求安全");
+		o.add("basis", HERE.basis(0));
 		JsonArray arr = new JsonArray();
 		for (String s : steps) arr.add(s);
 		o.add("steps", arr);
@@ -43,19 +46,19 @@ class PlanFlowTest {
 	@Test
 	void plannerResultBecomesThePlanAndToolAdvancesIt() throws Exception {
 		Agent a = new Agent(new Config(), tmp);
-		assertEquals("not in a world", a.acceptPlan(result("過夜", "砍樹")), "不在世界裡不接受");
+		assertEquals("not in a world", a.acceptPlan(result("過夜", "砍樹"), HERE), "不在世界裡不接受");
 		a.memory.load(tmp.resolve("memory.json"));
 
 		JsonObject noSteps = new JsonObject();
 		noSteps.addProperty("goal", "x");
-		assertEquals("steps must be an array", a.acceptPlan(noSteps));
+		assertEquals("steps must be an array", a.acceptPlan(noSteps, HERE));
 		JsonObject badGoal = result("x", "砍樹");
 		badGoal.addProperty("goal", 123);
-		assertEquals("goal is required", a.acceptPlan(badGoal), "非字串 goal 不可轉成字串");
+		assertEquals("goal is required", a.acceptPlan(badGoal, HERE), "非字串 goal 不可轉成字串");
 		JsonObject badRec = result("x", "砍樹");
 		badRec.addProperty("recommendation", true);
-		assertEquals("recommendation must be a string", a.acceptPlan(badRec));
-		assertNull(a.acceptPlan(result("過第一晚", "砍 16 塊原木", "蓋 5x5 的房子")));
+		assertEquals("recommendation must be a string", a.acceptPlan(badRec, HERE));
+		assertNull(a.acceptPlan(result("過第一晚", "砍 16 塊原木", "蓋 5x5 的房子"), HERE));
 		String events = a.unreadSummary("get_self");
 		assertTrue(events.contains("plan_ready:") && events.contains("1. 砍 16 塊原木 2. 蓋 5x5 的房子")
 			&& events.contains("plan(action=done)"), events);
@@ -80,7 +83,7 @@ class PlanFlowTest {
 	void plannerFailureOnlyNotifies() throws Exception {
 		Agent a = new Agent(new Config(), tmp);
 		a.memory.load(tmp.resolve("memory.json"));
-		assertNull(a.acceptPlan(result("過夜", "砍樹")));
+		assertNull(a.acceptPlan(result("過夜", "砍樹"), HERE));
 		a.unreadSummary("get_self");
 		JsonObject fail = new JsonObject();
 		fail.addProperty("goal", "找村莊");
@@ -88,7 +91,7 @@ class PlanFlowTest {
 		err.addProperty("code", "TIMEOUT");
 		err.addProperty("message", "規劃超過 120 秒");
 		fail.add("error", err);
-		assertNull(a.acceptPlan(fail));
+		assertNull(a.acceptPlan(fail, HERE));
 		String events = a.unreadSummary("get_self");
 		assertTrue(events.contains("plan_failed:") && events.contains("code=TIMEOUT"), events);
 		assertEquals("過夜", a.plan.goal(), "失敗時目前計畫不變");
@@ -98,9 +101,39 @@ class PlanFlowTest {
 		JsonObject errNoMsg = new JsonObject();
 		errNoMsg.addProperty("code", "CLI_FAILED");
 		failNoMsg.add("error", errNoMsg);
-		assertNull(a.acceptPlan(failNoMsg));
+		assertNull(a.acceptPlan(failNoMsg, HERE));
 		String noMsgEvents = a.unreadSummary("get_self");
 		assertTrue(noMsgEvents.contains("code=CLI_FAILED | hint="), "空白訊息不應出現空區段：" + noMsgEvents);
+	}
+
+	@Test
+	void stalePlanIsAnAdvisoryAndRetainsProgress() throws Exception {
+		Agent a = new Agent(new Config(), tmp);
+		a.memory.load(tmp.resolve("memory.json"));
+		assertNull(a.acceptPlan(result("過夜", "砍樹", "蓋屋"), HERE));
+		a.unreadSummary("get_self");
+		JsonObject incoming = result("去找煤", "挖煤");
+		incoming.add("basis", HERE.basis(1));
+		assertTrue(a.tools.call("plan", args("done")).isOk());
+
+		assertNull(a.acceptPlan(incoming, HERE));
+		String advice = a.unreadSummary("get_self");
+		assertTrue(advice.contains("plan_stale: reason=plan_advanced") && advice.contains("1. 挖煤"), advice);
+		assertEquals("過夜", a.plan.goal());
+		assertEquals("蓋屋", a.plan.current());
+
+		incoming.add("basis", HERE.basis(2));
+		assertNull(a.acceptPlan(incoming, new Agent.PlanLocation(1, "minecraft:the_nether", HERE.position())));
+		assertTrue(a.unreadSummary("get_self").contains("reason=dimension_changed"));
+		assertNull(a.acceptPlan(incoming, new Agent.PlanLocation(1, HERE.dimension(), HERE.position().offset(9, 0, 0))));
+		assertTrue(a.unreadSummary("get_self").contains("reason=moved_from_snapshot"));
+		assertEquals("snapshot belongs to another world", a.acceptPlan(incoming, new Agent.PlanLocation(2, HERE.dimension(), HERE.position())));
+		assertEquals("蓋屋", a.plan.current());
+
+		incoming.remove("basis");
+		assertNull(a.acceptPlan(incoming, HERE));
+		assertTrue(a.unreadSummary("get_self").contains("reason=snapshot_unavailable"));
+		assertEquals("蓋屋", a.plan.current());
 	}
 
 	@Test

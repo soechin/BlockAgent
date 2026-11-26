@@ -391,6 +391,9 @@ public class RulesGameTest implements FabricClientGameTest {
 		k.give("minecraft:bucket", 1);
 		check(k.waitUntil(20, mc -> mc.level.getBlockState(flowWater).is(Blocks.WATER)
 			&& !mc.level.getBlockState(flowWater).getFluidState().isSource()), "R13 測試用的流動水沒有流過來");
+		var sources = k.ai.call(k.ctx, "find_blocks", args("type", "water", "radius", 16, "source_only", true));
+		check(sources.ok() && sources.text().contains("pos=" + blockagent.game.Fmt.pos(sourceWater))
+			&& !sources.text().contains("pos=" + blockagent.game.Fmt.pos(flowWater)), "R37 source_only 應濾掉流動水：" + sources.text());
 		var bucket = k.ai.call(k.ctx, "use_item", args("item", "bucket", "x", flowWater.getX(), "y", flowWater.getY(), "z", flowWater.getZ()));
 		k.expectError(bucket, "INVALID_ARGUMENT", "R13 空桶撈流動水應報錯並提示");
 		check(bucket.text().contains("flowing") && bucket.text().contains("level="), "R13 應附註流動水與 level：" + bucket.text());

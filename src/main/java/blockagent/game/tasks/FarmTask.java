@@ -16,6 +16,8 @@ import net.minecraft.world.item.component.SwingAnimation;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.CropBlock;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.List;
@@ -27,12 +29,37 @@ import java.util.Map;
 public final class FarmTask extends Task {
 	public enum Mode {TILL_AND_PLANT, HARVEST}
 
-	private enum Phase {NEXT, WALK, ACT, WAIT, REPLANT, DONE}
+	private enum Phase {NEXT, WALK, ACT, WAIT, VERIFY_PLANT, REPLANT, DONE}
 
 	public static final Map<Block, Item> SEED_OF = Map.of(
 		Blocks.WHEAT, Items.WHEAT_SEEDS, Blocks.CARROTS, Items.CARROT, Blocks.POTATOES, Items.POTATO, Blocks.BEETROOTS, Items.BEETROOT_SEEDS);
 	public static final Map<Item, Block> CROP_OF = Map.of(
-		Items.WHEAT_SEEDS, Blocks.WHEAT, Items.CARROT, Blocks.CARROTS, Items.POTATO, Blocks.POTATOES, Items.BEETROOT_SEEDS, Blocks.BEETROOTS);
+		Items.WHEAT_SEEDS, Blocks.WHEAT, Items.CARROT, Blocks.CARROTS, Items.POTATO, Blocks.POTATOES, Items.BEETROOT_SEEDS, Blocks.BEETROOTS,
+		Items.MELON_SEEDS, Blocks.MELON_STEM, Items.PUMPKIN_SEEDS, Blocks.PUMPKIN_STEM);
+
+	/** 成熟藤蔓掛果時換成另一種方塊，採掉果實後換回原種。 */
+	public static boolean sameStem(String from, String to) {
+		return stemIdPair(from, to, "melon") || stemIdPair(from, to, "pumpkin");
+	}
+
+	private static boolean stemIdPair(String from, String to, String crop) {
+		String stem = "minecraft:" + crop + "_stem", attached = "minecraft:attached_" + crop + "_stem";
+		return stem.equals(from) && attached.equals(to) || attached.equals(from) && stem.equals(to);
+	}
+
+	public static boolean harvestable(Agent agent, Level level, BlockPos pos, BlockState state) {
+		if (state.getBlock() instanceof CropBlock crop) return crop.isMaxAge(state) && agent.guard.isOwned(level, pos);
+		Block attachedStem = state.is(Blocks.MELON) ? Blocks.ATTACHED_MELON_STEM
+			: state.is(Blocks.PUMPKIN) ? Blocks.ATTACHED_PUMPKIN_STEM : null;
+		if (attachedStem == null) return false;
+		for (Direction side : Direction.Plane.HORIZONTAL) {
+			BlockPos stem = pos.relative(side);
+			BlockState adjacent = level.getBlockState(stem);
+			if (adjacent.is(attachedStem) && adjacent.getValue(BlockStateProperties.HORIZONTAL_FACING) == side.getOpposite()
+				&& agent.guard.isOwned(level, stem)) return true;
+		}
+		return false;
+	}
 
 	private final Mode mode;
 	private final List<BlockPos> targets; // TILL：要鋤的地面；HARVEST：作物的位置
@@ -120,11 +147,13 @@ public final class FarmTask extends Task {
 					phase = Phase.WAIT;
 				} else {
 					BlockState st = mc.level.getBlockState(cur());
-					if (!(st.getBlock() instanceof CropBlock cb) || !cb.isMaxAge(st)) {
+					if (!harvestable(agent, mc.level, cur(), st)) {
 						phase = Phase.NEXT;
 						return;
 					}
 					harvestedCrop = st.getBlock();
+					int tool = Inv.ensureHotbarTool(mc, st);
+					if (tool >= 0) mc.player.getInventory().setSelectedSlot(tool);
 					Direction face = Moves.faceToward(mc.player, cur());
 					if (!mc.gameMode.startDestroyBlock(cur(), face)) {
 						skipped.add(blockagent.game.Fmt.pos(cur()) + ":rule");
@@ -145,9 +174,8 @@ public final class FarmTask extends Task {
 							return;
 						}
 						Moves.useOn(mc, cur(), Direction.UP);
-						doneCount++;
-						markProgress();
-						phase = Phase.NEXT;
+						waitTicks = 0;
+						phase = Phase.VERIFY_PLANT;
 					} else if (waitTicks > 10) {
 						skipped.add(blockagent.game.Fmt.pos(cur()) + ":untillable");
 						phase = Phase.NEXT;
@@ -168,9 +196,19 @@ public final class FarmTask extends Task {
 						doneCount++;
 						markProgress();
 						pickingUp = false;
-						phase = replant ? Phase.REPLANT : Phase.NEXT;
+						phase = replant && SEED_OF.containsKey(harvestedCrop) ? Phase.REPLANT : Phase.NEXT;
 						waitTicks = 0;
 					}
+				}
+			}
+			case VERIFY_PLANT -> {
+				if (mc.level.getBlockState(cur().above()).is(CROP_OF.get(seed))) {
+					doneCount++;
+					markProgress();
+					phase = Phase.NEXT;
+				} else if (++waitTicks > 20) {
+					skipped.add(blockagent.game.Fmt.pos(cur()) + ":not_planted");
+					phase = Phase.NEXT;
 				}
 			}
 			case REPLANT -> {

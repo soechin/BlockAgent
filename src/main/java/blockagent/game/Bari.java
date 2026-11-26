@@ -22,6 +22,7 @@ public final class Bari {
 		s.buildIgnoreExisting.value = true;
 		s.allowParkour.value = false;
 		s.allowParkourPlace.value = false;
+		s.allowWaterBucketFall.value = false;
 		Agent agent = Agent.get();
 		s.freeLook.value = agent != null && agent.control.userLooking();
 		s.chatDebug.value = false;
@@ -44,7 +45,7 @@ public final class Bari {
 		if (tick % 20 != 0) return;
 		Settings s = BaritoneAPI.getSettings();
 		if (s.chatControl.value || s.chatControlAnyway.value || s.prefixControl.value || s.allowInventory.value
-			|| !s.buildIgnoreExisting.value || s.allowParkour.value || s.allowParkourPlace.value
+			|| !s.buildIgnoreExisting.value || s.allowParkour.value || s.allowParkourPlace.value || s.allowWaterBucketFall.value
 			|| s.breakCorrectBlockPenaltyMultiplier.value < 1_000_000d || !s.avoidance.value
 			|| s.chatDebug.value || s.desktopNotifications.value || s.useSwordToMine.value) {
 			applySettings();

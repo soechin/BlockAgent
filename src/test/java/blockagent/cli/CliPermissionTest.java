@@ -79,9 +79,11 @@ class CliPermissionTest {
 		String planToken = McpServer.newToken();
 		mcp.setPlanBridge(planToken, new McpServer.PlanBridge() {
 			@Override
-			public String context() {
+			public JsonObject context() {
 				planContextReads.add("read");
-				return "[self]\nhp=20 food=20 inv=oak_log:3\n[player_tools]\ngoto, mine";
+				var context = new JsonObject();
+				context.addProperty("snapshot", "[self]\nhp=20 food=20 inv=oak_log:3\n[player_tools]\ngoto, mine");
+				return context;
 			}
 
 			@Override

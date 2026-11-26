@@ -108,8 +108,12 @@ public final class OwnershipTracker {
 		long p = pos.asLong();
 		Long t = selfCaused.get(new Key(dim, p));
 		boolean self = t != null && now() - t <= 40;
-		agent.ledger.onBlockUpdate(dim, p, RuleGuard.blockId(state), state.isAir(), now(), self);
-		if (!self && !state.isAir()) agent.observation.onOtherPlaced(pos);
+		String blockId = RuleGuard.blockId(state);
+		boolean stemGrew = (state.getBlock() instanceof net.minecraft.world.level.block.StemBlock
+			|| state.getBlock() instanceof net.minecraft.world.level.block.AttachedStemBlock)
+			&& blockagent.game.tasks.FarmTask.sameStem(agent.ledger.ownedBlockId(dim, p), blockId);
+		agent.ledger.onBlockUpdate(dim, p, blockId, state.isAir(), now(), self || stemGrew);
+		if (!self && !stemGrew && !state.isAir()) agent.observation.onOtherPlaced(pos);
 		Placement placement = placements.get(pos);
 		if (placement != null && placement.level() == level) {
 			placements.remove(pos);

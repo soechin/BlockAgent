@@ -37,6 +37,7 @@ public final class SmeltTask extends Task {
 	private final Set<BlockPos> rejected = new HashSet<>();
 	private final List<String> rejectedDetails = new ArrayList<>();
 	private BlockPos furnace;
+	private BlockPos preferredFurnace;
 	private Phase phase = Phase.FIND;
 	private int waitTicks;
 	private int taken;
@@ -48,13 +49,14 @@ public final class SmeltTask extends Task {
 	/** 被反射暫停後重新打開熔爐，要回到哪個階段(H7)；null 表示照一般流程走 CHECK。 */
 	private Phase afterOpen;
 
-	public SmeltTask(Agent agent, Item input, Item result, int count, Item fuel, int fuelCount) {
+	public SmeltTask(Agent agent, Item input, Item result, int count, Item fuel, int fuelCount, BlockPos preferredFurnace) {
 		super(agent, "smelt");
 		this.input = input;
 		this.result = result;
 		this.count = count;
 		this.fuel = fuel;
 		this.fuelCount = fuelCount;
+		this.preferredFurnace = preferredFurnace;
 		this.timeoutTicks = Math.max(timeoutTicks, count * 200L + 60 * 20L);
 	}
 
@@ -82,13 +84,18 @@ public final class SmeltTask extends Task {
 		return phase == Phase.WALK;
 	}
 
+	public static BlockPos findFurnace(Agent agent, Minecraft mc, Set<BlockPos> rejected) {
+		List<BlockPos> list = Moves.scan(mc, List.of(Blocks.FURNACE), 32, 10, p -> !rejected.contains(p));
+		return list.stream().filter(agent.guard::isOwned).findFirst().orElse(list.isEmpty() ? null : list.getFirst());
+	}
+
 	@Override
 	protected void tick(Minecraft mc) {
 		switch (phase) {
 			case FIND -> {
-				List<BlockPos> list = Moves.scan(mc, List.of(Blocks.FURNACE), 32, 10, p -> !rejected.contains(p));
-				BlockPos own = list.stream().filter(agent.guard::isOwned).findFirst().orElse(null);
-				furnace = own != null ? own : list.isEmpty() ? null : list.getFirst();
+				furnace = preferredFurnace != null && mc.level.getBlockState(preferredFurnace).is(Blocks.FURNACE)
+					? preferredFurnace : findFurnace(agent, mc, rejected);
+				preferredFurnace = null;
 				if (furnace == null) {
 					phase = Phase.PLACE;
 				} else {

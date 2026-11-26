@@ -86,12 +86,12 @@ public final class TaskRunner {
 		t.lastProgressTick = t.startTick;
 		current = t;
 		pendingResult = t;
-		agent.log.log(ActionLog.Source.ai, "task_start", t.name() + " " + t.progress());
 		try {
 			t.start(mc);
 		} catch (RuntimeException e) {
 			t.fail(ErrorCode.INTERNAL, "error while starting: " + e);
 		}
+		agent.log.log(ActionLog.Source.ai, "task_start", t.name() + " " + t.progress());
 		agent.idle.touch();
 		JsonObject data = new JsonObject();
 		data.addProperty("task", t.name());

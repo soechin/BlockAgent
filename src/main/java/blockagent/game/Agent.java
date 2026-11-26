@@ -24,6 +24,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -80,6 +81,8 @@ public final class Agent {
 	private final java.util.ArrayDeque<String> recentProblems = new java.util.ArrayDeque<>();
 	static final int RECENT_PROBLEMS = 6;
 	private volatile Path planFile;
+	private long planRevision; // guarded by plan
+	private long worldEpoch;   // client thread only
 
 	private volatile String worldKey;
 	/** AI 用 set_status 寫在 HUD 第二行的一句話(S8.3)。 */
@@ -141,13 +144,17 @@ public final class Agent {
 		String planToken = McpServer.newToken();
 		mcp.setPlanBridge(planToken, new McpServer.PlanBridge() {
 			@Override
-			public String context() {
-				return planContext();
+			public JsonObject context() {
+				return planSnapshot();
 			}
 
 			@Override
 			public String accept(JsonObject result) {
-				return acceptPlan(result);
+				try {
+					return ClientThread.call(() -> acceptPlan(result, planLocation()));
+				} catch (Exception e) {
+					return "game did not respond";
+				}
 			}
 		});
 		mcp.setStatusSupplier(() -> {
@@ -202,6 +209,7 @@ public final class Agent {
 
 	public void onJoin(Minecraft mc) {
 		if (pendingDisconnect) finishDisconnect();
+		worldEpoch++;
 		worldKey = WorldKey.current(mc, dataDir.resolve("worlds"));
 		disconnectReason = null;
 		// 上個世界沒送出去的事件(例如 session_ended、died)不帶到新世界(M5)
@@ -309,6 +317,7 @@ public final class Agent {
 	/** 計畫改了：存檔。呼叫端應持有 {@code synchronized (plan)} 或透過這裡序列化。 */
 	void planChanged() {
 		synchronized (plan) {
+			planRevision++;
 			Path file = planFile;
 			if (file != null) {
 				try {
@@ -348,19 +357,40 @@ public final class Agent {
 		}
 	}
 
-	/** 規劃服務讀的快照(GET /plan/context)：自己的狀態、計畫、記憶、最近的問題和可用的工具。只讀，不改任何東西。 */
-	String planContext() {
-		String self;
+	record PlanLocation(long world, String dimension, BlockPos position) {
+		JsonObject basis(long revision) {
+			JsonObject out = new JsonObject();
+			out.addProperty("world", world);
+			out.addProperty("revision", revision);
+			out.addProperty("dimension", dimension);
+			out.addProperty("position", position.asLong());
+			return out;
+		}
+	}
+
+	private PlanLocation planLocation() {
+		Minecraft mc = Minecraft.getInstance();
+		return mc.player == null || mc.level == null || worldKey == null || pendingDisconnect ? null
+			: new PlanLocation(worldEpoch, mc.level.dimension().identifier().toString(), mc.player.blockPosition());
+	}
+
+	/** 規劃文字及其依據在同一個 client tick 取樣，避免把已變動的計畫版本附到舊快照。 */
+	private JsonObject planSnapshot() {
 		try {
-			self = ClientThread.call(() -> {
-				Minecraft mc = Minecraft.getInstance();
-				return mc.player == null || mc.level == null ? "not in a world" : observation.self(mc);
+			return ClientThread.call(() -> {
+				PlanLocation here = planLocation();
+				JsonObject out = new JsonObject();
+				synchronized (plan) {
+					out.addProperty("snapshot", planContext(here == null ? "not in a world" : observation.self(Minecraft.getInstance()),
+						session.state().name(), plan.render(), memory.all(), recentProblems(),
+						tools.list().stream().map(ToolRegistry.Tool::name).toList()));
+					if (here != null) out.add("basis", here.basis(planRevision));
+				}
+				return out;
 			});
 		} catch (Exception e) {
-			self = "unavailable: " + e.getClass().getSimpleName();
+			throw new IllegalStateException("could not read planner snapshot", e);
 		}
-		return planContext(self, session.state().name(), plan.render(), memory.all(), recentProblems(),
-			tools.list().stream().map(ToolRegistry.Tool::name).toList());
 	}
 
 	static final int SNAPSHOT_MEMORY_CHARS = 4000;
@@ -391,10 +421,16 @@ public final class Agent {
 	}
 
 	/** 規劃服務送回結果(POST /plan/result)：成功時換成新計畫，失敗時只通知 AI。回傳 null 表示接受。 */
-	String acceptPlan(JsonObject r) {
-		if (!memory.loaded()) return "not in a world";
+	String acceptPlan(JsonObject r, PlanLocation here) {
+		if (here == null || !memory.loaded()) return "not in a world";
 		String goal = str(r, "goal");
 		if (goal == null || goal.isBlank()) return "goal is required";
+		JsonObject basis = r.has("basis") && r.get("basis").isJsonObject() ? r.getAsJsonObject("basis") : null;
+		try {
+			if (basis != null && basis.get("world").getAsLong() != here.world()) return "snapshot belongs to another world";
+		} catch (RuntimeException e) {
+			return "invalid snapshot basis";
+		}
 		if (r.has("error") && r.get("error").isJsonObject()) {
 			JsonObject e = r.getAsJsonObject("error");
 			String code = str(e, "code"), message = str(e, "message");
@@ -414,22 +450,43 @@ public final class Agent {
 			if (!e.isJsonPrimitive() || !e.getAsJsonPrimitive().isString()) return "steps must contain only strings";
 			steps.add(e.getAsString());
 		}
-		String eventText, rendered;
 		synchronized (plan) {
-			if (!memory.loaded()) return "not in a world";
-			String err = plan.set(goal, str(r, "recommendation"), steps, "planner");
+			String stale;
+			try {
+				stale = stalePlanReason(basis, here, planRevision);
+			} catch (RuntimeException e) {
+				return "invalid snapshot basis";
+			}
+			Plan proposed = stale == null ? plan : new Plan();
+			String err = proposed.set(goal, str(r, "recommendation"), steps, "planner");
 			if (err != null) return err;
+			if (stale != null) {
+				events.add("plan_stale", Event.Level.PROMPT, "reason=" + stale + " " + planDetails(proposed)
+					+ " | hint=review these suggestions against the current state; use plan(action=set) to adopt updated steps");
+				log.log(ActionLog.Source.system, "plan_stale", stale + " " + clip(goal, 80));
+				return null;
+			}
 			planChanged();
-			eventText = planEventText(plan);
-			rendered = plan.render();
+			events.add("plan_ready", Event.Level.PROMPT, planEventText(plan));
+			log.log(ActionLog.Source.system, "plan_ready", plan.render());
 		}
-		events.add("plan_ready", Event.Level.PROMPT, eventText);
-		log.log(ActionLog.Source.system, "plan_ready", rendered);
 		return null;
+	}
+
+	private static String stalePlanReason(JsonObject basis, PlanLocation here, long revision) {
+		if (basis == null) return "snapshot_unavailable";
+		if (!here.dimension().equals(basis.get("dimension").getAsString())) return "dimension_changed";
+		if (basis.get("revision").getAsLong() != revision) return "plan_advanced";
+		BlockPos old = BlockPos.of(basis.get("position").getAsLong());
+		return here.position().distSqr(old) > 64 ? "moved_from_snapshot" : null;
 	}
 
 	/** plan_ready 事件的一行：目標、建議和所有步驟。 */
 	static String planEventText(Plan p) {
+		return planDetails(p) + " | hint=say what you will do, start step 1, and call plan(action=done) each time a step is complete";
+	}
+
+	private static String planDetails(Plan p) {
 		String goal, rendered;
 		synchronized (p) {
 			goal = p.goal();
@@ -442,8 +499,7 @@ public final class Agent {
 			if (l.startsWith("recommendation=")) rec = " " + l;
 			else if (!l.startsWith("goal=")) steps.append(steps.isEmpty() ? "" : " ").append(l.replace(" [now] ", " ").replace(" [todo] ", " "));
 		}
-		return blockagent.mcp.Kv.of().put("goal", goal) + rec + " | " + steps
-			+ " | hint=say what you will do, start step 1, and call plan(action=done) each time a step is complete";
+		return blockagent.mcp.Kv.of().put("goal", goal) + rec + " | " + steps;
 	}
 
 	private static String str(JsonObject o, String k) {

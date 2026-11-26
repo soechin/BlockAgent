@@ -12,7 +12,8 @@
       "blockagent.testkit.SessionGameTest",
       "blockagent.testkit.ServerAndCreativeGameTest",
       "blockagent.testkit.CombatGameTest",
-      "blockagent.testkit.NaturalCombatGameTest"
+      "blockagent.testkit.NaturalCombatGameTest",
+      "blockagent.testkit.ReviewToolsGameTest"
     ]
   },
   "depends": {

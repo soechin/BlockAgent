@@ -123,13 +123,17 @@ public final class Moves {
 	 * 不經由 Baritone 的 BlockOptionalMetaLookup，避免查詢戰利品表時在 26.3 觸發 ServerLevelStub NPE(如 tall_grass)。
 	 */
 	public static List<BlockPos> scan(Minecraft mc, List<Block> blocks, int radius, int max, Predicate<BlockPos> filter) {
+		return scan(mc, blocks, radius, max, Integer.MIN_VALUE, Integer.MAX_VALUE, filter);
+	}
+
+	public static List<BlockPos> scan(Minecraft mc, List<Block> blocks, int radius, int max, int lowY, int highY, Predicate<BlockPos> filter) {
 		if (blocks.isEmpty() || max <= 0 || mc.level == null || mc.player == null) return List.of();
 		int cap = clampScanQuota(max, MAX_SCAN);
 		BlockPos me = mc.player.blockPosition();
 		int mx = me.getX(), my = me.getY(), mz = me.getZ();
 		int minX = mx - radius, maxX = mx + radius;
-		int minY = Math.max(mc.level.getMinY(), my - radius);
-		int maxY = Math.min(mc.level.getMaxY() - 1, my + radius);
+		int minY = Math.max(lowY, Math.max(mc.level.getMinY(), my - radius));
+		int maxY = Math.min(highY, Math.min(mc.level.getMaxY() - 1, my + radius));
 		int minZ = mz - radius, maxZ = mz + radius;
 		if (minY > maxY) return List.of();
 		long rSq = (long) radius * radius;

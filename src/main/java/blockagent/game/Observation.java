@@ -11,6 +11,7 @@ import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.entity.Entity;
@@ -22,12 +23,17 @@ import net.minecraft.world.entity.vehicle.VehicleEntity;
 import net.minecraft.world.entity.monster.Enemy;
 import blockagent.game.combat.Combat;
 import blockagent.game.combat.Threats;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LightLayer;
+import net.minecraft.world.attribute.BedRule;
+import net.minecraft.world.attribute.EnvironmentAttributes;
+import net.minecraft.world.level.block.AbstractBedBlock;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BedPart;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -41,6 +47,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.UUID;
 
 /**
  * 交給 AI 的摘要(docs/SPEC.md S3)，以及受傷、天黑、怪物靠近等事件(S5.2)。
@@ -57,6 +64,8 @@ public final class Observation {
 	private final Map<Integer, Seen> breaking = new HashMap<>();
 	private final List<long[]> placedByOthers = new ArrayList<>(); // {pos, tick}
 	private final Set<Integer> reportedHostiles = new HashSet<>();
+	private final Set<UUID> sleepingPlayers = new HashSet<>();
+	private ResourceKey<Level> observedDimension;
 	private float lastHealth = -1;
 	/** 最近一次打自己的生物(entity id，-1 表示沒有)和 tick。 */
 	private volatile int lastAttackerId = -1;
@@ -140,7 +149,7 @@ public final class Observation {
 		LocalPlayer p = mc.player;
 		BlockPos feet = p.blockPosition();
 		boolean outdoors = mc.level.canSeeSky(feet.above());
-		boolean night = DayClock.phase(mc.level.getOverworldClockTime()).equals("night");
+		boolean night = mc.level.dimension().equals(Level.OVERWORLD) && DayClock.phase(mc.level.getOverworldClockTime()).equals("night");
 		boolean unlit = mc.level.getBrightness(LightLayer.BLOCK, feet) == 0 && mc.level.getBrightness(LightLayer.SKY, feet) <= 7;
 		boolean dark = (outdoors && night) || (!outdoors && unlit);
 		Entity attacker = recentAttacker(mc, 100);
@@ -165,7 +174,9 @@ public final class Observation {
 		BlockPos pos = p.blockPosition();
 		Kv where = Kv.of().put("pos", Fmt.pos(pos)).put("dim", mc.level.dimension().identifier().getPath())
 			.put("biome", biomeName(mc, pos)).put("face", Fmt.facing(p.getYRot()))
-			.put("mode", Creative.modeName(mc.gameMode.getPlayerMode())).putIf(p.getAbilities().flying, "flying", true);
+			.put("mode", Creative.modeName(mc.gameMode.getPlayerMode())).putIf(p.getAbilities().flying, "flying", true)
+			.put("portal_cooldown", p.getPortalCooldown());
+		if (p.isOnPortalCooldown()) where.put("portal_hint", "Stay outside the portal until portal_cooldown reaches 0 (ticks)");
 		sb.append(where);
 		if (Creative.isCreative(mc)) sb.append("\nnote=\"creative: broken blocks do not drop; take materials with creative_take\"");
 		if (p.getAbilities().flying) sb.append("\nnote=\"flying; you land automatically before moving\"");
@@ -207,7 +218,7 @@ public final class Observation {
 		sb.append('\n').append(Kv.of().put("session", agent.session.state())
 			.put("left_min", agent.session.hasTimeLimit() ? String.valueOf(agent.session.remainingMs() / 60_000) : "unlimited"));
 		sb.append("\nreflexes=").append(agent.reflexes.summary());
-		sb.append('\n').append(timeOfDay(mc));
+		if (mc.level.dimension().equals(Level.OVERWORLD)) sb.append('\n').append(timeOfDay(mc));
 		if (agent.memory.size() > 0) sb.append('\n').append(Kv.of().put("memory", agent.memory.size()).put("hint", "memory_read"));
 		return truncate(sb, 0, "output truncated");
 	}
@@ -342,7 +353,7 @@ public final class Observation {
 			.put("terrain", sky ? "surface" : underground ? "underground" : "covered").put("y", feet.getY())
 			.put("face", Fmt.facing(p.getYRot())).putIf(drop >= 4, "drop_ahead", drop).putIf(p.isInWater(), "in_water", true));
 		sb.append('\n').append(biomeSummary(mc, feet, underground));
-		sb.append('\n').append(timeOfDay(mc));
+		if (mc.level.dimension().equals(Level.OVERWORLD)) sb.append('\n').append(timeOfDay(mc));
 
 		sb.append('\n').append(Kv.of("blocks").put("r", radius));
 		int groupsShown = 0, hidden = 0;
@@ -497,6 +508,7 @@ public final class Observation {
 
 	/** 推斷的最近行為(S3.4)：{@code mining:iron_ore,moving} 這類固定詞。 */
 	private String activity(Minecraft mc, AbstractClientPlayer o) {
+		if (o.isSleeping()) return "sleeping";
 		long now = agent.tick();
 		List<String> acts = new ArrayList<>();
 		Seen b = breaking.get(o.getId());
@@ -542,6 +554,22 @@ public final class Observation {
 		placedByOthers.removeIf(x -> t - x[1] > 600);
 		breaking.values().removeIf(s -> t - s.tick() > 600);
 
+		var dimension = mc.level.dimension();
+		boolean changedDimension = observedDimension != null && !observedDimension.equals(dimension);
+		if (changedDimension) {
+			agent.events.add("dimension_changed", Event.Level.PROMPT, Kv.of()
+				.put("from", observedDimension.identifier()).put("dim", dimension.identifier())
+				.put("pos", Fmt.pos(p.blockPosition())).put("portal_cooldown", p.getPortalCooldown()).toString());
+			sleepingPlayers.clear();
+			reportedHostiles.clear();
+			breaking.clear();
+			placedByOthers.clear();
+			lastAttackerId = -1;
+			nightReported = false;
+			sawDark = false;
+			lastHealth = -1;
+		}
+		observedDimension = dimension;
 		float h = p.getHealth();
 		// 暫停或待命時這裡不會執行：恢復後的第一個 tick 不跟暫停前的血量或天黑記憶比，免得補發假的 damaged、can_sleep 或正午 daybreak(L5、Low)
 		boolean firstOrResumed = lastObservedTick < 0 || t - lastObservedTick > 1;
@@ -569,35 +597,50 @@ public final class Observation {
 		}
 		lastHealth = h;
 
-		long clock = mc.level.getOverworldClockTime();
-		String phase = DayClock.phase(clock);
-		boolean sleepable = DayClock.canSleep(clock, false);
-		if (firstOrResumed) sleepReadyReported = sleepable;
-		if (phase.equals("dusk") && !nightReported) {
-			// 黃昏開始：離地表生怪約 1 分鐘，晴天 12542 起可以睡(M17)
-			nightReported = true;
-			String sleepIn = DayClock.sleepCountdown(clock);
-			CombatPolicy.Readiness r = CombatPolicy.readiness(Combat.assess(p));
-			agent.events.add("night_falling", Event.Level.BATCH,
-				DayClock.describe(clock) + (sleepIn != null ? " " + sleepIn : "") + " " + Kv.of().put("gear", r.label())
-					.put("missing", r.missing().isEmpty() ? "none" : String.join(",", r.missing())) + " | hint=head to shelter or a bed");
-		} else if (phase.equals("day")) {
-			nightReported = false;
+		Set<UUID> sleepingNow = new HashSet<>();
+		for (AbstractClientPlayer other : mc.level.players()) {
+			if (other == p || !other.isSleeping()) continue;
+			sleepingNow.add(other.getUUID());
+			if (!sleepingPlayers.contains(other.getUUID())) {
+				agent.events.add("player_sleeping", Event.Level.PROMPT, Kv.of()
+					.put("player", other.getName().getString()).put("pos", Fmt.pos(other.blockPosition())).toString());
+			}
 		}
-		if (sleepable && !sleepReadyReported) {
-			sleepReadyReported = true;
-			agent.events.add("can_sleep", Event.Level.PROMPT, DayClock.describe(clock) + " | hint=you can sleep in a bed now");
-		} else if (!sleepable) {
-			sleepReadyReported = false;
-		}
-		if (DayClock.isDark(clock)) {
-			sawDark = true;
-		} else if (sawDark) {
-			// 剛過完夜晚：叫醒等天亮的 wait_events；下雨時不死系不會自燃
-			sawDark = false;
-			String w = weather(mc);
-			agent.events.add("daybreak", Event.Level.PROMPT, "time=day weather=" + w + " | hint="
-				+ (w.equals("clear") ? "undead burn in sunlight; safe to go out" : "undead do not burn in rain; stay careful"));
+		sleepingPlayers.retainAll(sleepingNow);
+		sleepingPlayers.addAll(sleepingNow);
+
+		if (dimension.equals(Level.OVERWORLD)) {
+			long clock = mc.level.getOverworldClockTime();
+			String phase = DayClock.phase(clock);
+			var rule = mc.level.environmentAttributes().getValue(EnvironmentAttributes.BED_RULE, p.blockPosition());
+			boolean sleepable = bedUsable(rule) && rule.canSleep(mc.level);
+			if (firstOrResumed || changedDimension) sleepReadyReported = sleepable;
+			if (phase.equals("dusk") && !nightReported) {
+				// 黃昏開始：離地表生怪約 1 分鐘，晴天 12542 起可以睡(M17)
+				nightReported = true;
+				String sleepIn = DayClock.sleepCountdown(clock);
+				CombatPolicy.Readiness r = CombatPolicy.readiness(Combat.assess(p));
+				agent.events.add("night_falling", Event.Level.BATCH,
+					DayClock.describe(clock) + (sleepIn != null ? " " + sleepIn : "") + " " + Kv.of().put("gear", r.label())
+						.put("missing", r.missing().isEmpty() ? "none" : String.join(",", r.missing())) + " | hint=head to shelter or a bed");
+			} else if (phase.equals("day")) {
+				nightReported = false;
+			}
+			if (sleepable && !sleepReadyReported) {
+				sleepReadyReported = true;
+				agent.events.add("can_sleep", Event.Level.PROMPT, DayClock.describe(clock) + " | hint=you can sleep in a bed now");
+			} else if (!sleepable) {
+				sleepReadyReported = false;
+			}
+			if (DayClock.isDark(clock)) {
+				sawDark = true;
+			} else if (sawDark) {
+				// 剛過完夜晚：叫醒等天亮的 wait_events；下雨時不死系不會自燃
+				sawDark = false;
+				String w = weather(mc);
+				agent.events.add("daybreak", Event.Level.PROMPT, "time=day weather=" + w + " | hint="
+					+ (w.equals("clear") ? "undead burn in sunlight; safe to go out" : "undead do not burn in rain; stay careful"));
+			}
 		}
 
 		if (t % 20 == 0 && !p.getAbilities().invulnerable) {
@@ -605,7 +648,8 @@ public final class Observation {
 			if (level == CombatPolicy.DangerLevel.HIGH && !dangerReported) {
 				dangerReported = true;
 				agent.events.add("danger_rising", Event.Level.PROMPT, dangerKv(mc)
-					+ " | hint=stop outdoor work: go to shelter or a bed, light the area up, or wall yourself in; make what missing lists");
+					+ " | hint=head to shelter" + (dimension.equals(Level.OVERWORLD) ? " or a bed" : "")
+					+ ", light the area up, or wall yourself in; make what missing lists");
 			} else if (level == CombatPolicy.DangerLevel.LOW) {
 				dangerReported = false;
 			}
@@ -626,7 +670,25 @@ public final class Observation {
 		}
 	}
 
+	/** 原版床的使用規則以床頭的位置為準，草床和普通床也各有自己的規則。 */
+	static BedRule bedRule(Level level, BlockPos pos, BlockState state) {
+		if (!(state.getBlock() instanceof AbstractBedBlock bed)) return null;
+		BlockPos head = state.getValue(AbstractBedBlock.PART) == BedPart.FOOT
+			? pos.relative(AbstractBedBlock.getConnectedDirection(state)) : pos;
+		return bed.getBedRule(level, head);
+	}
+
+	static boolean bedUsable(BedRule rule) {
+		return rule != null && !rule.destroyOnUse() && rule.canSleep() != BedRule.Rule.NEVER;
+	}
+
+	public static boolean bedUsable(Level level, BlockPos pos, BlockState state) {
+		return bedUsable(bedRule(level, pos, state));
+	}
+
 	public void resetWorld() {
+		observedDimension = null;
+		sleepingPlayers.clear();
 		breaking.clear();
 		placedByOthers.clear();
 		reportedHostiles.clear();

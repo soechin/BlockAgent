@@ -6,6 +6,7 @@ import blockagent.game.Bari;
 import blockagent.mcp.ErrorCode;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -46,6 +47,7 @@ public final class MineTask extends Task {
 		return currentTicks + 1;
 	}
 
+
 	private String blockersAround(Minecraft mc, BlockPos here) {
 		java.util.Set<String> out = new java.util.LinkedHashSet<>();
 		for (BlockPos p : BlockPos.betweenClosed(here.offset(-1, 0, -1), here.offset(1, 2, 1))) {
@@ -55,6 +57,12 @@ public final class MineTask extends Task {
 			if (out.size() >= 4) break;
 		}
 		return String.join(",", out);
+	}
+
+	private String miningPosition(Minecraft mc) {
+		BlockPos here = mc.player.blockPosition();
+		String blockers = blockersAround(mc, here);
+		return "pos=" + blockagent.game.Fmt.pos(here) + (blockers.isEmpty() ? "" : " nearby_protected=" + blockers);
 	}
 
 	public MineTask(Agent agent, List<Block> blocks, String label, int count, int radius, boolean search) {
@@ -169,12 +177,20 @@ public final class MineTask extends Task {
 			if (++idleTicks > 20) {
 				BlockPos o = origin;
 				int scanRadius = search ? 48 : radius;
-				int left = Moves.scan(mc, blocks, scanRadius, 20, p -> agent.guard.canBreak(mc.level, p).allowed()
-					&& (search || o == null || withinRadius(o.getX(), o.getY(), o.getZ(), p.getX(), p.getY(), p.getZ(), radius))).size();
-				if (left > 0) {
-					fail(ErrorCode.PATH_BLOCKED, left + " more " + label + " nearby but unreachable (terrain or others' blocks in the way; the rules forbid breaking those)");
-				} else {
+				java.util.function.Predicate<BlockPos> inRange = p -> search || o == null
+					|| withinRadius(o.getX(), o.getY(), o.getZ(), p.getX(), p.getY(), p.getZ(), radius);
+				List<BlockPos> allowedTargets = Moves.scan(mc, blocks, scanRadius, 1,
+					p -> inRange.test(p) && agent.guard.canBreak(mc.level, p).allowed());
+				if (!allowedTargets.isEmpty()) {
+					reportUnreachable(mc, allowedTargets.getFirst());
+					return;
+				}
+				var nearby = Moves.scan(mc, blocks, scanRadius, 1, inRange);
+				if (nearby.isEmpty()) {
 					fail(ErrorCode.NOT_FOUND, "no more " + label + (search ? " found" : " within radius " + radius + " (pass search=true to explore)"));
+				} else {
+					var blocked = agent.guard.canBreak(mc.level, nearby.getFirst());
+					fail(blocked.code(), blocked.reason(), blocked.hint());
 				}
 			}
 		} else {
@@ -187,11 +203,27 @@ public final class MineTask extends Task {
 				trappedAnchor = here.immutable();
 				trappedMined = mined;
 			} else if (trappedTicks >= TRAPPED_TICKS) {
-				String blockers = blockersAround(mc, here);
-				fail(ErrorCode.PATH_BLOCKED, "trapped at " + blockagent.game.Fmt.pos(here) + " with no path to " + label
-					+ (blockers.isEmpty() ? "" : "; blocked_by=" + blockers), "inspect_area around you, or goto an open exit first");
+				fail(ErrorCode.PATH_BLOCKED, "trapped with no path to " + label + "; " + miningPosition(mc),
+					"inspect_area around you, or goto an open exit first");
 			}
 		}
+	}
+
+	private void reportUnreachable(Minecraft mc, BlockPos target) {
+		boolean exposed = false;
+		int protectedSides = 0;
+		for (Direction d : Direction.values()) {
+			BlockPos side = target.relative(d);
+			BlockState state = mc.level.getBlockState(side);
+			if (state.getCollisionShape(mc.level, side).isEmpty()) exposed = true;
+			else if (!agent.guard.canPathBreak(side.getX(), side.getY(), side.getZ(), state)) protectedSides++;
+		}
+		String hint = exposed ? "inspect the route, or goto a clearer approach and retry"
+			: protectedSides == 0 ? "use inspect_area and break_block to expose the vein through nearby natural blocks"
+			: protectedSides == Direction.values().length ? "the vein is surrounded by protected blocks; choose another deposit"
+			: "use inspect_area and approach the vein from a side without protected blocks";
+		fail(ErrorCode.PATH_BLOCKED, label + " is unreachable for Baritone; nearest=" + blockagent.game.Fmt.pos(target)
+			+ " exposed=" + exposed + " protected_sides=" + protectedSides + "; " + miningPosition(mc), hint);
 	}
 
 	/** 還有剛掉在最後那格附近的物品要撿就走過去，回傳 true；撿完或超過 3 秒回傳 false。 */

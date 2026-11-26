@@ -119,7 +119,7 @@ public final class McpServer implements AutoCloseable {
 
 	/** 規劃服務的兩個端點：GET /plan/context 回傳快照文字；POST /plan/result 交出結果，回傳 null 表示接受，否則是拒絕原因。 */
 	public interface PlanBridge {
-		String context();
+		JsonObject context();
 
 		String accept(JsonObject result);
 	}
@@ -239,9 +239,9 @@ public final class McpServer implements AutoCloseable {
 				send(ex, 405, null);
 				return;
 			}
-			JsonObject o = new JsonObject();
+			JsonObject o;
 			try {
-				o.addProperty("snapshot", bridge.context());
+				o = bridge.context();
 			} catch (RuntimeException e) {
 				LOG.error("規劃快照失敗", e);
 				send(ex, 500, null);

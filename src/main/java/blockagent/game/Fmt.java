@@ -74,9 +74,12 @@ public final class Fmt {
 	public static Kv status(LocalPlayer p) {
 		Kv kv = Kv.of();
 		if (p == null) return kv;
-		return kv.put("hp", Math.round(p.getHealth()) + "/" + Math.round(p.getMaxHealth()))
-			.put("food", p.getFoodData().getFoodLevel() + "/20").put("pos", pos(p.blockPosition()))
-			.raw(blockagent.core.DayClock.brief(p.level().getOverworldClockTime()));
+		kv.put("hp", Math.round(p.getHealth()) + "/" + Math.round(p.getMaxHealth()))
+			.put("food", p.getFoodData().getFoodLevel() + "/20").put("pos", pos(p.blockPosition()));
+		if (p.level().dimension().equals(net.minecraft.world.level.Level.OVERWORLD)) {
+			kv.raw(blockagent.core.DayClock.brief(p.level().getOverworldClockTime()));
+		}
+		return kv;
 	}
 
 	/**
