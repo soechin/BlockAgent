@@ -400,6 +400,22 @@ class CoreLogicTest {
 		assertFalse(l.isOwned(NETHER, p), "主世界的更新不能確認地獄的放置");
 	}
 
+	/** R4：剛送出放置、尚未收到伺服器確認的同種方塊可視為自己剛放的，避免墊腳競態誤報。 */
+	@Test
+	void pendingSelfMatchesWithinWindowAndDimension() {
+		OwnershipLedger l = new OwnershipLedger();
+		long p = OwnershipLedger.pack(81, 60, 205);
+		l.expectPlacement(OW, p, "minecraft:cobblestone", 100);
+		assertTrue(l.isPendingSelf(OW, p, "minecraft:cobblestone", 101));
+		assertTrue(l.isPendingSelf(OW, p, "minecraft:cobblestone", 100 + OwnershipLedger.CONFIRM_TICKS));
+		assertFalse(l.isPendingSelf(OW, p, "minecraft:dirt", 101), "方塊種類不同不能算");
+		assertFalse(l.isPendingSelf(OW, p, "minecraft:cobblestone", 100 + OwnershipLedger.CONFIRM_TICKS + 1), "逾期不能算");
+		assertFalse(l.isPendingSelf(NETHER, p, "minecraft:cobblestone", 101), "不同維度不能算");
+		l.onBlockUpdate(OW, p, "minecraft:cobblestone", false, 102, true);
+		assertTrue(l.isOwned(OW, p));
+		assertFalse(l.isPendingSelf(OW, p, "minecraft:cobblestone", 102), "確認進帳本後移除 pending");
+	}
+
 	@Test
 	void ledgerPersistence() {
 		OwnershipLedger l = new OwnershipLedger();

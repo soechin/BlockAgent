@@ -390,4 +390,27 @@ class McpServerTest {
 		assertEquals(1234, o.get("port").getAsInt());
 		assertEquals(token, o.get("token").getAsString());
 	}
+
+	/** R14：ToolRegistry 捕獲 Args.BadArgument 與內部例外時呼叫 onError，且 onError 自己丟例外不影響回傳。 */
+	@Test
+	void toolRegistryNotifiesOnErrorForBadArgumentAndInternal() {
+		var seen = new java.util.ArrayList<String>();
+		registry.register("boom", "Throw", Schema.object().build(), a -> {
+			throw new IllegalStateException("kaboom");
+		});
+		registry.setOnError((name, msg) -> seen.add(name + ":" + msg));
+
+		var bad = registry.call("echo", new JsonObject());
+		assertEquals("INVALID_ARGUMENT", bad.code());
+		var internal = registry.call("boom", new JsonObject());
+		assertEquals("INTERNAL", internal.code());
+		assertEquals(2, seen.size());
+		assertTrue(seen.get(0).startsWith("echo:INVALID_ARGUMENT "), seen.get(0));
+		assertTrue(seen.get(1).startsWith("boom:INTERNAL IllegalStateException (kaboom)"), seen.get(1));
+
+		registry.setOnError((name, msg) -> {
+			throw new RuntimeException("log failed");
+		});
+		assertEquals("INVALID_ARGUMENT", registry.call("echo", new JsonObject()).code());
+	}
 }

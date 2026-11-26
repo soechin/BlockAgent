@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """BlockAgent 的 stdio MCP 規劃服務。stdout 保留給 JSON-RPC。"""
 
+import atexit
 import concurrent.futures
 import http.client
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -116,28 +118,65 @@ def codex_overrides(settings, prefix=""):
     return args
 
 
+_FALLBACK_WORKDIR = None
+
+
+def planner_workdir():
+    """固定的規劃工作目錄：Codex 會把 cwd 放進 prompt，每次換隨機目錄會讓快取前綴斷掉(命中率 0)。"""
+    global _FALLBACK_WORKDIR
+    home = os.environ.get("CODEX_HOME")
+    if home:
+        candidate = Path(home, "planner-workdir")
+        try:
+            candidate.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(candidate, 0o700)
+            return candidate
+        except OSError:
+            pass
+    if _FALLBACK_WORKDIR is None:
+        _FALLBACK_WORKDIR = Path(tempfile.mkdtemp(prefix="blockagent-plan-"))
+        atexit.register(shutil.rmtree, str(_FALLBACK_WORKDIR), ignore_errors=True)
+    return _FALLBACK_WORKDIR
+
+
+def write_if_changed(path, text):
+    try:
+        if path.read_text(encoding="utf-8") == text:
+            return
+    except OSError:
+        pass
+    path.write_text(text, encoding="utf-8")
+
+
+def ordered_request(request):
+    """靜態的快照放最前面，每次不同的目標放後面，讓輸入前綴盡量不變。"""
+    ordered = {key: request[key] for key in ("game_snapshot", "goal", "context", "recent_failures") if key in request}
+    ordered.update({key: value for key, value in request.items() if key not in ordered})
+    return ordered
+
+
 def codex_plan(model, request, usage):
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("BLOCKAGENT_") and key != "PROMPT_FILE"}
     settings = codex_restrictions()
     settings["model_reasoning_effort"] = "low"
-    with tempfile.TemporaryDirectory(prefix="blockagent-plan-") as workdir:
-        schema = Path(workdir, "plan.json")
-        schema.write_text(json.dumps(PLAN_SCHEMA), encoding="utf-8")
-        instructions = Path(workdir, "instructions.txt")
-        instructions.write_text(INSTRUCTIONS, encoding="utf-8")
-        settings["model_instructions_file"] = str(instructions)
-        argv = ["codex", "--no-daemon", "exec", "--ignore-user-config", "--ignore-rules",
-                "--ephemeral", "--skip-git-repo-check", "--json", "--output-schema", str(schema),
-                "--model", model, *codex_overrides(settings), "-c", "mcp_servers={}", "-"]
-        try:
-            result = subprocess.run(argv, input=json.dumps(request, ensure_ascii=False),
-                                    cwd=workdir, env=env, capture_output=True, text=True,
-                                    encoding="utf-8", errors="replace", timeout=TIMEOUT)
-        except subprocess.TimeoutExpired as exc:
-            raise PlannerError("TIMEOUT", "規劃超過 120 秒，請先依目前資訊繼續。") from exc
-        except OSError as exc:
-            raise PlannerError("CLI_FAILED", "無法啟動 Codex 規劃。") from exc
+    workdir = planner_workdir()
+    schema = Path(workdir, "plan.json")
+    write_if_changed(schema, json.dumps(PLAN_SCHEMA))
+    instructions = Path(workdir, "instructions.txt")
+    write_if_changed(instructions, INSTRUCTIONS)
+    settings["model_instructions_file"] = str(instructions)
+    argv = ["codex", "--no-daemon", "exec", "--ignore-user-config", "--ignore-rules",
+            "--ephemeral", "--skip-git-repo-check", "--json", "--output-schema", str(schema),
+            "--model", model, *codex_overrides(settings), "-c", "mcp_servers={}", "-"]
+    try:
+        result = subprocess.run(argv, input=json.dumps(ordered_request(request), ensure_ascii=False),
+                                cwd=str(workdir), env=env, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=TIMEOUT)
+    except subprocess.TimeoutExpired as exc:
+        raise PlannerError("TIMEOUT", "規劃超過 120 秒，請先依目前資訊繼續。") from exc
+    except OSError as exc:
+        raise PlannerError("CLI_FAILED", "無法啟動 Codex 規劃。") from exc
     last_message = None
     for line in result.stdout.splitlines():
         try:

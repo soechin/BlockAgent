@@ -80,4 +80,26 @@ class TaskPolicyTest {
 		assertFalse(SmeltTask.canClearOwnLeftoverFuel(true, false, true, false, true, true), "還有產物不可取");
 		assertFalse(SmeltTask.canClearOwnLeftoverFuel(true, false, true, true, true, false), "背包放不下不可取");
 	}
+
+	/** R8：採礦啟動中卻沒有路徑、沒離開原地且沒挖到新方塊時才累計受困 tick，任一條件改變即歸零。 */
+	@Test
+	void mineTrappedTicksResetsUnlessStuckWithoutPath() {
+		int t = MineTask.nextTrappedTicks(0, true, false, false, false);
+		assertEquals(1, t);
+		t = MineTask.nextTrappedTicks(t, true, false, false, false);
+		assertEquals(2, t);
+		assertEquals(0, MineTask.nextTrappedTicks(t, false, false, false, false), "採礦未啟動應歸零");
+		assertEquals(0, MineTask.nextTrappedTicks(t, true, true, false, false), "有路徑應歸零");
+		assertEquals(0, MineTask.nextTrappedTicks(t, true, false, true, false), "離開原地應歸零");
+		assertEquals(0, MineTask.nextTrappedTicks(t, true, false, false, true), "挖到新方塊應歸零");
+	}
+
+	/** R6：施工擋下日誌節流首次(last=-1)必寫、100 tick 內略過、滿 100 tick 再寫，不可因 Long.MIN_VALUE 溢位失效。 */
+	@Test
+	void buildBlockedLogThrottleHandlesFirstCallAndInterval() {
+		assertTrue(blockagent.game.RuleGuard.shouldLogBuildBlocked(0, -1));
+		assertTrue(blockagent.game.RuleGuard.shouldLogBuildBlocked(500, -1));
+		assertFalse(blockagent.game.RuleGuard.shouldLogBuildBlocked(599, 500));
+		assertTrue(blockagent.game.RuleGuard.shouldLogBuildBlocked(600, 500));
+	}
 }

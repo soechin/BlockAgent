@@ -207,7 +207,10 @@ public final class Tools {
 
 	static Block parseBlock(String id) {
 		Identifier rl = Identifier.tryParse(norm(id));
-		if (rl == null || !BuiltInRegistries.BLOCK.containsKey(rl)) throw new Args.BadArgument("unknown block id: " + id);
+		if (rl == null || !BuiltInRegistries.BLOCK.containsKey(rl)) {
+			boolean isItem = rl != null && BuiltInRegistries.ITEM.containsKey(rl);
+			throw new Args.BadArgument("unknown block id: " + id + (isItem ? " (this is an item id, not a block id)" : ""));
+		}
 		return BuiltInRegistries.BLOCK.getValue(rl);
 	}
 
@@ -223,6 +226,12 @@ public final class Tools {
 			case "door", "doors" -> BlockTags.DOORS;
 			case "plank", "planks" -> BlockTags.PLANKS;
 			case "wool" -> BlockTags.WOOL;
+			case "stair", "stairs" -> BlockTags.STAIRS;
+			case "slab", "slabs" -> BlockTags.SLABS;
+			case "fence", "fences" -> BlockTags.FENCES;
+			case "trapdoor", "trapdoors" -> BlockTags.TRAPDOORS;
+			case "crop", "crops" -> BlockTags.CROPS;
+			case "sapling", "saplings" -> BlockTags.SAPLINGS;
 			default -> null;
 		};
 	}
@@ -363,7 +372,7 @@ public final class Tools {
 				.enumString("mode", "auto: per-block when small or filtered", false, "auto", "summary", "blocks").def("auto")
 				.string("type", "Only this block id", false)
 				.integer("offset", "Per-block page start", false).range(0, AreaInspection.MAX_VOLUME).def(0)
-				.integer("limit", null, false).range(1, AreaInspection.PAGE_SIZE).def(AreaInspection.PAGE_SIZE).build(),
+				.integer("limit", null, false).range(1, AreaInspection.MAX_LIMIT).def(AreaInspection.PAGE_SIZE).build(),
 			args -> {
 				Args g = new Args(args);
 				var region = AreaInspection.Region.between(corner(g, "from"), corner(g, "to"));
@@ -376,11 +385,11 @@ public final class Tools {
 					default -> throw new Args.BadArgument("mode must be auto, summary or blocks");
 				};
 				int offset = g.integer("offset", 0, 0, AreaInspection.MAX_VOLUME);
-				int limit = g.integer("limit", AreaInspection.PAGE_SIZE, 1, AreaInspection.PAGE_SIZE);
+				int limit = g.integer("limit", AreaInspection.PAGE_SIZE, 1, AreaInspection.MAX_LIMIT);
 				return observe(mc -> AreaInspection.inspect(mc.level, a.observation, region, details, filter, offset, limit));
 			});
 		t.register("find_blocks", "Find the nearest blocks of given types in loaded chunks, with owner.",
-			Hints.READ, Schema.object().string("type", "Block id or group (log, bed, door, wool, iron_ore incl. deepslate); comma-separate up to 8", true)
+			Hints.READ, Schema.object().string("type", "Block id or group (log, bed, door, stairs, slab, fence, trapdoor, plank, wool, crop, sapling, iron_ore incl. deepslate); comma-separate up to 8", true)
 				.integer("radius", null, false).range(4, 96).def(48).integer("max", "Per type", false).range(1, 50).def(10).build(),
 			args -> {
 				Args g = new Args(args);
@@ -797,7 +806,7 @@ public final class Tools {
 					List<BlockPos> tables = Moves.scan(mc, List.of(Blocks.CRAFTING_TABLE), 16, 1, null);
 					BlockPos table = tables.isEmpty() ? null : tables.getFirst();
 					Map<String, Integer> inv = new HashMap<>();
-					Inv.summary(mc.player).forEach((k, v) -> inv.put("minecraft:" + k, v));
+					Inv.summaryWithOffhand(mc.player).forEach((k, v) -> inv.put("minecraft:" + k, v));
 					if (a.recipes.craftingRecipesFor(id).isEmpty()) {
 						return ToolResult.error(ErrorCode.INVALID_ARGUMENT, Kv.of().put("item", Inv.id(item)), "no crafting recipe",
 							"smelt it, or get it another way");
@@ -809,10 +818,26 @@ public final class Tools {
 						return ToolResult.error(ErrorCode.MISSING_MATERIALS, Kv.of().put("item", Inv.id(item)).put("missing", Kv.counts(miss)),
 							"not enough materials");
 					}
+					Set<String> pullOffhandKeep = null;
+					if (!mc.player.getOffhandItem().isEmpty()) {
+						// 材料在副手(R12)：先做純檢查，通過 BUSY 後再於 CraftTask.start 換回主背包(工作台畫面沒有副手格)
+						Map<String, Integer> mainOnly = new HashMap<>();
+						Inv.summary(mc.player).forEach((k, v) -> mainOnly.put("minecraft:" + k, v));
+						if (!a.recipes.planCraft(id, count, mainOnly, table != null).ok()) {
+							Set<String> keep = new java.util.HashSet<>();
+							for (var st : plan.steps()) keep.addAll(st.consumes().keySet());
+							if (plan.needsTable() && table == null) keep.add("minecraft:crafting_table");
+							if (Inv.findOffhandPullSlot(mc.player, s -> keep.contains(BuiltInRegistries.ITEM.getKey(s.getItem()).toString())) < 0) {
+								return ToolResult.error(ErrorCode.MISSING_MATERIALS, Kv.of().put("item", Inv.id(item)),
+									"a needed material is in the offhand and the main inventory is full", "drop or store one item, then craft again");
+							}
+							pullOffhandKeep = keep;
+						}
+					}
 					Kv pre = !plan.needsTable() ? Kv.of().put("uses", "inventory_grid")
 						: table != null ? Kv.of().put("uses", "table").put("table", Fmt.pos(table)).put("owner", Fmt.owner(a, table, mc.level.getBlockState(table)))
 						: Kv.of().put("uses", "new_table");
-					return a.tasks.start(new CraftTask(a, plan, id, count, table), g.bool("replace", false), pre.toString());
+					return a.tasks.start(new CraftTask(a, plan, id, count, table, pullOffhandKeep), g.bool("replace", false), pre.toString());
 				});
 			});
 		taskTool(t, a, "smelt", "Smelt in a furnace within 32 blocks (anyone's) or one placed from inventory; adds input and "
@@ -1255,7 +1280,7 @@ public final class Tools {
 		long mark = a.guard.blockMark();
 		net.minecraft.world.InteractionResult r;
 		if (pos != null) {
-			r = Moves.useOn(mc, pos, Moves.exposedFaceToward(mc, pos));
+			r = Moves.useOnWithShieldBypass(mc, pos, Moves.exposedFaceToward(mc, pos));
 			if (!r.consumesAction() && a.guard.blockedAfter(mark) == null) r = mc.gameMode.useItem(p, InteractionHand.MAIN_HAND);
 		} else {
 			r = mc.gameMode.useItem(p, InteractionHand.MAIN_HAND);
@@ -1263,6 +1288,10 @@ public final class Tools {
 		Kv at = Kv.of().put("item", Inv.id(item)).put("pos", pos == null ? null : Fmt.pos(pos)).put("block", was == null ? null : RuleGuard.shortId(was));
 		var blocked = a.guard.blockedAfter(mark);
 		if (blocked != null) return ToolResult.error(blocked.code(), at, blocked.reason(), blocked.hint());
+		if (!r.consumesAction() && item == Items.BUCKET && was != null && was.is(Blocks.WATER) && !was.getFluidState().isSource()) {
+			return ToolResult.error(ErrorCode.INVALID_ARGUMENT, at.put("level", was.getFluidState().getAmount()),
+				"water here is flowing (not a source block)", "target a water source block (inspect_area shows water[level=0])");
+		}
 		if (!r.consumesAction()) return ToolResult.error(ErrorCode.INVALID_ARGUMENT, at, "using the item had no effect");
 		p.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
 		String change = Inv.diff(before, Inv.summary(p));
@@ -1284,12 +1313,24 @@ public final class Tools {
 		if (target == null) return ToolResult.error(ErrorCode.INVALID_ARGUMENT, what, "slot=armor needs a wearable item");
 		if (!p.getItemBySlot(target).is(item)) {
 			int idx = Inv.find(p, s -> s.is(item));
-			if (idx < 0) return missingItem(item, 0, 1);
-			if ((target != EquipmentSlot.MAINHAND || idx >= 9) && p.containerMenu != p.inventoryMenu) p.closeContainer();
-			switch (target) {
-				case MAINHAND -> Inv.selectInHand(mc, s -> s.is(item));
-				case OFFHAND -> Inv.swapToOffhand(mc, idx);
-				default -> Inv.click(mc, p.inventoryMenu, Inv.menuSlot(idx), 0, ContainerInput.QUICK_MOVE);
+			if (idx < 0 && p.getOffhandItem().is(item) && target != EquipmentSlot.OFFHAND) {
+				// 東西在副手(R12)：Inv.find 只掃主背包，直接把副手換到主手或換回背包再處理
+				if (p.containerMenu != p.inventoryMenu) p.closeContainer();
+				if (target == EquipmentSlot.MAINHAND) {
+					Inv.swapToOffhand(mc, p.getInventory().getSelectedSlot());
+				} else {
+					Inv.pullOffhandToMain(mc, s -> false);
+					idx = Inv.find(p, s -> s.is(item));
+					if (idx >= 0) Inv.click(mc, p.inventoryMenu, Inv.menuSlot(idx), 0, ContainerInput.QUICK_MOVE);
+				}
+			} else {
+				if (idx < 0) return missingItem(item, 0, 1);
+				if ((target != EquipmentSlot.MAINHAND || idx >= 9) && p.containerMenu != p.inventoryMenu) p.closeContainer();
+				switch (target) {
+					case MAINHAND -> Inv.selectInHand(mc, s -> s.is(item));
+					case OFFHAND -> Inv.swapToOffhand(mc, idx);
+					default -> Inv.click(mc, p.inventoryMenu, Inv.menuSlot(idx), 0, ContainerInput.QUICK_MOVE);
+				}
 			}
 		}
 		if (!p.getItemBySlot(target).is(item)) {

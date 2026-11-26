@@ -225,8 +225,11 @@ public final class Recipes {
 		if (needsTable && !tableNearby && inv.getOrDefault("minecraft:crafting_table", 0) == 0) {
 			// 需要工作台：用剩下的木板，不夠的話用原木先做木板
 			placesTable = true;
-			List<Step> tableSteps = planTable(inv, missing);
+			Map<String, Integer> tableMissing = new LinkedHashMap<>();
+			List<Step> tableSteps = planTable(inv, tableMissing);
 			steps.addAll(tableSteps);
+			// 工作台自己缺的木板另外標註，免得和成品配方的木板缺料混成同名兩筆
+			tableMissing.forEach((k, v) -> missing.merge(k + "(for_crafting_table)", v, Integer::sum));
 		}
 		steps.add(new Step(r, crafts, consumes));
 		return new Plan(steps, needsTable, placesTable, missing);

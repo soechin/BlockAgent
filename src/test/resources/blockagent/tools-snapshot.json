@@ -75,7 +75,7 @@
         "limit": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 32,
+          "maximum": 128,
           "default": 32
         }
       },
@@ -98,7 +98,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "description": "Block id or group (log, bed, door, wool, iron_ore incl. deepslate); comma-separate up to 8"
+          "description": "Block id or group (log, bed, door, stairs, slab, fence, trapdoor, plank, wool, crop, sapling, iron_ore incl. deepslate); comma-separate up to 8"
         },
         "radius": {
           "type": "integer",

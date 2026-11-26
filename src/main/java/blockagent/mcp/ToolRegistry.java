@@ -53,6 +53,14 @@ public final class ToolRegistry {
 
 	private final Map<String, Tool> tools = new LinkedHashMap<>();
 	private volatile Function<String, String> responseSuffix = name -> "";
+	private volatile java.util.function.BiConsumer<String, String> onError = (n, m) -> {
+	};
+
+	/** 工具呼叫因參數錯誤或內部例外失敗時通知(R14：給遊戲端 ActionLog 補記)。 */
+	public void setOnError(java.util.function.BiConsumer<String, String> onError) {
+		this.onError = onError == null ? (n, m) -> {
+		} : onError;
+	}
 
 	public synchronized ToolRegistry register(String name, String description, Hints hints, JsonObject schema, Handler handler) {
 		if (!name.matches("[a-z][a-z0-9_]{0,47}")) throw new IllegalArgumentException("工具名稱格式錯誤：" + name);
@@ -92,6 +100,14 @@ public final class ToolRegistry {
 		return arr;
 	}
 
+	private void notifyError(String name, String message) {
+		try {
+			onError.accept(name, message);
+		} catch (RuntimeException ignored) {
+			// 記日誌失敗不能影響工具回應
+		}
+	}
+
 	public ToolResult call(String name, JsonObject args) {
 		Tool t;
 		synchronized (this) {
@@ -102,8 +118,10 @@ public final class ToolRegistry {
 		try {
 			r = t.handler().call(args == null ? new JsonObject() : args);
 		} catch (Args.BadArgument e) {
+			notifyError(name, ErrorCode.INVALID_ARGUMENT + " " + e.getMessage());
 			r = ToolResult.error(ErrorCode.INVALID_ARGUMENT, e.getMessage());
 		} catch (Exception e) {
+			notifyError(name, ErrorCode.INTERNAL + " " + e.getClass().getSimpleName() + (e.getMessage() == null ? "" : " (" + e.getMessage() + ")"));
 			r = ToolResult.error(ErrorCode.INTERNAL, "internal error: " + e.getClass().getSimpleName()
 				+ (e.getMessage() == null ? "" : " (" + e.getMessage() + ")"));
 		}

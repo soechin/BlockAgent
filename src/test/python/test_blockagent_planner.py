@@ -147,6 +147,28 @@ class PlannerTest(unittest.TestCase):
                                  capture_output=True, text=True, env={"PATH": os.environ.get("PATH", "")})
             self.assertNotEqual(0, res.returncode, bad_port)
 
+    def test_codex_reuses_stable_workdir_and_orders_snapshot_first(self):
+        import tempfile
+        events = [
+            {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(PLAN)}},
+            {"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 20}},
+        ]
+        result = subprocess.CompletedProcess([], 0, "\n".join(map(json.dumps, events)), "")
+        with tempfile.TemporaryDirectory() as codex_home:
+            expected_workdir = str(Path(codex_home, "planner-workdir"))
+            with patch.dict(os.environ, {"CODEX_HOME": codex_home}):
+                with patch.object(planner.subprocess, "run", return_value=result) as run:
+                    planner.codex_plan("gpt-6.2-sol", {"goal": "蓋屋", "game_snapshot": "[player_tools]\ngoto"}, {})
+                    planner.codex_plan("gpt-6.2-sol", {"goal": "挖礦", "game_snapshot": "[player_tools]\ngoto"}, {})
+            self.assertEqual(2, run.call_count)
+            for call in run.call_args_list:
+                self.assertEqual(expected_workdir, call.kwargs["cwd"])
+                argv = call.args[0]
+                self.assertIn(str(Path(expected_workdir, "plan.json")), argv)
+                self.assertIn(f'model_instructions_file={json.dumps(str(Path(expected_workdir, "instructions.txt")))}', argv)
+                payload = json.loads(call.kwargs["input"])
+                self.assertEqual("game_snapshot", list(payload.keys())[0])
+
 
 class FakeBridge:
     def __init__(self, snapshot):

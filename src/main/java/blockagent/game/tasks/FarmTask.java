@@ -115,7 +115,7 @@ public final class FarmTask extends Task {
 							fail(ErrorCode.MISSING_TOOL, "hoe is gone");
 							return;
 						}
-						Moves.useOn(mc, cur(), Direction.UP);
+						Moves.useOnWithShieldBypass(mc, cur(), Direction.UP);
 					}
 					phase = Phase.WAIT;
 				} else {

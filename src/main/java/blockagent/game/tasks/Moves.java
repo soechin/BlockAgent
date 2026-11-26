@@ -83,6 +83,27 @@ public final class Moves {
 		return r;
 	}
 
+	/**
+	 * MC 26.3 的 BlockTransformer(斧/鏟/鋤)在副手拿盾牌且沒蹲下時會回 PASS 讓位給舉盾，鋤地、削皮、鏟草徑都沒反應(R11)。
+	 * 同一 tick 先用正常的容器 SWAP 暫時換走副手盾牌，useOn 完 finally 立刻換回；封包照順序送，伺服器看得到同樣的順序。
+	 */
+	public static InteractionResult useOnWithShieldBypass(Minecraft mc, BlockPos pos, Direction face) {
+		LocalPlayer p = mc.player;
+		boolean needsBypass = p.getMainHandItem().has(net.minecraft.core.component.DataComponents.BLOCK_TRANSFORMER)
+			&& p.getOffhandItem().has(net.minecraft.core.component.DataComponents.BLOCKS_ATTACKS)
+			&& !p.isSecondaryUseActive()
+			&& p.containerMenu == p.inventoryMenu;
+		if (!needsBypass) return useOn(mc, pos, face);
+		int swapIdx = blockagent.game.Inv.findOffhandShieldSwapSlot(p);
+		if (swapIdx < 0) return useOn(mc, pos, face);
+		blockagent.game.Inv.swapToOffhand(mc, swapIdx);
+		try {
+			return useOn(mc, pos, face);
+		} finally {
+			blockagent.game.Inv.swapToOffhand(mc, swapIdx);
+		}
+	}
+
 	/** 一次掃描最多拿幾格(Moves.scan 加大上限的天花板)。 */
 	static final int MAX_SCAN = 32_768;
 

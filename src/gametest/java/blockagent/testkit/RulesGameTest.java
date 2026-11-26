@@ -36,6 +36,7 @@ public class RulesGameTest implements FabricClientGameTest {
 			ownership(k, c, ming);
 			placeFacing(k, c);
 			protectedMine(k, c, ming);
+			reviewRegressions(k, c);
 		} catch (Exception e) {
 			throw new RuntimeException(e);
 		}
@@ -299,6 +300,112 @@ public class RulesGameTest implements FabricClientGameTest {
 		});
 		check(intact, "Baritone 挖礦時拆了朋友的木板");
 		System.out.println("[ok] Baritone 挖礦被朋友的牆擋下，木板完好：" + text.lines().filter(l -> l.contains("task_failed") || l.startsWith("ERR")).findFirst().orElse(text));
+	}
+
+	/**
+	 * 驗證 R5(尋路不拆自有建築)、R11(副手盾牌不擋鋤地)與 R13(stairs 群組、物品 ID 提示、inspect_area 上限、流動水提示)。
+	 */
+	private void reviewRegressions(TestKit k, BlockPos c) {
+		k.clearInventory();
+		k.agent().events.drainAll();
+
+		// 先走回起點 c，確保後續放置都在伸手可及範圍內
+		var back = k.ai.call(k.ctx, "goto", args("x", c.getX(), "y", c.getY(), "z", c.getZ()));
+		String backText = back.text().contains("task_done:") ? back.text() : back.text() + "\n" + k.eventsUntil("task_", 30);
+		check(back.ok() && backText.contains("task_done: task=goto"), "R5 回到起點失敗：" + backText);
+
+		// R5：自己放的木板牆，goto 必須繞路而不能拆牆，但 break_block 仍可直接拆
+		BlockPos wallBase = c.offset(3, 0, -1);
+		k.give("minecraft:oak_planks", 6);
+		k.give("minecraft:stone_axe", 1);
+		k.ctx.waitTicks(5);
+		for (int dz = 0; dz < 3; dz++) {
+			for (int dy = 0; dy < 2; dy++) {
+				BlockPos wp = wallBase.offset(0, dy, dz);
+				var pr = k.ai.call(k.ctx, "place_block", args("item", "oak_planks", "x", wp.getX(), "y", wp.getY(), "z", wp.getZ()));
+				check(pr.ok(), "R5 放置自家木板牆失敗：" + pr.text());
+			}
+		}
+		k.ctx.waitTicks(5);
+		BlockPos dest = c.offset(5, 0, 0);
+		var go = k.ai.call(k.ctx, "goto", args("x", dest.getX(), "y", dest.getY(), "z", dest.getZ()));
+		String goText = go.text().contains("task_done:") ? go.text() : go.text() + "\n" + k.eventsUntil("task_", 30);
+		check(go.ok() && goText.contains("task_done: task=goto"), "R5 goto 應繞過自有牆抵達目標：" + goText);
+		boolean wallIntact = k.server.computeOnServer(s -> {
+			for (int dz = 0; dz < 3; dz++) {
+				for (int dy = 0; dy < 2; dy++) {
+					if (!s.overworld().getBlockState(wallBase.offset(0, dy, dz)).is(Blocks.OAK_PLANKS)) return false;
+				}
+			}
+			return true;
+		});
+		check(wallIntact, "R5 Baritone 尋路拆毀了自己的木板牆");
+		var br = k.ai.call(k.ctx, "break_block", args("x", wallBase.getX(), "y", wallBase.getY(), "z", wallBase.getZ()));
+		String brText = br.text().contains("task_done:") ? br.text() : br.text() + "\n" + k.eventsUntil("task_", 20);
+		check(br.ok() && brText.contains("task_done: task=break_block"), "R5 break_block 仍應能主動拆自己的木板：" + brText);
+
+		// R11：副手拿盾牌時，use_item(stone_hoe) 與 till_and_plant 都能正常鋤地且盾牌留在副手
+		BlockPos grass1 = c.offset(6, -1, 3), grass2 = c.offset(7, -1, 3);
+		k.setBlock(grass1, Blocks.GRASS_BLOCK.defaultBlockState());
+		k.setBlock(grass2, Blocks.GRASS_BLOCK.defaultBlockState());
+		k.setBlock(grass1.above(), Blocks.AIR.defaultBlockState());
+		k.setBlock(grass2.above(), Blocks.AIR.defaultBlockState());
+		k.give("minecraft:shield", 1);
+		k.give("minecraft:stone_hoe", 1);
+		k.give("minecraft:wheat_seeds", 2);
+		k.ctx.waitTicks(5);
+		check(k.ai.call(k.ctx, "equip", args("item", "shield", "slot", "offhand")).ok(), "R11 裝備盾牌到副手失敗");
+		var hoe = k.ai.call(k.ctx, "use_item", args("item", "stone_hoe", "x", grass1.getX(), "y", grass1.getY(), "z", grass1.getZ()));
+		check(hoe.ok(), "R11 副手拿盾牌時 use_item(stone_hoe) 應該成功：" + hoe.text());
+		var farm = k.ai.call(k.ctx, "till_and_plant", args(
+			"from", grass2.getX() + "," + grass2.getY() + "," + grass2.getZ(),
+			"to", grass2.getX() + "," + grass2.getY() + "," + grass2.getZ(),
+			"seed", "wheat_seeds"));
+		String farmText = farm.text().contains("task_done:") ? farm.text() : farm.text() + "\n" + k.eventsUntil("task_", 20);
+		check(farm.ok() && farmText.contains("task_done: task=till_and_plant"), "R11 副手拿盾牌時 till_and_plant 應該成功：" + farmText);
+		k.ctx.waitTicks(5);
+		check(k.server.computeOnServer(s -> s.overworld().getBlockState(grass1).is(Blocks.FARMLAND)
+			&& s.overworld().getBlockState(grass2).is(Blocks.FARMLAND)
+			&& s.overworld().getBlockState(grass2.above()).is(Blocks.WHEAT)), "R11 伺服器端應變成耕地與小麥");
+		check(k.ctx.computeOnClient(mc -> mc.player.getOffhandItem().is(net.minecraft.world.item.Items.SHIELD)), "R11 鋤地後盾牌應留在副手");
+
+		// R13：find_blocks(stairs)、物品 ID 提示、inspect_area(limit=80)、流動水提示
+		BlockPos stair = c.offset(5, 0, 5);
+		k.setBlock(stair, Blocks.OAK_STAIRS.defaultBlockState());
+		k.ctx.waitTicks(3);
+		var foundStairs = k.ai.call(k.ctx, "find_blocks", args("type", "stairs", "radius", 16));
+		check(foundStairs.ok() && foundStairs.text().contains("oak_stairs"), "R13 find_blocks(stairs) 應該找得到樓梯：" + foundStairs.text());
+		var itemAsBlock = k.ai.call(k.ctx, "find_blocks", args("type", "wheat_seeds"));
+		k.expectError(itemAsBlock, "INVALID_ARGUMENT", "R13 傳入物品 ID 應報錯");
+		check(itemAsBlock.reason().contains("this is an item id, not a block id"), "R13 應該提示這是物品 ID：" + itemAsBlock.text());
+		var area = k.ai.call(k.ctx, "inspect_area", args(
+			"from", (c.getX() - 1) + "," + c.getY() + "," + (c.getZ() - 1),
+			"to", (c.getX() + 1) + "," + (c.getY() + 1) + "," + (c.getZ() + 1),
+			"limit", 80));
+		check(area.ok(), "R13 inspect_area(limit=80) 應該允許：" + area.text());
+
+		// 放一格水源在旁邊，讓 flowWater 自然變成穩定流動水(不會 3 tick 就蒸發成 air)
+		BlockPos sourceWater = c.offset(5, 0, 1);
+		BlockPos flowWater = c.offset(6, 0, 1);
+		k.setBlock(sourceWater, Blocks.WATER.defaultBlockState());
+		k.give("minecraft:bucket", 1);
+		check(k.waitUntil(20, mc -> mc.level.getBlockState(flowWater).is(Blocks.WATER)
+			&& !mc.level.getBlockState(flowWater).getFluidState().isSource()), "R13 測試用的流動水沒有流過來");
+		var bucket = k.ai.call(k.ctx, "use_item", args("item", "bucket", "x", flowWater.getX(), "y", flowWater.getY(), "z", flowWater.getZ()));
+		k.expectError(bucket, "INVALID_ARGUMENT", "R13 空桶撈流動水應報錯並提示");
+		check(bucket.text().contains("flowing") && bucket.text().contains("level="), "R13 應附註流動水與 level：" + bucket.text());
+
+		// 清理
+		for (int dz = 0; dz < 3; dz++) for (int dy = 0; dy < 2; dy++) k.setBlock(wallBase.offset(0, dy, dz), Blocks.AIR.defaultBlockState());
+		k.setBlock(grass1, Blocks.GRASS_BLOCK.defaultBlockState());
+		k.setBlock(grass2, Blocks.GRASS_BLOCK.defaultBlockState());
+		k.setBlock(grass2.above(), Blocks.AIR.defaultBlockState());
+		k.setBlock(stair, Blocks.AIR.defaultBlockState());
+		k.setBlock(sourceWater, Blocks.AIR.defaultBlockState());
+		k.setBlock(flowWater, Blocks.AIR.defaultBlockState());
+		k.clearInventory();
+		k.agent().events.drainAll();
+		System.out.println("[ok] R5/R11/R13 尋路不拆自家牆、副手盾牌鋤地、stairs/物品提示/limit=80/流動水提示皆驗證通過");
 	}
 
 	/** 手上換成指定工具，直接對方塊按右鍵(走最後防線，不經過工具)。 */

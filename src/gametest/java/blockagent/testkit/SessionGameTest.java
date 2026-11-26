@@ -39,6 +39,7 @@ public class SessionGameTest implements FabricClientGameTest {
 				pausedNoReflex(k);
 				eatReflex(k);
 				craftAndSmelt(k);
+				offhandCraftAndEquip(k);
 				t6(k, c);
 				t7TimeLimit(k);
 				t6Control(k);
@@ -221,6 +222,34 @@ public class SessionGameTest implements FabricClientGameTest {
 		k.clearInventory();
 		k.agent().events.drainAll();
 		System.out.println("[ok] C6/C7/H7 木鏟分兩次補燃料，暫停後重新打開熔爐，燒出 2 個鐵錠");
+	}
+
+	/**
+	 * R12：材料在副手時，craft 能自動將副手材料換回主背包完成合成，equip(mainhand) 也能直接換到主手。
+	 */
+	private void offhandCraftAndEquip(TestKit k) {
+		k.clearInventory();
+		k.give("minecraft:jungle_log", 4);
+		k.ctx.waitTicks(5);
+		check(k.ai.call(k.ctx, "equip", args("item", "jungle_log", "slot", "offhand")).ok(), "R12 放原木到副手失敗");
+		var craft = k.ai.call(k.ctx, "craft", args("item", "jungle_planks", "count", 4));
+		String craftText = craft.text().contains("task_done:") || craft.text().contains("task_failed:") ? craft.text()
+			: craft.text() + "\n" + k.eventsUntil("task_done:", 20);
+		check(craft.ok() && craftText.contains("task_done: task=craft"), "R12 副手有原木時應能合成木板：" + craftText);
+		int planks = k.ctx.computeOnClient(mc -> blockagent.game.Inv.countWithOffhand(mc.player, net.minecraft.world.item.Items.JUNGLE_PLANKS));
+		check(planks >= 4, "R12 應該做出至少 4 個叢林木板，實際 " + planks);
+
+		k.clearInventory();
+		k.give("minecraft:oak_log", 2);
+		k.ctx.waitTicks(5);
+		check(k.ai.call(k.ctx, "equip", args("item", "oak_log", "slot", "offhand")).ok(), "R12 放橡木原木到副手失敗");
+		var eqMain = k.ai.call(k.ctx, "equip", args("item", "oak_log", "slot", "mainhand"));
+		check(eqMain.ok(), "R12 equip(mainhand) 應該找得到副手物品：" + eqMain.text());
+		check(k.ctx.computeOnClient(mc -> mc.player.getMainHandItem().is(net.minecraft.world.item.Items.OAK_LOG)), "R12 橡木原木應該換到主手");
+
+		k.clearInventory();
+		k.agent().events.drainAll();
+		System.out.println("[ok] R12 副手材料合成與 equip(mainhand) 驗證通過");
 	}
 
 	/** 暫停時反射絕對不能動(原 T10 暫停檢查，M7.10)。 */

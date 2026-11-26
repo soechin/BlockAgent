@@ -136,12 +136,28 @@ public final class RuleGuard {
 			shortId(state) + " at " + x + "," + y + "," + z + " was placed by someone else (owner=other); cannot break");
 	}
 
+	/**
+	 * Baritone 尋路時這格能不能順手拆掉(R5)：canBreak 必須放行，而且非天然的自有建築方塊
+	 * (木板、圓石、門、床、箱子、熔爐等)一律不准尋路拆毀，除非是進行中 BuildTask 正要清除的格子。
+	 * 主動拆除(break_block、demolish、clear_area)不走尋路，不受影響。Baritone 尋路執行緒會呼叫，只讀執行緒安全的資料。
+	 */
+	public boolean canPathBreak(int x, int y, int z, BlockState state) {
+		if (state.isAir()) return true;
+		if (!canBreak(x, y, z, state).allowed()) return false;
+		var t = agent.tasks.current();
+		if (t instanceof BuildTask build && build.isClearing(x, y, z)) return true;
+		if (t instanceof blockagent.game.tasks.MineTask mine && mine.isMineTarget(state)) return true;
+		return isNatural(state);
+	}
+
 	/** S7.3b：放置的目標格是空氣或可替換方塊才行；會覆蓋其他方塊的，比照破壞判斷。 */
 	public Verdict canPlaceInto(Level level, BlockPos pos) {
 		BlockState cur = level.getBlockState(pos);
 		if (cur.isAir() || cur.canBeReplaced()) {
 			if (cur.isAir() || isNatural(cur) || isOwned(level, pos)) return Verdict.ALLOW;
 		}
+		// Baritone 墊腳連續點擊：上一格剛放的方塊還沒等到伺服器確認進帳本，不能當成別人的(R4)
+		if (agent.ledger.isPendingSelf(dim(level), pos.asLong(), blockId(cur), agent.tick())) return Verdict.ALLOW;
 		// 放置會覆蓋那格，規則比照破壞；但被別人的方塊擋住時，訊息要說「放不下去」而不是「不能拆」
 		Verdict v = canBreak(level, pos);
 		boolean othersBlock = !v.allowed() && !isOwned(level, pos) && !isNatural(cur)
@@ -398,6 +414,27 @@ public final class RuleGuard {
 	public Verdict blockedSince(long sinceTick) {
 		Verdict v = lastBlocked;
 		return v != null && lastBlockedTick >= sinceTick ? v : null;
+	}
+
+	private volatile long lastBuildBlockedLogTick = -1;
+
+	public static boolean shouldLogBuildBlocked(long now, long lastTick) {
+		return lastTick < 0 || now - lastTick >= 100;
+	}
+
+	/**
+	 * 施工中 canPlaceForBuild 擋下 Baritone 重複點擊或非法墊腳(R6)：照樣更新計數供 DoorPlacer 的 blockedAfter 讀取，
+	 * 但不送 PROMPT 事件、不記進 recentProblems，日誌每 100 tick 最多一筆，免得洗版嚇停 AI。
+	 */
+	public void reportBuildBlocked(String action, Verdict v) {
+		lastBlocked = v;
+		long now = agent.tick();
+		lastBlockedTick = now;
+		blockedCount.incrementAndGet();
+		if (shouldLogBuildBlocked(now, lastBuildBlockedLogTick)) {
+			lastBuildBlockedLogTick = now;
+			agent.log.log(ActionLog.Source.guard, action, v.code() + " " + v.reason());
+		}
 	}
 
 	public void reportBlocked(String action, Verdict v) {

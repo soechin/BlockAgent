@@ -44,4 +44,21 @@ class InvPolicyTest {
 		// 全部受保護：回傳 fallback
 		assertEquals(-1, Inv.chooseHotbarSwapSlot(allTools, allTools, allTools, -1));
 	}
+
+	/** R11：暫時換走副手盾牌時，優先挑空格，滿格時挑非主手且非盾牌的格子。 */
+	@Test
+	void chooseOffhandShieldSwapSlotPrefersEmptyThenNonShield() {
+		boolean[] occupied = {true, true, false, true};
+		boolean[] blocksAttacks = {true, false, false, false};
+		assertEquals(2, Inv.chooseOffhandShieldSwapSlot(occupied, blocksAttacks, 1), "有空格優先挑空格");
+
+		occupied[2] = true;
+		blocksAttacks[2] = true;
+		// 0 和 2 是盾牌，1 是目前主手，只剩 3 可換
+		assertEquals(3, Inv.chooseOffhandShieldSwapSlot(occupied, blocksAttacks, 1));
+
+		// 除了主手外全都是盾牌：不能拿另一個盾牌來換
+		blocksAttacks[3] = true;
+		assertEquals(-1, Inv.chooseOffhandShieldSwapSlot(occupied, blocksAttacks, 1));
+	}
 }

@@ -165,6 +165,75 @@ public final class Inv {
 		return !p.getInventory().getItem(hotbarSlot).isDamageableItem();
 	}
 
+	/** 暫時換走副手盾牌時，挑背包裡可以對調的格子：優先空格，其次非目前主手、非盾牌的格子；沒有回傳 -1(R11)。 */
+	static int chooseOffhandShieldSwapSlot(boolean[] occupied, boolean[] blocksAttacks, int selectedSlot) {
+		for (int i = 0; i < occupied.length; i++) {
+			if (i != selectedSlot && !occupied[i]) return i;
+		}
+		for (int i = 0; i < occupied.length; i++) {
+			if (i != selectedSlot && !blocksAttacks[i]) return i;
+		}
+		return -1;
+	}
+
+	public static int findOffhandShieldSwapSlot(Player p) {
+		Inventory inv = p.getInventory();
+		boolean[] occupied = new boolean[MAIN_SIZE];
+		boolean[] blocks = new boolean[MAIN_SIZE];
+		for (int i = 0; i < MAIN_SIZE; i++) {
+			ItemStack s = inv.getItem(i);
+			occupied[i] = !s.isEmpty();
+			blocks[i] = occupied[i] && s.has(net.minecraft.core.component.DataComponents.BLOCKS_ATTACKS);
+		}
+		return chooseOffhandShieldSwapSlot(occupied, blocks, inv.getSelectedSlot());
+	}
+
+	/** 主背包加副手的物品數量(R12：Inv.count 只掃 0–35 格，看不到副手)。 */
+	public static int countWithOffhand(Player p, Item item) {
+		ItemStack off = p.getOffhandItem();
+		return count(p, item) + (off.is(item) ? off.getCount() : 0);
+	}
+
+	/** 背包摘要加上副手的物品(R12)。 */
+	public static Map<String, Integer> summaryWithOffhand(Player p) {
+		Map<String, Integer> m = summary(p);
+		ItemStack off = p.getOffhandItem();
+		if (!off.isEmpty()) m.merge(id(off), off.getCount(), Integer::sum);
+		return m;
+	}
+
+	/**
+	 * 找一個主背包格子用來把副手換回主背包(R12，純查詢不修改狀態)：
+	 * 優先空格；沒有空格時挑一格 {@code keepInMain} 不要的東西(先避開目前主手格)。找不到回傳 -1。
+	 */
+	public static int findOffhandPullSlot(Player p, Predicate<ItemStack> keepInMain) {
+		if (p.getOffhandItem().isEmpty()) return -1;
+		Inventory inv = p.getInventory();
+		for (int i = 0; i < MAIN_SIZE; i++) {
+			if (inv.getItem(i).isEmpty()) return i;
+		}
+		for (int pass = 0; pass < 2; pass++) {
+			for (int i = 0; i < MAIN_SIZE; i++) {
+				if (pass == 0 && i == inv.getSelectedSlot()) continue;
+				if (!keepInMain.test(inv.getItem(i))) return i;
+			}
+		}
+		return -1;
+	}
+
+	/**
+	 * 把副手的東西換回主背包(R12)：3×3 工作台畫面沒有副手格，合成材料在副手就點不到。
+	 * 優先換到空格；沒有空格時換掉一格 {@code keepInMain} 不要的東西。回傳是否換成功。
+	 */
+	public static boolean pullOffhandToMain(Minecraft mc, Predicate<ItemStack> keepInMain) {
+		Player p = mc.player;
+		if (p.containerMenu != p.inventoryMenu || p.getOffhandItem().isEmpty()) return false;
+		int slot = findOffhandPullSlot(p, keepInMain);
+		if (slot < 0) return false;
+		swapToOffhand(mc, slot);
+		return true;
+	}
+
 	/** 背包第 idx 格跟副手對調(跟玩家在背包按 F 一樣)。開著別的容器時不做(點背包畫面的格子會跟伺服器對不上，M13)。 */
 	public static void swapToOffhand(Minecraft mc, int idx) {
 		Player p = mc.player;

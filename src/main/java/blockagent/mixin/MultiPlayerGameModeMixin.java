@@ -87,7 +87,17 @@ public abstract class MultiPlayerGameModeMixin {
 		BlockState before = blockagent$breaking.get();
 		blockagent$breaking.remove();
 		Agent a = Agent.get();
-		if (a != null && before != null && cir.getReturnValueZ()) a.tracker.onSelfBroke(pos.immutable(), before);
+		if (a != null && before != null && cir.getReturnValueZ()) {
+			a.tracker.onSelfBroke(pos.immutable(), before);
+			// 尋路順手拆掉自己的建築(R10)：不是 break_block、施工、清空區域、收成或主動開採目標造成的就記一筆，方便事後追查
+			var t = a.tasks.current();
+			if (a.guard.active() && !before.isAir() && !a.guard.isNatural(before)
+				&& !(t instanceof blockagent.game.tasks.BreakTask) && !(t instanceof blockagent.game.tasks.BuildTask)
+				&& !(t instanceof ClearAreaTask) && !(t instanceof blockagent.game.tasks.FarmTask)
+				&& !(t instanceof blockagent.game.tasks.MineTask mine && mine.isMineTarget(before))) {
+				a.log.log(blockagent.game.ActionLog.Source.system, "path_break", blockagent.game.Fmt.pos(pos) + " " + RuleGuard.shortId(before));
+			}
+		}
 	}
 
 	@Inject(method = "useItemOn", at = @At("HEAD"), cancellable = true)
@@ -116,7 +126,7 @@ public abstract class MultiPlayerGameModeMixin {
 			}
 			RuleGuard.Verdict v = placing ? a.guard.canPlaceForBuild(mc.level, placeAt, stack.getItem()) : RuleGuard.Verdict.ALLOW;
 			if (!v.allowed()) {
-				a.guard.reportBlocked("use_item_on_block", v);
+				a.guard.reportBuildBlocked("use_item_on_block", v);
 				cir.setReturnValue(InteractionResult.FAIL);
 				return;
 			}

@@ -277,6 +277,11 @@ public final class BuildTask extends Task {
 		return protectedCells.contains(pos) || occupiedDoorways.contains(pos);
 	}
 
+	/** Baritone 尋路執行緒會讀：這格是不是本次施工正要清除的目標格(R5)。 */
+	public boolean isClearing(int x, int y, int z) {
+		return !clearPending.isEmpty() && clearPending.contains(new BlockPos(x, y, z));
+	}
+
 	public boolean reserves(int x, int y, int z) {
 		return !occupiedDoorways.isEmpty() && occupiedDoorways.contains(new BlockPos(x, y, z));
 	}

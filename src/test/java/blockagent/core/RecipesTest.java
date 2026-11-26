@@ -102,6 +102,17 @@ class RecipesTest {
 		assertEquals("minecraft:dye_white_bed", dye.steps().getLast().recipe().id());
 	}
 
+	/** R13：需要工作台又缺料時，工作台缺的木板要另外標註 (for_crafting_table)，不和成品木板混在一起。 */
+	@Test
+	void woodenPickaxeSeparatesCraftingTableMissingPlanks() {
+		var plan = recipes.planCraft("wooden_pickaxe", 1, Map.of(), false);
+		assertFalse(plan.ok());
+		assertEquals(3, plan.missing().get("oak_planks|#wooden_tool_materials"));
+		assertEquals(2, plan.missing().get("stick"));
+		assertEquals(4, plan.missing().get("oak_planks|#planks(for_crafting_table)"));
+		assertEquals(3, plan.missing().size());
+	}
+
 	@Test
 	void whiteWoolPrefersStringOverDye() {
 		var empty = recipes.planCraft("white_wool", 1, Map.of(), false);

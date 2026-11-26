@@ -116,6 +116,8 @@ public final class Agent {
 		this.hud = new Hud(this);
 		this.recipes = VanillaData.fromClasspath(Agent.class.getClassLoader()).recipes();
 		Tools.registerAll(this);
+		// R14：參數解析失敗(未知方塊 id、數值超出範圍…)也寫進行動紀錄
+		tools.setOnError((name, msg) -> log.log(ActionLog.Source.ai, name, msg));
 		tools.setResponseSuffix(this::unreadSummary);
 		session.addListener(this::onSessionChange);
 	}
@@ -363,8 +365,8 @@ public final class Agent {
 	static String planContext(String self, String state, String planText, java.util.Map<String, String> mem,
 							  java.util.List<String> problems, java.util.Collection<String> toolNames) {
 		StringBuilder sb = new StringBuilder();
-		sb.append("[self]\n").append(self).append("\nsession=").append(state);
-		sb.append("\n[current_plan]\n").append(planText);
+		// 由靜態到動態排列，讓規劃模型的 prompt 前綴盡量不變、提高快取命中(R9)
+		sb.append("[player_tools]\n").append(String.join(", ", toolNames));
 		sb.append("\n[memory]");
 		if (mem.isEmpty()) sb.append("\nmemory=none");
 		int used = 0;
@@ -377,10 +379,11 @@ public final class Agent {
 			sb.append(line);
 			used += line.length();
 		}
+		sb.append("\n[current_plan]\n").append(planText);
 		sb.append("\n[recent_problems]");
 		if (problems.isEmpty()) sb.append("\nnone");
 		for (String p : problems) sb.append("\n- ").append(p);
-		sb.append("\n[player_tools]\n").append(String.join(", ", toolNames));
+		sb.append("\n[self]\n").append(self).append("\nsession=").append(state);
 		return sb.toString();
 	}
 

@@ -20,7 +20,7 @@ public abstract class CalculationContextMixin {
 	private void blockagent$avoidProtected(int x, int y, int z, BlockState current, CallbackInfoReturnable<Double> cir) {
 		Agent a = Agent.get();
 		if (a != null && a.session.isRunning()) {
-			if (!a.guard.canBreak(x, y, z, current).allowed()
+			if (!a.guard.canPathBreak(x, y, z, current)
 				|| (a.tasks.current() instanceof MineTask mine && mine.rejectsMineTarget(x, y, z, current))) {
 				cir.setReturnValue(baritone.api.pathing.movement.ActionCosts.COST_INF);
 			}

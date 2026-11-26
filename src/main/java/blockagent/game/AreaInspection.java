@@ -18,6 +18,8 @@ import java.util.Map;
 final class AreaInspection {
 	static final int MAX_VOLUME = 32_768;
 	static final int PAGE_SIZE = 32;
+	/** 單頁最多可要求幾筆(預設仍是 PAGE_SIZE)。 */
+	static final int MAX_LIMIT = 128;
 	private static final int SUMMARY_TYPES = 12;
 
 	record Region(BlockPos min, BlockPos max) {

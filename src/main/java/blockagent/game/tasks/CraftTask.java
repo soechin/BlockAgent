@@ -30,6 +30,7 @@ public final class CraftTask extends Task {
 	private final Recipes.Plan plan;
 	private final String target;
 	private final int count;
+	private final java.util.Set<String> pullOffhandKeep;
 	private BlockPos tablePos;
 	private Phase phase = Phase.NEXT_STEP;
 	private int stepIdx = -1;
@@ -48,11 +49,17 @@ public final class CraftTask extends Task {
 	private AbstractContainerMenu batchMenu;
 
 	public CraftTask(Agent agent, Recipes.Plan plan, String target, int count, BlockPos tableNearby) {
+		this(agent, plan, target, count, tableNearby, null);
+	}
+
+	/** {@code pullOffhandKeep} 非 null 表示合成會用到副手材料，開工時先換回主背包並避開這些保留物品 ID(R12)。 */
+	public CraftTask(Agent agent, Recipes.Plan plan, String target, int count, BlockPos tableNearby, java.util.Set<String> pullOffhandKeep) {
 		super(agent, "craft");
 		this.plan = plan;
 		this.target = target;
 		this.count = count;
 		this.tablePos = tableNearby;
+		this.pullOffhandKeep = pullOffhandKeep == null ? null : java.util.Set.copyOf(pullOffhandKeep);
 	}
 
 	static Item item(String id) {
@@ -77,6 +84,14 @@ public final class CraftTask extends Task {
 
 	@Override
 	protected void start(Minecraft mc) {
+		if (pullOffhandKeep != null && !mc.player.getOffhandItem().isEmpty()) {
+			if (mc.player.containerMenu != mc.player.inventoryMenu) mc.player.closeContainer();
+			if (!Inv.pullOffhandToMain(mc, s -> pullOffhandKeep.contains(BuiltInRegistries.ITEM.getKey(s.getItem()).toString()))) {
+				fail(ErrorCode.MISSING_MATERIALS, "a needed material is in the offhand and the main inventory is full",
+					"drop or store one item, then craft again");
+				return;
+			}
+		}
 		startTargetCount = Inv.count(mc.player, item(target));
 	}
 

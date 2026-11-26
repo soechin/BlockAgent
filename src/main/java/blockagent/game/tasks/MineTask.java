@@ -34,6 +34,28 @@ public final class MineTask extends Task {
 	private BlockPos lastMined;
 	private BlockPos pickupKey;
 	private static final int PICKUP_TICKS = 60;
+	/** 採礦啟動著卻一直沒有可走的路、原地沒挖到東西，超過這麼久就當作受困(R8)。 */
+	static final int TRAPPED_TICKS = 160;
+	private int trappedTicks;
+	private BlockPos trappedAnchor;
+	private int trappedMined;
+
+	/** 純邏輯：採礦啟動中卻沒有路徑、沒離開原地、沒挖到新方塊時累計，否則歸零(R8)。 */
+	static int nextTrappedTicks(int currentTicks, boolean mineActive, boolean hasPath, boolean movedAway, boolean minedChanged) {
+		if (!mineActive || hasPath || movedAway || minedChanged) return 0;
+		return currentTicks + 1;
+	}
+
+	private String blockersAround(Minecraft mc, BlockPos here) {
+		java.util.Set<String> out = new java.util.LinkedHashSet<>();
+		for (BlockPos p : BlockPos.betweenClosed(here.offset(-1, 0, -1), here.offset(1, 2, 1))) {
+			BlockState st = mc.level.getBlockState(p);
+			if (st.isAir() || agent.guard.canPathBreak(p.getX(), p.getY(), p.getZ(), st)) continue;
+			out.add(blockagent.game.RuleGuard.shortId(st) + "(" + agent.observation.ownerLabel(p, st) + ")");
+			if (out.size() >= 4) break;
+		}
+		return String.join(",", out);
+	}
 
 	public MineTask(Agent agent, List<Block> blocks, String label, int count, int radius, boolean search) {
 		super(agent, "mine");
@@ -52,6 +74,11 @@ public final class MineTask extends Task {
 		long dy = (long) y - oy;
 		long dz = (long) z - oz;
 		return dx * dx + dy * dy + dz * dz <= (long) radius * radius;
+	}
+
+	/** Baritone 尋路執行緒會讀：這格是不是本次 mine 明確要求的目標方塊(執行緒安全)。 */
+	public boolean isMineTarget(BlockState state) {
+		return blockSet.contains(state.getBlock());
 	}
 
 	/**
@@ -107,6 +134,9 @@ public final class MineTask extends Task {
 		var s = BaritoneAPI.getSettings();
 		savedExplore = s.exploreForBlocks.value;
 		origin = mc.player.blockPosition().immutable();
+		trappedTicks = 0;
+		trappedAnchor = null;
+		trappedMined = mined;
 		if (!ensureTool(mc)) return;
 		s.exploreForBlocks.value = search;
 		Bari.b().getMineProcess().mine(blocks.toArray(new Block[0]));
@@ -149,6 +179,18 @@ public final class MineTask extends Task {
 			}
 		} else {
 			idleTicks = 0;
+			BlockPos here = mc.player.blockPosition();
+			boolean movedAway = trappedAnchor == null || here.distSqr(trappedAnchor) > 4;
+			boolean active = Bari.b().getPathingBehavior().isPathing() || mc.gameMode.isDestroying();
+			trappedTicks = nextTrappedTicks(trappedTicks, true, active, movedAway, mined != trappedMined);
+			if (trappedTicks == 0) {
+				trappedAnchor = here.immutable();
+				trappedMined = mined;
+			} else if (trappedTicks >= TRAPPED_TICKS) {
+				String blockers = blockersAround(mc, here);
+				fail(ErrorCode.PATH_BLOCKED, "trapped at " + blockagent.game.Fmt.pos(here) + " with no path to " + label
+					+ (blockers.isEmpty() ? "" : "; blocked_by=" + blockers), "inspect_area around you, or goto an open exit first");
+			}
 		}
 	}
 
@@ -186,6 +228,9 @@ public final class MineTask extends Task {
 	protected void onResume(Minecraft mc) {
 		// onSuspend(= onStop)把探索設定還原了，要重新套用(H10)
 		BaritoneAPI.getSettings().exploreForBlocks.value = search;
+		trappedTicks = 0;
+		trappedAnchor = null;
+		trappedMined = mined;
 		if (finishing >= 0) {
 			pickupKey = null;
 			return;

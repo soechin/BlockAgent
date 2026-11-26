@@ -117,6 +117,19 @@ class PlanFlowTest {
 		assertTrue(big.contains("(more entries omitted)") && big.contains("[recent_problems]\nnone"), "記憶太多時截斷");
 	}
 
+	/** R9：快照欄位由靜態到動態排列，讓規劃模型的 prompt 前綴盡量不變。 */
+	@Test
+	void snapshotOrdersStaticBeforeDynamic() {
+		String s = Agent.planContext("hp=20", "RUNNING", "plan=none", Map.of("home", "1,64,2"),
+			List.of("10:00:00 fail"), List.of("goto", "mine"));
+		int iTools = s.indexOf("[player_tools]");
+		int iMemory = s.indexOf("[memory]");
+		int iPlan = s.indexOf("[current_plan]");
+		int iProblems = s.indexOf("[recent_problems]");
+		int iSelf = s.indexOf("[self]");
+		assertTrue(iTools >= 0 && iTools < iMemory && iMemory < iPlan && iPlan < iProblems && iProblems < iSelf, s);
+	}
+
 	@Test
 	void problemsKeepOnlyTheLatest() throws Exception {
 		Agent a = new Agent(new Config(), tmp);

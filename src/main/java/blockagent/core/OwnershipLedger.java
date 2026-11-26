@@ -61,6 +61,16 @@ public final class OwnershipLedger {
 		return m == null ? null : m.get(pos);
 	}
 
+	/** 本客戶端剛送出放置、尚未逾期的同種方塊(供 canPlaceInto 避免墊腳競態誤報，不放寬 canBreak，R4)。 */
+	public synchronized boolean isPendingSelf(String dim, long pos, String blockId, long tick) {
+		Map<Long, Pending> m = pendingPlacements.get(dim);
+		if (m == null) return false;
+		Pending p = m.get(pos);
+		if (p == null) return false;
+		long dt = tick - p.tick();
+		return dt >= 0 && dt <= CONFIRM_TICKS && p.blockId().equals(blockId);
+	}
+
 	/** 本客戶端送出放置動作時呼叫。 */
 	public synchronized void expectPlacement(String dim, long pos, String blockId, long tick) {
 		pending(dim).put(pos, new Pending(blockId, tick));
