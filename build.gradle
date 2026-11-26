@@ -52,6 +52,10 @@ loom {
 			if (project.hasProperty('testOnly')) vmArg "-Dblockagent.test.only=${project.property('testOnly')}"
 			// -PtestCase=route,group_geared：類別裡只跑指定的情境(目前 CombatGameTest 支援)
 			if (project.hasProperty('testCase')) vmArg "-Dblockagent.test.case=${project.property('testCase')}"
+			// -PcombatTest=true：預設跳過耗時的 CombatGameTest，需要時再顯式開啟(或用 -PtestOnly=CombatGameTest / -PtestCase=...)
+			if (project.hasProperty('combatTest')) vmArg "-Dblockagent.test.combat=${project.property('combatTest')}"
+			// -PtestSeed=random 或 -PtestSeed=s1,s2：NaturalCombatGameTest 使用的地圖種子(可逗號分隔跑多張地圖)
+			if (project.hasProperty('testSeed')) vmArg "-Dblockagent.test.seed=${project.property('testSeed')}"
 		}
 	}
 }

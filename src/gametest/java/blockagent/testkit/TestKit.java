@@ -59,6 +59,19 @@ public final class TestKit {
 		return skip;
 	}
 
+	/**
+	 * 耗時測試預設跳過(避免每次建置都跑)：只在顯式指定 -PtestOnly=name、-PtestCase=... 或 -PcombatTest=true 時才執行。
+	 */
+	public static boolean skipOptIn(String name) {
+		String only = System.getProperty("blockagent.test.only");
+		if (only != null && !only.isBlank()) return skip(name);
+		String cases = System.getProperty("blockagent.test.case");
+		if (cases != null && !cases.isBlank()) return false;
+		if ("true".equalsIgnoreCase(System.getProperty("blockagent.test.combat"))) return false;
+		System.out.println("[skip] " + name + " (pass -PtestOnly=" + name + ", -PtestCase=... or -PcombatTest=true to run)");
+		return true;
+	}
+
 	/** -Dblockagent.test.case=a,b 時，類別裡只跑列出的情境；沒給就全部跑。 */
 	public static boolean runCase(String name) {
 		String only = System.getProperty("blockagent.test.case");

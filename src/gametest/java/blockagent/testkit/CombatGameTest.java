@@ -21,14 +21,15 @@ import static blockagent.testkit.TestKit.check;
  * 戰鬥(docs/SPEC.md S9.1、S9.1b、S9.1c；docs/REVIEW.md R1、R2、R3、R7)：夜裡在平地放真的怪，讓反射自己處理，
  * 從遊戲狀態和 ActionLog 驗證。每個情境都有上限時間，結束時清掉怪物、補滿血。
  * <p>
- * 只跑這個：{@code ./gradlew runClientGameTest -PtestOnly=CombatGameTest}；
+ * 預設在一般建置／{@code runClientGameTest} 時跳過(耗時較久)；需要時顯式執行：
+ * {@code ./gradlew runClientGameTest -PtestOnly=CombatGameTest} 或 {@code -PcombatTest=true}；
  * 只跑其中幾個情境：再加 {@code -PtestCase=route,group_geared}(名稱見 runTest)。
  */
 @SuppressWarnings("UnstableApiUsage")
 public class CombatGameTest implements FabricClientGameTest {
 	@Override
 	public void runTest(ClientGameTestContext ctx) {
-		if (TestKit.skip("CombatGameTest")) return;
+		if (TestKit.skipOptIn("CombatGameTest")) return;
 		try (TestSingleplayerContext sp = ctx.worldBuilder().create()) {
 			TestKit k = new TestKit(ctx, sp);
 			BlockPos c = k.myPos();
@@ -54,6 +55,8 @@ public class CombatGameTest implements FabricClientGameTest {
 			if (TestKit.runCase("ring_unarmed")) surroundedOnAllSides(k, c, false);
 			if (TestKit.runCase("ring_geared")) surroundedOnAllSides(k, c, true);
 			if (TestKit.runCase("retreat")) retreatRecoversThenCancelsOnSecondRetreat(k, c);
+			if (TestKit.runCase("retreat_wall")) retreatBehindWallDoesNotOscillate(k, c);
+			if (TestKit.runCase("terrain_high")) elevatedArcherAndUnreachableCover(k, c);
 		} catch (Exception e) {
 			throw new RuntimeException(e);
 		}
@@ -454,6 +457,60 @@ public class CombatGameTest implements FabricClientGameTest {
 		check(ev.contains("outcome=retreated_twice") && ev.contains("task_cancelled="), "同一個任務第二次撤退應該取消任務：" + ev);
 		check(!k.agent().tasks.hasActiveTask(), "第二次撤退後任務應該被取消");
 		System.out.println("[ok] R3 撤退：回血後接著做；同一任務第二次撤退就取消");
+	}
+
+	/**
+	 * 局部地形 1：4 格內有怪但隔一道牆看不到視線，低血撤退必須先拉開距離再進 RECOVER，不可每 2 tick 在 RUN/RECOVER 之間震盪。
+	 */
+	private void retreatBehindWallDoesNotOscillate(TestKit k, BlockPos c) throws Exception {
+		reset(k, c);
+		k.give("minecraft:bread", 8);
+		// 在玩家東側 2 格蓋一道 3×3 石牆，牆後 1 格放不動的殭屍(距離 3 格、視線被牆完全擋住)
+		k.cmd("fill " + (c.getX() + 2) + " " + c.getY() + " " + (c.getZ() - 1) + " "
+			+ (c.getX() + 2) + " " + (c.getY() + 2) + " " + (c.getZ() + 1) + " minecraft:stone");
+		k.cmd("summon minecraft:zombie " + TestKit.pos(c.offset(3, 0, 0)) + " {NoAI:1b,PersistenceRequired:1b}");
+		k.ctx.waitTicks(5);
+		int mark = mark(k);
+		k.agent().events.drainAll();
+		lowHealth(k);
+		String ev = k.eventsUntil("reflex=retreat", 40);
+		String log = since(k, mark);
+		k.cmd("fill " + (c.getX() + 2) + " " + c.getY() + " " + (c.getZ() - 1) + " "
+			+ (c.getX() + 2) + " " + (c.getY() + 2) + " " + (c.getZ() + 1) + " minecraft:air");
+		int recoverLogs = log.split("retreat_recover", -1).length - 1;
+		check(ev.contains("result=recovered"), "隔牆低血撤退應該拉開後回血結束：" + ev + "\n" + log);
+		check(recoverLogs <= 2, "不該在 RUN/RECOVER 間震盪(retreat_recover=" + recoverLogs + ")：" + log);
+		check(k.ctx.computeOnClient(mc -> mc.player.getHealth()) > 10, "撤退結束時血量應該 > 10");
+		System.out.println("[ok] 地形撤退：隔牆 3 格低血撤退無震盪(retreat_recover=" + recoverLogs + ")");
+	}
+
+	/**
+	 * 局部地形 2：高台上的骷髏往下射、旁邊放一個看得到但四周封死走不進去的假掩體格；空手脫身不能卡在假掩體前挨射，必須退回逃跑脫身。
+	 */
+	private void elevatedArcherAndUnreachableCover(TestKit k, BlockPos c) throws Exception {
+		reset(k, c);
+		k.cmd("difficulty normal");
+		k.give("minecraft:bread", 8);
+		// 東側 10 格蓋 3 格高台放骷髏
+		k.cmd("fill " + (c.getX() + 9) + " " + c.getY() + " " + (c.getZ() - 1) + " "
+			+ (c.getX() + 11) + " " + (c.getY() + 2) + " " + (c.getZ() + 1) + " minecraft:stone");
+		// 西側 4 格蓋一個四周 3 格高封閉的 1×1 空心石框(內部符合 findCover 的隱藏條件但完全走不進去)
+		k.cmd("fill " + (c.getX() - 5) + " " + c.getY() + " " + (c.getZ() - 1) + " "
+			+ (c.getX() - 3) + " " + (c.getY() + 2) + " " + (c.getZ() + 1) + " minecraft:stone");
+		k.cmd("fill " + (c.getX() - 4) + " " + c.getY() + " " + c.getZ() + " "
+			+ (c.getX() - 4) + " " + (c.getY() + 1) + " " + c.getZ() + " minecraft:air");
+		int mark = mark(k);
+		k.cmd("summon minecraft:skeleton " + TestKit.pos(c.offset(10, 3, 0)) + " {PersistenceRequired:1b}");
+		k.cmd("item replace entity @e[type=minecraft:skeleton] weapon.mainhand with minecraft:bow");
+		boolean escaped = waitFor(k, 20 * 35, () -> nearestGroupMob(k) > 16 && !anyReflex(k));
+		String log = since(k, mark);
+		double nearest = nearestGroupMob(k);
+		k.cmd("difficulty easy");
+		k.cmd("fill " + (c.getX() - 6) + " " + c.getY() + " " + (c.getZ() - 2) + " "
+			+ (c.getX() + 12) + " " + (c.getY() + 4) + " " + (c.getZ() + 2) + " minecraft:air");
+		check(alive(k), "高台骷髏＋不可達掩體脫身不該死亡：" + summaries(log));
+		check(escaped, "應略過不可達掩體並跑出高台骷髏射程(目前最近 " + Math.round(nearest) + " 格)：" + summaries(log));
+		System.out.println("[ok] 地形高台＋不可達掩體：成功脫身(距離 " + Math.round(nearest) + " 格)");
 	}
 
 	// ---- 工具 ----
