@@ -10,7 +10,8 @@
       "blockagent.testkit.ChatGameTest",
       "blockagent.testkit.RulesGameTest",
       "blockagent.testkit.SessionGameTest",
-      "blockagent.testkit.ServerAndCreativeGameTest"
+      "blockagent.testkit.ServerAndCreativeGameTest",
+      "blockagent.testkit.CombatGameTest"
     ]
   },
   "depends": {

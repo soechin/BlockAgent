@@ -12,6 +12,7 @@ import blockagent.game.Inv;
 import blockagent.game.RuleGuard;
 import blockagent.game.UseKey;
 import blockagent.game.combat.Combat;
+import blockagent.game.combat.ShieldGuard;
 import blockagent.game.combat.Threats;
 import blockagent.game.tasks.BreakTask;
 import blockagent.game.tasks.Moves;
@@ -37,6 +38,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.EnumMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -47,7 +49,7 @@ import java.util.Set;
  * 所有動作都經過守門員(MultiPlayerGameMode 的 Mixin)；暫停時完全不執行(S9.3a)。
  */
 public final class Reflexes {
-	public static final float LOW_HEALTH = 6f;
+	public static final float LOW_HEALTH = CombatPolicy.RETREAT_HP;
 
 	/**
 	 * 依優先順序排列(S9.2)：保命 > 撤退 > 自衛 > 進食 > 脫困。岩漿排在著火前面：碰到岩漿一定也著火，
@@ -55,15 +57,23 @@ public final class Reflexes {
 	 */
 	public enum Kind {
 		DROWNING("survival", true), LAVA_AVOID("survival", true), ON_FIRE("survival", true), FALL("survival", true),
-		RETREAT("retreat", true), SELF_DEFENSE("defense", false), EAT("eat", false), UNSTUCK("unstuck", false);
+		// 撤退暫停任務，回血後接著做；同一個任務撤退第二次或回不了血才取消(R3、CombatPolicy.retreatOutcome)
+		RETREAT("retreat", false, 60), SELF_DEFENSE("defense", false), EAT("eat", false), UNSTUCK("unstuck", false);
 
 		final String type;
 		/** true：取消目前任務；false：暫停任務，結束後接著做。 */
 		final boolean cancelsTask;
+		/** 最多執行幾秒就放棄。 */
+		final int limitSecs;
 
 		Kind(String type, boolean cancelsTask) {
+			this(type, cancelsTask, 30);
+		}
+
+		Kind(String type, boolean cancelsTask, int limitSecs) {
 			this.type = type;
 			this.cancelsTask = cancelsTask;
+			this.limitSecs = limitSecs;
 		}
 
 		public String id() {
@@ -109,6 +119,23 @@ public final class Reflexes {
 	private int eatStartCount;
 	/** retreat：上次重新規劃逃跑路線的 tick。 */
 	private int retreatPlannedAt;
+	/** retreat 分兩段：RUN 跑開；RECOVER 沒有怪看得到自己時停下吃東西回血(R3)。 */
+	private enum RetreatPhase {RUN, RECOVER}
+
+	private RetreatPhase retreatPhase;
+	private int recoverSince;
+	/** 這個任務撤退了幾次(第二次回血後就取消任務)。 */
+	private Task retreatTask;
+	private int retreatCount;
+	/** 回不了血之後，這段時間內不再觸發撤退，除非期間又被打。 */
+	private long retreatQuietFrom = Long.MIN_VALUE;
+	private long retreatQuietUntil = Long.MIN_VALUE;
+	private static final int RETREAT_QUIET_TICKS = 20 * 20;
+	/** RECOVER 這麼久還回不了血(飢餓度不夠自然回血又沒東西吃)就放棄。 */
+	private static final int CANNOT_HEAL_TICKS = 10 * 20;
+	private final ShieldGuard retreatGuard = new ShieldGuard();
+	/** 已經為哪些怪物自動備戰過(穿甲、換盾)，同一隻只做一次。 */
+	private final java.util.Set<Integer> preparedFor = new HashSet<>();
 	/** 自衛反射收手後，同一隻怪物這段時間內不再觸發(除非冷卻開始後牠又打了自己)，免得隔牆反覆打斷任務(H8、P3-M2)。 */
 	private static final int DEFENSE_COOLDOWN_TICKS = 200;
 	private final CombatPolicy.DefenseCooldown defenseCooldown = new CombatPolicy.DefenseCooldown();
@@ -181,6 +208,7 @@ public final class Reflexes {
 		}
 		history.addLast(p.position());
 		while (history.size() > 200) history.removeFirst();
+		if (agent.tick() % 20 == 0 && !invulnerable(p)) prepareForThreats(mc);
 
 		Kind trig = null;
 		String why = null;
@@ -194,21 +222,35 @@ public final class Reflexes {
 		}
 		if (active != null) {
 			activeTicks++;
+			String how;
 			if (active != Kind.UNSTUCK && invulnerable(p)) {
 				end(mc, "not_needed_in_creative");
 			} else if (trig != null && trig.ordinal() < active.ordinal()) {
 				end(mc, "preempted_by_" + trig.id());
 				begin(mc, trig, why);
-			} else if (finished(mc)) {
-				end(mc, "done");
-			} else if (activeTicks > 20 * 30) {
-				end(mc, "gave_up_after_30s");
+			} else if ((how = finished(mc)) != null) {
+				end(mc, how);
+			} else if (activeTicks > 20 * active.limitSecs) {
+				end(mc, "gave_up_after_" + active.limitSecs + "s");
 			} else {
 				act(mc);
 			}
 			return;
 		}
 		if (trig != null) begin(mc, trig, why);
+	}
+
+	/**
+	 * 怪物來了自動備戰(S9.1b)：16 格內出現新的威脅時，穿上背包裡的護甲、把盾牌換到副手。同一隻只做一次。
+	 */
+	private void prepareForThreats(Minecraft mc) {
+		List<Entity> near = hostiles(mc, 16);
+		preparedFor.retainAll(near.stream().map(Entity::getId).toList());
+		boolean fresh = false;
+		for (Entity e : near) fresh |= preparedFor.add(e.getId());
+		if (!fresh) return;
+		String done = Inv.prepareForCombat(mc);
+		if (!done.isEmpty()) agent.log.log(ActionLog.Source.reflex, "combat_prep", done);
 	}
 
 	/** 威脅：敵對生物，加上生氣了或剛打過自己的中立生物(S9.1b)。 */
@@ -255,7 +297,13 @@ public final class Reflexes {
 				}
 			}
 			case RETREAT -> {
-				if (p.getHealth() <= LOW_HEALTH && !hostiles(mc, 12).isEmpty()) return "hp=" + Math.round(p.getHealth()) + " hostiles_near";
+				if (p.getHealth() > LOW_HEALTH || hostiles(mc, 12).isEmpty()) return null;
+				// 正在吃東西、3 格內又沒有怪：讓這一口吃完(R3：吃西瓜吃到一半被撤退打斷)
+				if (p.isUsingItem() && p.getUseItem().has(DataComponents.FOOD) && hostiles(mc, 3).isEmpty()) return null;
+				// 剛因為回不了血放棄撤退：這段時間內不再觸發，除非之後又被打
+				long now = agent.tick();
+				if (now < retreatQuietUntil && agent.observation.lastAttackedTick() <= retreatQuietFrom) return null;
+				return "hp=" + Math.round(p.getHealth()) + " hostiles_near";
 			}
 			case SELF_DEFENSE -> {
 				Combat.Threat t = Combat.pickThreat(mc, agent, coolingDown(mc));
@@ -316,9 +364,19 @@ public final class Reflexes {
 		unstuckFront = null;
 		bucketsBefore = Inv.count(mc.player, Items.WATER_BUCKET);
 		retreatPlannedAt = 0;
+		retreatPhase = RetreatPhase.RUN;
+		retreatGuard.reset();
 		interruptedTask = null;
 		suspendedTask = false;
 		Task t = agent.tasks.current();
+		if (k == Kind.RETREAT) {
+			if (t != null && t == retreatTask) {
+				retreatCount++;
+			} else {
+				retreatTask = t;
+				retreatCount = t == null ? 0 : 1;
+			}
+		}
 		if (t != null && k != Kind.UNSTUCK) {
 			interruptedTask = t.name() + " " + t.progress();
 			if (k.cancelsTask) agent.tasks.interrupt(k.id());
@@ -341,7 +399,10 @@ public final class Reflexes {
 				List<BlockPos> lava = lavaNear(mc, 2);
 				path(new GoalRunAway(4, lava.isEmpty() ? new BlockPos[]{mc.player.blockPosition()} : lava.toArray(new BlockPos[0])));
 			}
-			case RETREAT -> planRetreat(mc);
+			case RETREAT -> {
+				eatingFood = null;
+				planRetreat(mc);
+			}
 			case EAT -> {
 				ItemStack food = bestFood(mc.player, mc.player.getFoodData().getFoodLevel());
 				eatingFood = food == null ? null : food.getItem();
@@ -405,7 +466,24 @@ public final class Reflexes {
 		return best;
 	}
 
-	private boolean finished(Minecraft mc) {
+	/** 結束了沒；結束時回傳原因(一般是 done，撤退是 recovered 或 cannot_heal)，還沒結束回傳 null。 */
+	private String finished(Minecraft mc) {
+		if (active == Kind.RETREAT) return retreatFinished(mc);
+		return done(mc) ? "done" : null;
+	}
+
+	private String retreatFinished(Minecraft mc) {
+		LocalPlayer p = mc.player;
+		if (p.getHealth() > CombatPolicy.RECOVERED_HP) return "recovered";
+		// RECOVER 10 秒還回不了血：飢餓度不夠自然回血(< 18)，又沒東西吃
+		if (retreatPhase == RetreatPhase.RECOVER && activeTicks - recoverSince > CANNOT_HEAL_TICKS && !p.isUsingItem()
+			&& p.getFoodData().getFoodLevel() < 18 && bestFood(p, p.getFoodData().getFoodLevel()) == null) {
+			return "cannot_heal";
+		}
+		return null;
+	}
+
+	private boolean done(Minecraft mc) {
 		LocalPlayer p = mc.player;
 		return switch (active) {
 			// 頭一露出水面就結束的話，浮浮沉沉會一直重新觸發：等氧氣回滿(M14)
@@ -415,7 +493,7 @@ public final class Reflexes {
 			// 放了水就要舀回來(身上本來有幾桶水就回到幾桶)；落地 2 秒還舀不回來就算了(M14)
 			case FALL -> p.onGround() && (!bucketPlaced || Inv.count(p, Items.WATER_BUCKET) >= bucketsBefore
 				|| (landedAt >= 0 && activeTicks - landedAt > 40));
-			case RETREAT -> hostiles(mc, 16).isEmpty() || p.getHealth() > 10;
+			case RETREAT -> false;
 			case SELF_DEFENSE -> combat == null || combat.finished(mc);
 			case EAT -> {
 				// 只看實際在吃的那種食物(C5：看「最好的食物」會換成別種，數量一比就誤判吃完了)
@@ -443,11 +521,7 @@ public final class Reflexes {
 			case DROWNING -> {
 				if (!Bari.busy()) mc.options.keyJump.setDown(true);
 			}
-			case RETREAT -> {
-				// 怪物追上來就重新規劃(M14)：每 2 秒一次，有怪物貼到 4 格內時半秒一次
-				boolean close = !hostiles(mc, 4).isEmpty();
-				if (activeTicks - retreatPlannedAt >= (close ? 10 : 40)) planRetreat(mc);
-			}
+			case RETREAT -> retreat(mc);
 			case EAT -> UseKey.holdOff(mc);
 			case FALL -> {
 				if (p.onGround() && landedAt < 0) landedAt = activeTicks;
@@ -536,14 +610,95 @@ public final class Reflexes {
 		}
 	}
 
+	/**
+	 * 撤退(R3)：RUN 跑開，怪物追上來就重新規劃(M14：每 2 秒一次，有怪物貼到 4 格內時半秒一次)；
+	 * 4 格內沒有近戰怪而且有箭要擋時，停下舉盾擋完再跑。16 格內沒有看得到自己的威脅就進 RECOVER：
+	 * 停下吃東西回血；有威脅走進 12 格就回到 RUN。
+	 */
+	private void retreat(Minecraft mc) {
+		LocalPlayer p = mc.player;
+		boolean meleeClose = false;
+		for (Entity e : hostiles(mc, 4)) meleeClose |= Threats.kind(e) != Threats.Kind.RANGED;
+		if (!meleeClose && retreatGuard.update(mc, agent.tick())) {
+			stopEating(mc);
+			Bari.stopAll();
+			if (retreatGuard.faceAt() != null) Moves.lookAt(p, retreatGuard.faceAt());
+			ShieldGuard.raise(mc);
+			retreatPlannedAt = -1000;
+			return;
+		}
+		if (p.isUsingItem() && p.getUsedItemHand() == InteractionHand.OFF_HAND) ShieldGuard.lower(mc);
+		if (retreatPhase == RetreatPhase.RUN) {
+			if (visibleThreats(mc, 16) == 0) {
+				retreatPhase = RetreatPhase.RECOVER;
+				recoverSince = activeTicks;
+				Bari.stopAll();
+				agent.log.log(ActionLog.Source.reflex, "retreat_recover", "hp=" + Math.round(p.getHealth()) + " food=" + p.getFoodData().getFoodLevel());
+				return;
+			}
+			boolean close = !hostiles(mc, 4).isEmpty();
+			if (activeTicks - retreatPlannedAt >= (close ? 10 : 40)) planRetreat(mc);
+			return;
+		}
+		// RECOVER
+		if (visibleThreats(mc, 12) > 0 || !hostiles(mc, 4).isEmpty()) {
+			stopEating(mc);
+			retreatPhase = RetreatPhase.RUN;
+			planRetreat(mc);
+			return;
+		}
+		if (eatingFood != null) {
+			if (p.isUsingItem() && p.getUseItem().is(eatingFood)) {
+				UseKey.holdOff(mc);
+				return;
+			}
+			stopEating(mc);
+		}
+		int food = p.getFoodData().getFoodLevel();
+		ItemStack pick = retreatFood(p, food);
+		if (pick == null) return;
+		eatingFood = pick.getItem();
+		eatStartCount = Inv.count(p, eatingFood);
+		if (Inv.selectInHand(mc, s -> s.getItem() == eatingFood)) UseKey.startEating(mc);
+		else eatingFood = null;
+	}
+
+	/**
+	 * 回血時吃什麼：血量 ≤ 6 而且還沒有回復效果時金蘋果優先(金蘋果飽了也能吃；已經在回血就別再浪費一顆)；
+	 * 其他食物要飢餓度 < 20 才吃得下。
+	 */
+	private ItemStack retreatFood(LocalPlayer p, int food) {
+		if (p.getHealth() <= LOW_HEALTH && !p.hasEffect(MobEffects.REGENERATION)) {
+			for (net.minecraft.world.item.Item apple : List.of(Items.ENCHANTED_GOLDEN_APPLE, Items.GOLDEN_APPLE)) {
+				int idx = Inv.find(p, s -> s.is(apple));
+				if (idx >= 0) return p.getInventory().getItem(idx);
+			}
+		}
+		return food < 20 ? bestFood(p, food) : null;
+	}
+
+	private void stopEating(Minecraft mc) {
+		if (eatingFood == null) return;
+		UseKey.release(mc);
+		eatingFood = null;
+	}
+
+	/** 這麼多格內看得到自己的威脅數量。 */
+	private int visibleThreats(Minecraft mc, double r) {
+		int n = 0;
+		for (Entity e : hostiles(mc, r)) if (e.distanceTo(mc.player) <= r && mc.player.hasLineOfSight(e)) n++;
+		return n;
+	}
+
 	private void end(Minecraft mc, String how) {
 		Kind k = active;
 		if (k == null) return;
 		active = null;
 		if (mc.options != null) mc.options.keyJump.setDown(false);
-		if (k == Kind.EAT) {
+		if (k == Kind.EAT || (k == Kind.RETREAT && eatingFood != null)) {
 			UseKey.release(mc);
 		}
+		if (k == Kind.RETREAT && mc.player != null && mc.gameMode != null) ShieldGuard.lower(mc);
 		if (k == Kind.UNSTUCK && mc.gameMode != null) mc.gameMode.stopDestroyBlock();
 		unstuckStart = null;
 		unstuckFront = null;
@@ -554,7 +709,7 @@ public final class Reflexes {
 		String action = describeAction(k);
 		if (k == Kind.SELF_DEFENSE && combat != null) {
 			action += " tactics=" + combat.summary();
-			combat.release(mc);
+			combat.release(mc, how);
 		}
 		combat = null;
 		pendingThreat = null;
@@ -567,8 +722,31 @@ public final class Reflexes {
 		}
 		String text = "reflex=" + k.id() + " kind=" + k.type + " trigger=" + blockagent.mcp.Kv.quote(String.valueOf(activeReason))
 			+ " action=" + action + " result=" + how;
+		boolean cancelTask = k.cancelsTask;
+		if (k == Kind.RETREAT) {
+			CombatPolicy.RetreatOutcome outcome = CombatPolicy.retreatOutcome(how, retreatCount);
+			text += " phase=" + (retreatPhase == null ? "run" : retreatPhase.name().toLowerCase(Locale.ROOT)) + " retreats=" + retreatCount;
+			if (outcome != CombatPolicy.RetreatOutcome.RESUME) {
+				if (suspendedTask) {
+					agent.tasks.resume();
+					suspendedTask = false;
+				}
+				String why = outcome == CombatPolicy.RetreatOutcome.CANCEL_REPEAT ? "retreated twice during this task; the area is too dangerous"
+					: "could not heal (no food and hunger too low to regenerate)";
+				if (interruptedTask != null) agent.tasks.interrupt("retreat (" + why + ")");
+				cancelTask = true;
+				text += " outcome=" + (outcome == CombatPolicy.RetreatOutcome.CANCEL_REPEAT ? "retreated_twice" : "cannot_heal")
+					+ " | hint=" + (outcome == CombatPolicy.RetreatOutcome.CANCEL_REPEAT ? "go home, sleep, or wall yourself in before going on"
+					: "find food or shelter; hp will not come back on its own");
+			}
+			if (how.equals("cannot_heal") || how.startsWith("gave_up")) {
+				retreatQuietFrom = agent.tick();
+				retreatQuietUntil = agent.tick() + RETREAT_QUIET_TICKS;
+			}
+			retreatPhase = null;
+		}
 		if (interruptedTask != null) {
-			text += (k.cancelsTask ? " task_cancelled=" : " task_resumed=") + blockagent.mcp.Kv.quote(interruptedTask);
+			text += (cancelTask ? " task_cancelled=" : " task_resumed=") + blockagent.mcp.Kv.quote(interruptedTask);
 		}
 		if (k == Kind.UNSTUCK) {
 			if (CombatPolicy.shouldReportUnstuckFailure(how, unstuckAttempts)) {
@@ -614,10 +792,15 @@ public final class Reflexes {
 		unstuckStart = null;
 		unstuckFront = null;
 		suspendedTask = false;
-		if (combat != null) combat.release(mc);
+		if (combat != null) combat.release(mc, "paused");
 		combat = null;
 		pendingThreat = null;
 		eatingFood = null;
+		retreatPhase = null;
+		retreatTask = null;
+		retreatCount = 0;
+		retreatQuietUntil = Long.MIN_VALUE;
+		preparedFor.clear();
 		history.clear();
 		defenseCooldown.clear();
 		unstuckAttempts = 0;

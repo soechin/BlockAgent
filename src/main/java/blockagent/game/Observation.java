@@ -1,5 +1,6 @@
 package blockagent.game;
 
+import blockagent.core.CombatPolicy;
 import blockagent.core.DayClock;
 import blockagent.core.Event;
 import blockagent.mcp.Kv;
@@ -19,7 +20,9 @@ import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.vehicle.VehicleEntity;
 import net.minecraft.world.entity.monster.Enemy;
+import blockagent.game.combat.Combat;
 import blockagent.game.combat.Threats;
+import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
@@ -82,6 +85,8 @@ public final class Observation {
 	}
 	private boolean healthLowReported;
 	private boolean nightReported;
+	/** 已經發過 danger_rising，降回 low 之前不重發(S9.1c)。 */
+	private boolean dangerReported;
 	private boolean sleepReadyReported;
 	/** 這次觀察到天黑過(黃昏到天亮前)，跨進白天時發一次 daybreak(M17)。 */
 	private boolean sawDark;
@@ -124,6 +129,36 @@ public final class Observation {
 
 	// ---- get_self(S3.2、M1.1、A5) ----
 
+	/**
+	 * 危險程度(S9.1c)：附近會不會生怪(夜裡在戶外，或在室內/地底而且腳下光照 0)、24 格內幾隻威脅、血量、備戰程度。
+	 */
+	public CombatPolicy.Danger danger(Minecraft mc) {
+		return danger(mc, CombatPolicy.readiness(Combat.assess(mc.player)));
+	}
+
+	private CombatPolicy.Danger danger(Minecraft mc, CombatPolicy.Readiness r) {
+		LocalPlayer p = mc.player;
+		BlockPos feet = p.blockPosition();
+		boolean outdoors = mc.level.canSeeSky(feet.above());
+		boolean night = DayClock.phase(mc.level.getOverworldClockTime()).equals("night");
+		boolean unlit = mc.level.getBrightness(LightLayer.BLOCK, feet) == 0 && mc.level.getBrightness(LightLayer.SKY, feet) <= 7;
+		boolean dark = (outdoors && night) || (!outdoors && unlit);
+		Entity attacker = recentAttacker(mc, 100);
+		int hostiles = 0;
+		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(24), e -> Threats.isThreat(e, attacker))) {
+			if (e.distanceTo(p) <= 24) hostiles++;
+		}
+		return CombatPolicy.danger(dark, outdoors, hostiles, p.getHealth(), r.gear());
+	}
+
+	/** 例如 {@code danger=high reasons=dark,outdoors,gear_weak gear=weak missing=shield,armor}。 */
+	private Kv dangerKv(Minecraft mc) {
+		CombatPolicy.Readiness r = CombatPolicy.readiness(Combat.assess(mc.player));
+		CombatPolicy.Danger d = danger(mc, r);
+		return Kv.of().put("danger", d.label()).put("reasons", d.reasons().isEmpty() ? "none" : String.join(",", d.reasons()))
+			.put("gear", r.label()).put("missing", r.missing().isEmpty() ? "none" : String.join(",", r.missing()));
+	}
+
 	public String self(Minecraft mc) {
 		LocalPlayer p = mc.player;
 		StringBuilder sb = new StringBuilder();
@@ -150,6 +185,7 @@ public final class Observation {
 			.append(",chest:").append(Fmt.item(p.getItemBySlot(EquipmentSlot.CHEST)))
 			.append(",legs:").append(Fmt.item(p.getItemBySlot(EquipmentSlot.LEGS)))
 			.append(",feet:").append(Fmt.item(p.getItemBySlot(EquipmentSlot.FEET)));
+		if (!p.getAbilities().invulnerable) sb.append('\n').append(dangerKv(mc));
 		sb.append('\n').append(Kv.of("inv").put("free", Inv.freeSlots(p)).put("items", Kv.counts(Inv.summary(p))));
 		List<String> food = new ArrayList<>(), fuel = new ArrayList<>(), special = new ArrayList<>();
 		for (int i = 0; i < Inv.MAIN_SIZE; i++) {
@@ -541,8 +577,10 @@ public final class Observation {
 			// 黃昏開始：離地表生怪約 1 分鐘，晴天 12542 起可以睡(M17)
 			nightReported = true;
 			String sleepIn = DayClock.sleepCountdown(clock);
+			CombatPolicy.Readiness r = CombatPolicy.readiness(Combat.assess(p));
 			agent.events.add("night_falling", Event.Level.BATCH,
-				DayClock.describe(clock) + (sleepIn != null ? " " + sleepIn : "") + " | hint=head to shelter or a bed");
+				DayClock.describe(clock) + (sleepIn != null ? " " + sleepIn : "") + " " + Kv.of().put("gear", r.label())
+					.put("missing", r.missing().isEmpty() ? "none" : String.join(",", r.missing())) + " | hint=head to shelter or a bed");
 		} else if (phase.equals("day")) {
 			nightReported = false;
 		}
@@ -562,6 +600,16 @@ public final class Observation {
 				+ (w.equals("clear") ? "undead burn in sunlight; safe to go out" : "undead do not burn in rain; stay careful"));
 		}
 
+		if (t % 20 == 0 && !p.getAbilities().invulnerable) {
+			CombatPolicy.DangerLevel level = danger(mc).level();
+			if (level == CombatPolicy.DangerLevel.HIGH && !dangerReported) {
+				dangerReported = true;
+				agent.events.add("danger_rising", Event.Level.PROMPT, dangerKv(mc)
+					+ " | hint=stop outdoor work: go to shelter or a bed, light the area up, or wall yourself in; make what missing lists");
+			} else if (level == CombatPolicy.DangerLevel.LOW) {
+				dangerReported = false;
+			}
+		}
 		if (t % 20 == 0) {
 			Set<Integer> now = new HashSet<>();
 			Entity attacker = recentAttacker(mc, 100);
@@ -586,6 +634,7 @@ public final class Observation {
 		lastAttackerId = -1;
 		healthLowReported = false;
 		nightReported = false;
+		dangerReported = false;
 		sleepReadyReported = false;
 		sawDark = false;
 		lastObservedTick = -1;

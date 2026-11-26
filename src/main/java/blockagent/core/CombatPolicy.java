@@ -1,6 +1,8 @@
 package blockagent.core;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -8,6 +10,190 @@ import java.util.Map;
  */
 public final class CombatPolicy {
 	private CombatPolicy() {
+	}
+
+	// ---- 可調常數(docs/SPEC.md S9.1b；試玩的 fight_summary 指出問題時只改這裡) ----
+
+	/** 撤退線：血量到這裡就撤退；勝算也以「打完還在這條線以上」為準。 */
+	public static final float RETREAT_HP = 6f;
+	/** 撤退回血到這裡才算回來了。 */
+	public static final float RECOVERED_HP = 10f;
+	/** 一隻近戰怪實際每秒打掉的血(殭屍一下 3 點、最多每秒一下，被擊退後大約一半)。 */
+	public static final double MELEE_DPS = 1.5;
+	/** 沒舉盾時遠程怪每秒打掉的血(骷髏一般難度 2 秒一箭、平均 3.5 點)。 */
+	public static final double RANGED_DPS = 2.0;
+	/** 每點護甲減免的傷害比例(原版約 4%)。 */
+	public static final double ARMOR_REDUCTION = 0.04;
+	/** 跳劈暴擊的傷害倍數。 */
+	public static final double CRIT_MULTIPLIER = 1.5;
+	/** 攻擊間隔短於這個(秒)時不跳劈：跳一次的時間比冷卻還長(空手 0.25 秒)，反而打得慢。 */
+	public static final double CRIT_MIN_INTERVAL = 0.5;
+	/** 衝向遠程怪的速度(格/秒，扣掉牠邊退邊射)。 */
+	public static final double APPROACH_SPEED = 4.0;
+	/**
+	 * 打遠程怪時每一下至少要隔這麼久(秒)：每一下都把牠擊退出攻擊距離，牠又邊退邊射，得重新貼上去
+	 * (2026-11-26 遊戲測試：空手打骷髏實際 1.1–1.3 秒才一拳，不是 0.25 秒)。
+	 */
+	public static final double RANGED_REENGAGE_SECS = 1.0;
+	/** 劍的攻擊距離約 3 格：衝到這裡就打得到。 */
+	public static final double MELEE_REACH = 3.0;
+	/** 箭的速度大約 1.6 格/tick。 */
+	public static final double ARROW_SPEED = 1.6;
+
+	/**
+	 * 自己的戰力：血量、最佳近戰武器的傷害和攻擊間隔(秒)、護甲值、有沒有盾牌、弓箭、可吃的食物，
+	 * 以及這一場能不能跳劈(不在水裡、不在梯子上)。
+	 */
+	public record Fighter(float hp, double weaponDamage, double attackInterval, int armor, boolean shield, boolean bow,
+		boolean food, boolean canCrit) {
+		/** 跳劈划不划算：攻擊間隔夠長(劍、斧)才划算。 */
+		public boolean critWorthIt() {
+			return canCrit && attackInterval >= CRIT_MIN_INTERVAL;
+		}
+	}
+
+	/**
+	 * 預估打死這個目標會掉多少血：打死要幾秒 × 每秒會被打掉多少(扣掉護甲)。
+	 * 打死要幾秒 = ceil(目標血量 / 每下傷害) × 攻擊間隔，遠程怪每下至少隔 {@link #RANGED_REENGAGE_SECS}、再加上衝過去的時間。
+	 *
+	 * @param meleeNear    6 格內的近戰怪數量(包含目標本身，如果牠是近戰怪)
+	 * @param rangedTarget 目標是遠程怪
+	 */
+	public static double expectedLoss(Fighter me, double targetHp, double distance, int meleeNear, boolean rangedTarget) {
+		double perHit = Math.max(0.5, me.weaponDamage() * (me.critWorthIt() ? CRIT_MULTIPLIER : 1));
+		double interval = rangedTarget ? Math.max(me.attackInterval(), RANGED_REENGAGE_SECS) : me.attackInterval();
+		double secs = Math.ceil(Math.max(1, targetHp) / perHit) * interval;
+		if (rangedTarget) secs += Math.max(0, distance - MELEE_REACH) / APPROACH_SPEED;
+		double dps = meleeNear * MELEE_DPS + (rangedTarget && !me.shield() ? RANGED_DPS : 0);
+		dps *= Math.max(0, 1 - Math.min(20, me.armor()) * ARMOR_REDUCTION);
+		return secs * dps;
+	}
+
+	/** 勝算：打完血量還在撤退線以上才打。 */
+	public static boolean worthFighting(Fighter me, double targetHp, double distance, int meleeNear, boolean rangedTarget) {
+		return me.hp() - expectedLoss(me, targetHp, distance, meleeNear, rangedTarget) > RETREAT_HP;
+	}
+
+	public enum RangedStance {
+		/** 用弓對射。 */
+		SHOOT,
+		/** 牠拉弓或箭飛來時舉盾擋，兩輪射擊之間往前衝。 */
+		GUARD_ADVANCE,
+		/** 沒有盾，直接衝過去。 */
+		CHARGE,
+		/** 打不贏：躲到看不到牠的地方(箭飛來照樣舉盾)。 */
+		COVER
+	}
+
+	/**
+	 * 遠程怪怎麼打。
+	 *
+	 * @param stalled 一直走不近(3 秒沒有更接近，砍中或擋箭時重算)
+	 */
+	public static RangedStance rangedStance(Fighter me, double distance, boolean los, boolean stalled, double targetHp, int meleeNear) {
+		if (me.bow() && los && (distance > 8 || stalled)) return RangedStance.SHOOT;
+		if (!stalled && worthFighting(me, targetHp, distance, meleeNear, true)) {
+			return me.shield() ? RangedStance.GUARD_ADVANCE : RangedStance.CHARGE;
+		}
+		return RangedStance.COVER;
+	}
+
+	/** 骷髏放箭後盾牌還要舉幾 tick：箭飛過來的時間再留一點餘裕，最少 8 tick。 */
+	public static int shieldHoldTicks(double distance) {
+		return Math.max(8, (int) Math.ceil(distance / ARROW_SPEED) + 4);
+	}
+
+	/**
+	 * 現在要不要起跳準備跳劈：站在地上、不在水裡或梯子上、頭上有空間、武器值得跳(劍、斧)、
+	 * 冷卻在 0.6–0.9 之間(落下時剛好滿；已經滿了就直接砍，不多等這一跳)，而且沒有在擋箭。
+	 */
+	public static boolean shouldJumpForCrit(boolean onGround, boolean inFluid, boolean climbing, boolean headroom,
+		double attackInterval, float cooldown, boolean guarding) {
+		return onGround && !inFluid && !climbing && headroom && attackInterval >= CRIT_MIN_INTERVAL && cooldown >= 0.6f
+			&& cooldown < 0.9f && !guarding;
+	}
+
+	/** 跳起來之後什麼時候砍：往下掉而且冷卻滿了(原版暴擊條件)。 */
+	public static boolean critReady(boolean onGround, double verticalSpeed, float cooldown) {
+		return !onGround && verticalSpeed < 0 && cooldown >= 0.9f;
+	}
+
+	// ---- 戰前評估(S9.1c) ----
+
+	public enum Gear {WEAK, OK, STRONG}
+
+	/** 備戰程度和缺什麼(依序 sword、shield、armor、bow、food)。 */
+	public record Readiness(Gear gear, List<String> missing) {
+		public String label() {
+			return gear.name().toLowerCase(java.util.Locale.ROOT);
+		}
+	}
+
+	/** 沒有傷害 ≥ 4 的武器，或護甲 < 5 又沒盾：weak；石劍以上 + 盾 + 護甲 ≥ 15：strong；其他 ok。 */
+	public static Readiness readiness(Fighter me) {
+		Gear g;
+		if (me.weaponDamage() < 4 || (me.armor() < 5 && !me.shield())) g = Gear.WEAK;
+		else if (me.weaponDamage() >= 5 && me.shield() && me.armor() >= 15) g = Gear.STRONG;
+		else g = Gear.OK;
+		List<String> missing = new ArrayList<>();
+		if (me.weaponDamage() < 5) missing.add("sword");
+		if (!me.shield()) missing.add("shield");
+		if (me.armor() < 15) missing.add("armor");
+		if (!me.bow()) missing.add("bow");
+		if (!me.food()) missing.add("food");
+		return new Readiness(g, List.copyOf(missing));
+	}
+
+	public enum DangerLevel {LOW, MEDIUM, HIGH}
+
+	public record Danger(DangerLevel level, List<String> reasons) {
+		public String label() {
+			return level.name().toLowerCase(java.util.Locale.ROOT);
+		}
+	}
+
+	/**
+	 * 危險程度(給 AI 看，讓牠決定要不要收工)。
+	 *
+	 * @param dark     附近會生怪：夜裡在戶外，或在室內/地底而且腳下光照 0
+	 * @param outdoors 頭上看得到天空
+	 * @param hostiles 24 格內的威脅數量
+	 */
+	public static Danger danger(boolean dark, boolean outdoors, int hostiles, float hp, Gear gear) {
+		List<String> reasons = new ArrayList<>();
+		if (dark) reasons.add("dark");
+		if (outdoors) reasons.add("outdoors");
+		if (hostiles > 0) reasons.add("hostiles:" + hostiles);
+		if (gear == Gear.WEAK) reasons.add("gear_weak");
+		if (hp <= RECOVERED_HP) reasons.add("hp_low");
+		DangerLevel level;
+		if ((dark && gear == Gear.WEAK) || hostiles >= 3 || (hp <= RECOVERED_HP && hostiles >= 1)) level = DangerLevel.HIGH;
+		else if (dark || hostiles >= 1) level = DangerLevel.MEDIUM;
+		else level = DangerLevel.LOW;
+		return new Danger(level, List.copyOf(reasons));
+	}
+
+	// ---- 撤退(S9.1 retreat) ----
+
+	public enum RetreatOutcome {
+		/** 回血了：接著做原本的任務。 */
+		RESUME,
+		/** 同一個任務第二次撤退：這裡太危險，取消任務交給 AI。 */
+		CANCEL_REPEAT,
+		/** 回不了血(沒食物、一直被追)：取消任務交給 AI。 */
+		CANCEL_CANNOT_HEAL
+	}
+
+	/**
+	 * 撤退結束後原本的任務怎麼辦。
+	 *
+	 * @param how              撤退的結束原因(recovered、cannot_heal、gave_up_after_60s、turned_off、preempted_by_…)
+	 * @param retreatsThisTask 這個任務(包含這次)撤退了幾次
+	 */
+	public static RetreatOutcome retreatOutcome(String how, int retreatsThisTask) {
+		if ("cannot_heal".equals(how) || how.startsWith("gave_up")) return RetreatOutcome.CANCEL_CANNOT_HEAL;
+		if (retreatsThisTask >= 2 && "recovered".equals(how)) return RetreatOutcome.CANCEL_REPEAT;
+		return RetreatOutcome.RESUME;
 	}
 
 	/**

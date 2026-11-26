@@ -1,14 +1,19 @@
 package blockagent.game;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.tags.ItemTags;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.ItemAttributeModifiers;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.LinkedHashMap;
@@ -318,5 +323,115 @@ public final class Inv {
 			}
 		}
 		return amount - left;
+	}
+	// ---- 戰鬥裝備(docs/REVIEW.md R7、SPEC S9.1b) ----
+
+	/** 近戰武器：背包索引(空手是 -1)、每下傷害、攻擊間隔(秒)。 */
+	public record Weapon(int index, double damage, double interval) {
+		public double dps() {
+			return damage / interval;
+		}
+	}
+
+	/** 空手：每拳 1 點，0.25 秒一拳。 */
+	public static final Weapon FIST = new Weapon(-1, 1, 0.25);
+
+	/** 主手拿這個東西時的傷害和攻擊間隔(玩家基礎攻擊力 1、攻擊速度 4，加上物品的屬性修飾)。 */
+	public static Weapon weaponStats(int index, ItemStack s) {
+		ItemAttributeModifiers mods = s.getOrDefault(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.EMPTY);
+		double damage = mods.compute(Attributes.ATTACK_DAMAGE, 1.0, EquipmentSlot.MAINHAND);
+		double speed = mods.compute(Attributes.ATTACK_SPEED, 4.0, EquipmentSlot.MAINHAND);
+		return new Weapon(index, Math.max(1, damage), speed > 0.1 ? 1 / speed : 10);
+	}
+
+	/**
+	 * 主背包裡每秒傷害最高的劍或斧頭(不只看欄位順序，R7)；一樣好時優先目前主手。沒有就是空手。
+	 *
+	 * @param allowed 額外條件，例如旁邊有受保護生物時只能用斧頭
+	 */
+	public static Weapon bestWeapon(Player p, Predicate<ItemStack> allowed) {
+		Inventory inv = p.getInventory();
+		Weapon best = FIST;
+		int selected = inv.getSelectedSlot();
+		for (int pass = 0; pass < 2; pass++) {
+			for (int i = 0; i < MAIN_SIZE; i++) {
+				if ((pass == 0) != (i == selected)) continue;
+				ItemStack s = inv.getItem(i);
+				if (s.isEmpty() || !(s.is(ItemTags.SWORDS) || s.is(ItemTags.AXES)) || !allowed.test(s)) continue;
+				Weapon w = weaponStats(i, s);
+				if (w.dps() > best.dps() + 1e-6) best = w;
+			}
+		}
+		return best;
+	}
+
+	/** 把最好的劍或斧頭拿到主手；沒有可用的武器回傳 false。 */
+	public static boolean selectBestWeapon(Minecraft mc, Predicate<ItemStack> allowed) {
+		Weapon w = bestWeapon(mc.player, allowed);
+		if (w.index() < 0) return false;
+		ItemStack target = mc.player.getInventory().getItem(w.index());
+		return selectInHand(mc, s -> s == target);
+	}
+
+	/** 這個東西穿在哪一格護甲欄、能擋多少；不是護甲回傳 null。 */
+	private static EquipmentSlot armorSlot(ItemStack s) {
+		var eq = s.get(DataComponents.EQUIPPABLE);
+		if (eq == null || eq.slot().getType() != EquipmentSlot.Type.HUMANOID_ARMOR) return null;
+		return armorPoints(s, eq.slot()) > 0 ? eq.slot() : null;
+	}
+
+	private static double armorPoints(ItemStack s, EquipmentSlot slot) {
+		return s.getOrDefault(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.EMPTY).compute(Attributes.ARMOR, 0, slot);
+	}
+
+	/** 把背包第 idx 格的護甲穿上(跟玩家在背包按 Shift 點一下一樣)。開著別的容器時不做。 */
+	public static void wear(Minecraft mc, int idx) {
+		Player p = mc.player;
+		if (p.containerMenu != p.inventoryMenu) return;
+		click(mc, p.inventoryMenu, menuSlot(idx), 0, ContainerInput.QUICK_MOVE);
+	}
+
+	/**
+	 * 怪物來了自動備戰(S9.1b)：空著的護甲欄穿上背包裡最好的護甲；副手不是盾牌也不是不死圖騰時把盾牌換上去
+	 * (副手原本的東西換回那一格)。開著別的容器時不做。回傳做了什麼，例如 {@code iron_chestplate,shield}；沒做事回傳空字串。
+	 */
+	public static String prepareForCombat(Minecraft mc) {
+		Player p = mc.player;
+		// 開著別的容器、或游標上拿著東西(合成到一半)時不動背包
+		if (p.containerMenu != p.inventoryMenu || !p.containerMenu.getCarried().isEmpty()) return "";
+		java.util.List<String> done = new java.util.ArrayList<>();
+		Inventory inv = p.getInventory();
+		for (EquipmentSlot slot : new EquipmentSlot[]{EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET}) {
+			if (!p.getItemBySlot(slot).isEmpty()) continue;
+			int best = -1;
+			double bestPts = 0;
+			for (int i = 0; i < MAIN_SIZE; i++) {
+				ItemStack s = inv.getItem(i);
+				if (s.isEmpty() || armorSlot(s) != slot) continue;
+				double pts = armorPoints(s, slot);
+				if (pts > bestPts) {
+					best = i;
+					bestPts = pts;
+				}
+			}
+			if (best < 0) continue;
+			String name = id(inv.getItem(best));
+			wear(mc, best);
+			if (!p.getItemBySlot(slot).isEmpty()) done.add(name);
+		}
+		ItemStack off = p.getOffhandItem();
+		if (!off.has(DataComponents.BLOCKS_ATTACKS) && !off.is(Items.TOTEM_OF_UNDYING)) {
+			int idx = find(p, s -> s.has(DataComponents.BLOCKS_ATTACKS));
+			if (idx >= 0) {
+				swapToOffhand(mc, idx);
+				if (p.getOffhandItem().has(DataComponents.BLOCKS_ATTACKS)) done.add(id(p.getOffhandItem()));
+			}
+		}
+		return String.join(",", done);
+	}
+
+	/** 背包裡有沒有可以吃的東西(給備戰評估用)。 */
+	public static boolean hasFood(Player p) {
+		return find(p, s -> s.has(DataComponents.FOOD)) >= 0 || p.getOffhandItem().has(DataComponents.FOOD);
 	}
 }

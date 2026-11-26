@@ -9,25 +9,28 @@
 
 ## Critical(最優先)
 
-- [ ] **R1. 對遠程怪舉盾過早放盾且移動搶視角，盾牌實戰幾乎零格擋**
+- [x] **R1. 對遠程怪舉盾過早放盾且移動搶視角，盾牌實戰幾乎零格擋**
   - **位置**：`src/main/java/blockagent/game/combat/Combat.java:330-338`
   - **證據**：`21:19:42–21:20:20` 身穿全身鐵甲+盾牌觸發 4 次 `shield_vs_bow`(每次僅持續 0.54–0.65 秒)，但格擋箭矢進度 `[抱歉，今天不行]` 一次都沒觸發；直到 `21:20:24` 使用者手動接手後 9 秒(`21:20:33`)才解鎖，AI 在接手前已被打到 `hp=5` 並於 `21:20:44` 陣亡。
   - **問題**：
     - 骷髏放箭的那一 tick，`target.isUsingItem()` 立刻變為 `false`，`else` 分支馬上呼叫 `lowerShield(mc)`；在 8–12 格距離，箭矢仍需飛行 5–8 ticks(0.25–0.4 秒)才會命中，等同在箭到臉前主動放盾。
     - 第 338 行在 `shield_vs_bow` 期間仍呼叫 `approach(mc)`，Baritone 尋路每 tick 覆寫玩家視角朝向移動路線，蓋掉第 332 行的 `Moves.lookAt`，盾牌沒正對骷髏導致箭矢從側面穿過。
   - **方向**：偵測到遠程怪拉弓時設定舉盾維持時間窗(例如 `shieldHoldUntil = tick + 12`，覆蓋 5-tick 舉盾預熱與箭矢飛行時間)；舉盾期間暫停 Baritone 轉向(`halt()` 或保持面向目標)，避免視角被搶。
+  - **處理(2026-11-26)**：新增 `combat/ShieldGuard`：遠程怪拉弓 ≥ 6 tick 或預測 10 tick 內有箭/三叉戟/火球命中時舉盾，放箭後維持 `CombatPolicy.shieldHoldTicks(距離)` 直到箭到；`Combat.tick()` 一開始先跑守備，擋的時候停下 Baritone 並每 tick 對準射手或箭的來向。撤退反射也共用。
 
-- [ ] **R2. `Combat.noCloserTicks` 命中擊退後未重置，砍一刀即誤判走不近並收盾逃跑**
+- [x] **R2. `Combat.noCloserTicks` 命中擊退後未重置，砍一刀即誤判走不近並收盾逃跑**
   - **位置**：`src/main/java/blockagent/game/combat/Combat.java:213-218,317-320,355-368,399-430`
   - **證據**：`21:19:45.839` 貼近骷髏(距離 3.3)砍出第 1 刀後，精準經過 2.994 秒(60 ticks)即於 `21:19:48.833` 突然放棄追擊，切換成 `back_off` / `hide_from_skeleton`，放走殘血骷髏並在後續遭遇苦力怕、殭屍與第二隻骷髏的車輪戰。
   - **問題**：近戰命中擊退目標後 `closest` 卡死在 `3.3`，且 `strike()` 成功出刀並未重置 `noCloserTicks` 與 `closest`；重新接近時 `d < closest - 0.5` 不成立，滿 60 ticks 就跳進 `takeCover(mc)`，而第 356 行第一件事便是無條件 `lowerShield(mc)`，讓角色收盾背對骷髏吃箭。此外當 `hp <= 8`(`COVER_HEALTH`)且無弓時會鎖死在 `takeCover`，完全喪失舉盾與反擊能力。
   - **方向**：`strike()` 成功出刀時重置 `noCloserTicks = 0` 與 `closest = d`；`takeCover()` 找掩體途中若遠程怪正在拉弓，應先舉盾擋完箭而非無條件 `lowerShield`。
+  - **處理(2026-11-26)**：`strike()` 出刀後重設 `closest`/`noCloserTicks`，擋箭的 tick 不累加；擋箭由 `ShieldGuard` 在戰術之前處理，`takeCover()` 只在沒箭要擋時才收盾移動，途中目標進入攻擊距離照樣砍(`hit_from_cover`)。原本的 `COVER_HEALTH` 改由勝算(`CombatPolicy.rangedStance`)決定要不要躲。
 
-- [ ] **R3. `RETREAT` 反射陷入震盪死循環，打斷進食與回屋並迫使 AI 關掉撤退**
+- [x] **R3. `RETREAT` 反射陷入震盪死循環，打斷進食與回屋並迫使 AI 關掉撤退**
   - **位置**：`src/main/java/blockagent/game/reflex/Reflexes.java:58,257-259,379-385,418`
   - **證據**：`21:23:04–21:23:52` 47 秒內連續觸發 5 次 `retreat_start(hp=4 hostiles_near)`，依序打斷 `goto 109,74,74`、兩次 `goto 87,67,227`(回屋)，甚至在 `21:23:47` 直接打斷 **`eat melon_slice`**；AI 被迫於 `21:23:52` 呼叫 `set_reflex retreat=false` 硬衝回屋，隨即被 `self_defense` 拖住並於 10 秒後(`21:24:02`)在 `76,67,205` 被骷髏射殺。
   - **問題**：`RETREAT` 設為 `cancelsTask=true`，會無差別取消 `EatTask` 與回庇護所的 `GotoTask`；且撤退僅用 `GoalRunAway(20)` 往反方向跑到 16 格外就結束(`finished`)，角色仍停在 `hp=4` 未回血，AI 一轉頭回家又立刻踏入 12 格觸發圈。
   - **方向**：`RETREAT` 不應打斷進行中的 `EatTask`(或在安全距離內優先進食回血再結束撤退)；考慮給撤退結束後短暫冷卻或優先往床/庇護所方向撤離，避免與回家路線互相拉扯。
+  - **處理(2026-11-26)**：撤退改成暫停任務並分兩段——跑開(有箭要擋時停下舉盾)→ 16 格內沒有看得到自己的威脅時停下吃東西回血；血量 > 10 才結束並接著做任務。同一個任務第二次撤退(`retreated_twice`)或 10 秒回不了血(`cannot_heal`)才取消任務交給 AI，回不了血後 20 秒內不再觸發(除非又被打)。正在吃東西而且 3 格內沒怪時不觸發；撤退時限改為 60 秒。
 
 - [x] **R4. `OwnershipLedger` pending 競態導致 Baritone 墊腳圓石被誤判為他人方塊並污染規劃**
   - **位置**：`src/main/java/blockagent/core/OwnershipLedger.java:54-67`、`src/main/java/blockagent/game/RuleGuard.java:140-151,403-411`、`src/main/java/blockagent/mixin/MultiPlayerGameModeMixin.java:132-147`
@@ -57,11 +60,12 @@
   - **方向**：對 `BuildTask` 內部擋下 Baritone 施工重疊/非法墊腳的情況改為靜默拒絕或節流去重，避免洗版事件誤導 AI 中止建造。
   - **處理(2026-11-26)**：於 `RuleGuard` 新增 `reportBuildBlocked()`，維持 `blockedCount`/`lastBlocked` 供 `DoorPlacer.blockedAfter` 使用，但省略 `PROMPT` 事件與 `noteProblem`，且 `ActionLog` 每 100 tick 最多記 1 筆；`MultiPlayerGameModeMixin` 的 `canPlaceForBuild` 分支改呼此方法。
 
-- [ ] **R7. 重生無甲空手時 `SELF_DEFENSE` 仍對骷髏硬衝(`charge`)，並空手連揮 23–25 下**
+- [x] **R7. 重生無甲空手時 `SELF_DEFENSE` 仍對骷髏硬衝(`charge`)，並空手連揮 23–25 下**
   - **位置**：`src/main/java/blockagent/game/combat/Combat.java:314-339,399-430`、`src/main/java/blockagent/game/Inv.java:54-61`
   - **證據**：`21:21:11`(剛重生無甲、正要合成石劍時)被 12 格外骷髏觸發 `self_defense`，選用 `skeleton: charge` 空手連揮 23 下後遭撤退搶佔，於 `21:21:32` 在 `69,67,218` 被射殺；`21:22:58` 再次對骷髏空手連打 24 下；`21:25:33` 對殭屍 7 秒內空手連揮 25 下。
   - **問題**：`Combat.ranged()` 僅依 `hp <= 8` 決定是否躲避，未評估自身是否無武器、無盾、無護甲；另 `Inv.selectInHand(mc, s -> s.is(ItemTags.SWORDS) || s.is(ItemTags.AXES))` 只依背包索引挑第一把劍或斧(不比傷害)，無武器時直接空手纏鬥(每拳 1 傷害)。
   - **方向**：無劍/斧/弓且無盾(或無護甲)時，面對遠程怪應直接採 `takeCover` 或撤離，不主動 `charge`；近戰選武器應依傷害挑最佳武器而非只看欄位順序。
+  - **處理(2026-11-26)**：新增勝算規則 `CombatPolicy.worthFighting`(預估打死要幾秒 × 每秒掉血，打完仍在撤退線以上才打)：遠程怪依 `rangedStance` 選對射/舉盾推進/直衝/躲；近戰怪在自衛時勝算不夠就 `disengage_outmatched`。`Inv.bestWeapon` 依每秒傷害挑劍或斧。另加戰前評估(`danger`/`gear`/`missing`、`danger_rising`)、威脅出現時自動穿甲換盾、跳劈與衝刺擊退、站位檢查和 `fight_summary` 紀錄(SPEC S9.1b、S9.1c)。
 
 - [x] **R8. `mine` / `goto` 陷入 `PathNode map size: 1` 鎖死，連續黑名單周圍全部目標**
   - **位置**：`src/main/java/blockagent/game/tasks/MineTask.java`、`src/main/java/blockagent/game/tasks/GotoTask.java`、`src/main/java/blockagent/game/reflex/Reflexes.java:489-533`

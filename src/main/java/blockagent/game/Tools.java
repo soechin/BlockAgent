@@ -1321,7 +1321,7 @@ public final class Tools {
 				} else {
 					Inv.pullOffhandToMain(mc, s -> false);
 					idx = Inv.find(p, s -> s.is(item));
-					if (idx >= 0) Inv.click(mc, p.inventoryMenu, Inv.menuSlot(idx), 0, ContainerInput.QUICK_MOVE);
+					if (idx >= 0) Inv.wear(mc, idx);
 				}
 			} else {
 				if (idx < 0) return missingItem(item, 0, 1);
@@ -1329,7 +1329,7 @@ public final class Tools {
 				switch (target) {
 					case MAINHAND -> Inv.selectInHand(mc, s -> s.is(item));
 					case OFFHAND -> Inv.swapToOffhand(mc, idx);
-					default -> Inv.click(mc, p.inventoryMenu, Inv.menuSlot(idx), 0, ContainerInput.QUICK_MOVE);
+					default -> Inv.wear(mc, idx);
 				}
 			}
 		}
