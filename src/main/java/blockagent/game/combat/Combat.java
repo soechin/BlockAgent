@@ -100,6 +100,11 @@ public final class Combat {
 	private int shieldBlocks;
 	private int lastHurtTime;
 	private int lastShieldDamage = -1;
+	/** 最後一次打中(揮劍或放箭)的目標和 tick：目標死了是不是自己打死的。 */
+	private int lastHitId = -1;
+	private long lastHitTick = -1000;
+	/** 打中後這麼多 tick 內死掉算自己打死的(箭還在飛、死亡動畫)。 */
+	private static final int KILL_CREDIT_TICKS = 40;
 	private final Set<String> targets = new LinkedHashSet<>();
 
 	public Combat(Agent agent, ActionLog.Source source, String logPrefix, Mover mover, boolean hunting) {
@@ -191,6 +196,11 @@ public final class Combat {
 	}
 
 	/** 打到或射出過至少一次。 */
+	/** 打不贏，正在(或剛)拉開距離。 */
+	public boolean outmatched() {
+		return outmatched;
+	}
+
 	public boolean engaged() {
 		return hits > 0;
 	}
@@ -217,7 +227,9 @@ public final class Combat {
 		Threats.Kind k = target instanceof Enemy || Threats.kind(target) == Threats.Kind.AVOID ? Threats.kind(target, Bow.ready(p)) : Threats.Kind.MELEE;
 		if (k == Threats.Kind.AVOID) return d > 24;
 		if (d > TRIGGER_RANGE + 2 || lostSightTicks > 60) return true;
-		if (outmatched) return d > MELEE_RANGE;
+		// 打不贏時要甩掉牠(超過 18 格或 3 秒看不到，上面已經判斷)：只跑到 8 格就收手的話，牠追上來打一下又觸發自衛，
+		// 遊戲測試裡空手被 2 隻殭屍追 30 秒觸發了 8 次
+		if (outmatched) return false;
 		return switch (k) {
 			case EXPLODER -> d > 10;
 			case MELEE, NEUTRAL -> d > MELEE_RANGE && !(k == Threats.Kind.MELEE && Bow.ready(p) && lostSightTicks == 0);
@@ -347,7 +359,10 @@ public final class Combat {
 		LocalPlayer p = mc.player;
 		String result;
 		if (p.isDeadOrDying()) result = "died";
-		else if (target != null && (target.isDeadOrDying() || target.getRemovalReason() == Entity.RemovalReason.KILLED)) result = "killed";
+		else if (target != null && (target.isDeadOrDying() || target.getRemovalReason() == Entity.RemovalReason.KILLED)) {
+			// 只有剛打中過牠才算自己打死的；不然是被別人、岩漿、陽光或指令弄死的
+			result = target.getId() == lastHitId && agent.tick() - lastHitTick <= KILL_CREDIT_TICKS ? "killed" : "target_died";
+		}
 		else if (outmatched) result = "disengaged";
 		else result = how;
 		agent.log.log(source, "fight_summary", "targets=" + String.join(",", targets) + " secs=" + fmt((agent.tick() - startTick) / 20.0)
@@ -380,7 +395,7 @@ public final class Combat {
 			outmatched = true;
 			lowerShield(mc);
 			tactic("disengage_outmatched");
-			flee(target, MELEE_RANGE + 2);
+			flee(target, TRIGGER_RANGE + 4);
 			return;
 		}
 		if (strike(mc)) {
@@ -630,6 +645,8 @@ public final class Combat {
 		mc.gameMode.attack(p, target);
 		p.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
 		hits++;
+		lastHitId = target.getId();
+		lastHitTick = agent.tick();
 		swings++;
 		if (crit) crits++;
 		jumpedForCrit = false;
@@ -676,6 +693,8 @@ public final class Combat {
 		mc.options.keyUse.setDown(false);
 		mc.gameMode.releaseUsingItem(p);
 		hits++;
+		lastHitId = target.getId();
+		lastHitTick = agent.tick();
 		return true;
 	}
 

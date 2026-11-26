@@ -110,7 +110,7 @@ class CombatPolicyTest {
 		assertFalse(CombatPolicy.shouldJumpForCrit(true, true, false, true, 0.625, 0.7f, false), "在水裡");
 		assertFalse(CombatPolicy.shouldJumpForCrit(true, false, false, true, 0.25, 0.7f, false), "空手");
 		assertFalse(CombatPolicy.shouldJumpForCrit(true, false, false, true, 0.625, 0.7f, true), "正在擋箭");
-		assertFalse(CombatPolicy.shouldJumpForCrit(true, false, false, true, 0.625, 1f, false), "冷卻已滿就直接砍");
+		assertTrue(CombatPolicy.shouldJumpForCrit(true, false, false, true, 0.625, 1f, false), "冷卻已滿也跳(擊退後重新貼上時冷卻總是滿的)");
 		assertTrue(CombatPolicy.critReady(false, -0.1, 0.95f));
 		assertFalse(CombatPolicy.critReady(false, 0.2, 0.95f), "還在往上跳");
 	}

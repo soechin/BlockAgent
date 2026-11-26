@@ -32,6 +32,8 @@ public class CombatGameTest implements FabricClientGameTest {
 			TestKit k = new TestKit(ctx, sp);
 			BlockPos c = k.myPos();
 			k.flatArena(c, 30);
+			// 苦力怕炸了也不破壞場地
+			k.cmd("gamerule mob_griefing false");
 			k.start();
 			dangerWhenUnarmedAtNight(k);
 			unarmedDoesNotChargeSkeleton(k, c);
@@ -39,6 +41,9 @@ public class CombatGameTest implements FabricClientGameTest {
 			unarmedBeatsOneZombie(k, c);
 			huntUsesJumpCrits(k, c);
 			shieldBlocksSkeletonAndAutoEquips(k, c);
+			creeperHitAndBack(k, c);
+			zombieAndSkeletonTogether(k, c);
+			outmatchedChase(k, c);
 			retreatRecoversThenCancelsOnSecondRetreat(k, c);
 		} catch (Exception e) {
 			throw new RuntimeException(e);
@@ -148,6 +153,67 @@ public class CombatGameTest implements FabricClientGameTest {
 		System.out.println("[ok] R1 盾牌擋箭(耐久 -" + shieldDamage + ")、自動備戰、打死骷髏");
 	}
 
+	/** 苦力怕：拿石劍打了就退(出手前衝刺擊退)，在牠炸之前打死，自己沒被炸到。 */
+	private void creeperHitAndBack(TestKit k, BlockPos c) throws Exception {
+		reset(k, c);
+		k.give("minecraft:stone_sword", 1);
+		int mark = mark(k);
+		k.cmd("execute as @p at @s run summon minecraft:creeper ~5 ~ ~ {PersistenceRequired:1b}");
+		boolean gone = waitFor(k, 20 * 30, () -> count(k, EntityTypes.CREEPER) == 0);
+		String log = since(k, mark);
+		float hp = k.ctx.computeOnClient(mc -> mc.player.getHealth());
+		check(gone, "30 秒內應該解決苦力怕：" + log);
+		check(log.contains("hit_and_back"), "打苦力怕應該打了就退：" + log);
+		check(summaryOf(log, "creeper").contains("result=killed"), "苦力怕應該是被打死的，不是自己炸掉：" + log);
+		check(hp >= 14, "不應該被苦力怕炸到(血量剩 " + hp + ")：" + log);
+		System.out.println("[ok] 苦力怕：打了就退、在爆炸前打死，血量 " + hp + " | " + summaryOf(log, "creeper"));
+	}
+
+	/** 混戰：殭屍貼身、骷髏在遠處射箭；全副武裝要兩隻都打死，血量不能掉太多。 */
+	private void zombieAndSkeletonTogether(TestKit k, BlockPos c) throws Exception {
+		reset(k, c);
+		k.cmd("difficulty normal");
+		for (String item : List.of("iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots", "shield", "stone_sword")) {
+			k.give("minecraft:" + item, 1);
+		}
+		int mark = mark(k);
+		k.cmd("execute as @p at @s run summon minecraft:zombie ~4 ~ ~ {PersistenceRequired:1b}");
+		k.cmd("execute as @p at @s run summon minecraft:skeleton ~-12 ~ ~ {PersistenceRequired:1b}");
+		k.cmd("item replace entity @e[type=minecraft:skeleton] weapon.mainhand with minecraft:bow");
+		boolean cleared = waitFor(k, 20 * 60, () -> count(k, EntityTypes.ZOMBIE) == 0 && count(k, EntityTypes.SKELETON) == 0);
+		String log = since(k, mark);
+		float hp = k.ctx.computeOnClient(mc -> mc.player.getHealth());
+		k.cmd("difficulty easy");
+		check(cleared, "全副武裝應該打死殭屍和骷髏：" + log);
+		check(alive(k) && hp >= 8, "混戰後血量應該 ≥ 8(剩 " + hp + ")：" + log);
+		// 殭屍被擊退後重新貼上時冷卻總是滿的：滿了也要跳劈，不然實戰打不出暴擊(修正前 0/5)
+		check(summaryOf(log, "zombie").matches(".*crits=[1-9].*"), "自衛打殭屍應該有跳劈暴擊：" + summaries(log));
+		System.out.println("[ok] 混戰：殭屍 + 骷髏都打死，血量 " + hp + " | " + summaries(log));
+	}
+
+	/**
+	 * 空手被 2 隻殭屍追：打不贏要甩掉牠們，不能一直被追著打、反覆觸發自衛。先記下數據(觸發次數、挨打、血量)。
+	 */
+	private void outmatchedChase(TestKit k, BlockPos c) throws Exception {
+		reset(k, c);
+		int mark = mark(k);
+		k.cmd("execute as @p at @s run summon minecraft:zombie ~5 ~ ~ {PersistenceRequired:1b}");
+		k.cmd("execute as @p at @s run summon minecraft:zombie ~5 ~ ~1 {PersistenceRequired:1b}");
+		k.ctx.waitTicks(20 * 30);
+		String log = since(k, mark);
+		float hp = k.ctx.computeOnClient(mc -> mc.player.getHealth());
+		int starts = log.split("self_defense_start", -1).length - 1;
+		int retreats = log.split("retreat_start", -1).length - 1;
+		System.out.println("[data] 空手被 2 隻殭屍追 30 秒：self_defense_start=" + starts + " retreat_start=" + retreats + " hp=" + hp
+			+ " | " + summaries(log));
+		check(alive(k), "被追 30 秒不應該死：" + log);
+		check(!log.contains("self_defense_attack"), "打不贏不應該出手：" + log);
+		// 甩掉牠們，不要被追著反覆觸發(修正前 30 秒觸發 8 次)
+		check(starts <= 3, "被追 30 秒觸發自衛 " + starts + " 次，應該甩掉牠們(≤ 3 次)：" + summaries(log));
+		check(hp >= 18, "甩掉牠們就不該一直挨打(血量剩 " + hp + ")：" + summaries(log));
+		System.out.println("[ok] 空手被 2 隻殭屍追：甩掉牠們(自衛 " + starts + " 次)、沒出手，血量 " + hp);
+	}
+
 	/**
 	 * R3：低血量時撤退會暫停任務、跑開、停下吃東西，血量 > 10 才結束並接著做；同一個任務第二次撤退則取消任務。
 	 * 殭屍用 NoAI 固定在原地，結果才穩定。
@@ -215,6 +281,23 @@ public class CombatGameTest implements FabricClientGameTest {
 			k.ctx.waitTicks(10);
 		}
 		return cond.getAsBoolean();
+	}
+
+	/** 紀錄裡所有 fight_summary 的內容，一行一筆。 */
+	private static String summaries(String log) {
+		StringBuilder sb = new StringBuilder();
+		for (String line : log.split("\n")) {
+			if (!line.contains("fight_summary")) continue;
+			int i = line.indexOf("\"result\":\"");
+			if (i >= 0) sb.append(line, i + 10, line.lastIndexOf('"')).append(" ; ");
+		}
+		return sb.toString();
+	}
+
+	/** 打這種怪的 fight_summary(沒有回傳空字串)。 */
+	private static String summaryOf(String log, String target) {
+		for (String part : summaries(log).split(" ; ")) if (part.contains("targets=" + target) || part.contains("," + target)) return part;
+		return "";
 	}
 
 	private static boolean alive(TestKit k) {

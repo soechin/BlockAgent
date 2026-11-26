@@ -704,6 +704,12 @@ public final class Reflexes {
 		unstuckFront = null;
 		if (k == Kind.SELF_DEFENSE && combat != null && combat.target() != null && combat.target().isAlive()) {
 			defenseCooldown.put(combat.target().getId(), agent.tick(), DEFENSE_COOLDOWN_TICKS, how.startsWith("preempted_by_"));
+			// 打不贏而拉開距離：一起追來的也冷卻，不然換另一隻馬上又觸發(遊戲測試：2 隻殭屍輪流觸發)
+			if (combat.outmatched() && mc.player != null) {
+				for (Entity e : hostiles(mc, Combat.TRIGGER_RANGE)) {
+					defenseCooldown.put(e.getId(), agent.tick(), DEFENSE_COOLDOWN_TICKS, how.startsWith("preempted_by_"));
+				}
+			}
 		}
 		eatingFood = null;
 		String action = describeAction(k);

@@ -105,12 +105,13 @@ public final class CombatPolicy {
 
 	/**
 	 * 現在要不要起跳準備跳劈：站在地上、不在水裡或梯子上、頭上有空間、武器值得跳(劍、斧)、
-	 * 冷卻在 0.6–0.9 之間(落下時剛好滿；已經滿了就直接砍，不多等這一跳)，而且沒有在擋箭。
+	 * 冷卻回到 0.6 以上(落下時剛好滿)，而且沒有在擋箭。冷卻已經滿了也跳：每一下都把怪擊退，重新貼上時冷卻總是滿的，
+	 * 滿了就不跳的話實戰幾乎打不出暴擊(2026-11-26 遊戲測試：自衛打殭屍 0/5 暴擊)，多等半秒換 1.5 倍傷害划算。
 	 */
 	public static boolean shouldJumpForCrit(boolean onGround, boolean inFluid, boolean climbing, boolean headroom,
 		double attackInterval, float cooldown, boolean guarding) {
 		return onGround && !inFluid && !climbing && headroom && attackInterval >= CRIT_MIN_INTERVAL && cooldown >= 0.6f
-			&& cooldown < 0.9f && !guarding;
+			&& !guarding;
 	}
 
 	/** 跳起來之後什麼時候砍：往下掉而且冷卻滿了(原版暴擊條件)。 */
