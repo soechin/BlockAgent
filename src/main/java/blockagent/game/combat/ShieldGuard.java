@@ -13,15 +13,17 @@ import net.minecraft.world.entity.monster.Witch;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.entity.projectile.arrow.AbstractArrow;
 import net.minecraft.world.entity.projectile.hurtingprojectile.AbstractHurtingProjectile;
-import net.minecraft.world.item.BowItem;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 盾牌守備(docs/SPEC.md S9.1b、docs/REVIEW.md R1)：每 tick 看有沒有遠程怪在拉弓、有沒有箭或火球正飛過來，
  * 決定這 tick 要不要舉盾、該面向哪裡。
  * <ul>
- *   <li>16 格內看得到自己的遠程怪拉弓 6 tick 以上就開始擋(骷髏 20 tick 才放箭，盾要舉 5 tick 才生效)。</li>
+ *   <li>16 格內看得到自己的遠程怪拉弓 12 tick 以上才開始擋(骷髏 20 tick 放箭、盾要舉 5 tick 生效；太早停步在多隻射手錯開射擊時會完全走不近)。</li>
  *   <li>放箭之後盾牌照樣舉著，直到箭飛到({@link CombatPolicy#shieldHoldTicks})；不會在箭還在空中時收盾。</li>
  *   <li>24 格內有不是自己射的箭、三叉戟或火球，預測 10 tick 內會進到自己的碰撞箱，也要擋。</li>
  * </ul>
@@ -30,7 +32,7 @@ import net.minecraft.world.phys.Vec3;
 public final class ShieldGuard {
 	private static final double DRAW_RANGE = 16;
 	private static final double PROJECTILE_RANGE = 24;
-	private static final int DRAW_TICKS = 6;
+	private static final int DRAW_TICKS = 12;
 	private static final int PREDICT_TICKS = 10;
 
 	private long holdUntil = Long.MIN_VALUE;
@@ -122,15 +124,34 @@ public final class ShieldGuard {
 		return -1;
 	}
 
-	static boolean hasShield(LocalPlayer p) {
-		return p.getOffhandItem().has(DataComponents.BLOCKS_ATTACKS);
+	/** 副手有盾且沒在破盾冷卻中。 */
+	public static boolean hasShield(LocalPlayer p) {
+		var off = p.getOffhandItem();
+		return off.has(DataComponents.BLOCKS_ATTACKS) && !p.getCooldowns().isOnCooldown(off);
 	}
 
-	/** 舉盾：按住使用鍵對副手使用；正在拉弓時先收弓，不然舉不起來(H8)。 */
+	/**
+	 * 脫身或撤退中，停下來面向 {@code faceAt} 舉盾安不安全：
+	 * 若有盾牌擋不住的遠程怪看得到自己，或有其他看得到自己的遠程怪在側面／背後，停步只會露背挨打，改繼續跑。
+	 */
+	public static boolean canSafelyStop(Minecraft mc, Entity attacker, Vec3 faceAt) {
+		LocalPlayer p = mc.player;
+		if (faceAt == null) return true;
+		double faceDx = faceAt.x - p.getX(), faceDz = faceAt.z - p.getZ();
+		List<double[]> offsets = new ArrayList<>();
+		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(DRAW_RANGE), x -> Threats.isThreat(x, attacker))) {
+			if (e.distanceTo(p) > DRAW_RANGE || Threats.kind(e) != Threats.Kind.RANGED || !p.hasLineOfSight(e)) continue;
+			if (!Threats.shieldBlocks(e)) return false;
+			offsets.add(new double[]{e.getX() - p.getX(), e.getZ() - p.getZ()});
+		}
+		return CombatPolicy.canSafelyStopToShield(faceDx, faceDz, offsets);
+	}
+
+	/** 舉盾：按住使用鍵對副手使用；主手正在使用物品(拉弓、吃東西等)時先取消，不然舉不起來(H8)。 */
 	public static void raise(Minecraft mc) {
 		LocalPlayer p = mc.player;
 		if (!hasShield(p)) return;
-		if (p.isUsingItem() && p.getUseItem().getItem() instanceof BowItem) UseKey.cancelUse(mc);
+		if (p.isUsingItem() && p.getUsedItemHand() == InteractionHand.MAIN_HAND) UseKey.cancelUse(mc);
 		if (p.isUsingItem()) {
 			if (p.getUsedItemHand() == InteractionHand.OFF_HAND) UseKey.holdOff(mc);
 			return;

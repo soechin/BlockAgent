@@ -79,7 +79,8 @@ public final class Bari {
 	 */
 	public static boolean mixinTargetsPresent() {
 		ClassLoader cl = Bari.class.getClassLoader();
-		for (String c : new String[]{"baritone.pathing.movement.CalculationContext", "baritone.process.BuilderProcess", "baritone.utils.ToolSet"}) {
+		for (String c : new String[]{"baritone.pathing.movement.CalculationContext", "baritone.process.BuilderProcess",
+			"baritone.utils.ToolSet", "baritone.utils.pathing.Avoidance"}) {
 			try {
 				Class.forName(c, false, cl);
 			} catch (ClassNotFoundException | LinkageError e) {

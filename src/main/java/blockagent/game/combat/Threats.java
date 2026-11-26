@@ -89,6 +89,11 @@ public final class Threats {
 		return false;
 	}
 
+	/** 這隻遠程怪的攻擊盾牌擋得住、而且 ShieldGuard 會偵測(女巫藥水、深海守衛雷射、界伏蚌飛彈除外)。 */
+	public static boolean shieldBlocks(Entity e) {
+		return !(e instanceof Witch || e instanceof Guardian || e instanceof Shulker);
+	}
+
 	/** 會飛、走路追不到的：只在打得到時出手。 */
 	public static boolean flying(Entity e) {
 		return e instanceof Phantom || e instanceof Vex || e instanceof Ghast || e instanceof Blaze;

@@ -8,6 +8,7 @@ import blockagent.core.Ballistics;
 import blockagent.core.CombatPolicy;
 import blockagent.game.ActionLog;
 import blockagent.game.Agent;
+import blockagent.game.Bari;
 import blockagent.game.Inv;
 import blockagent.game.RuleGuard;
 import blockagent.game.UseKey;
@@ -23,6 +24,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.entity.monster.Enemy;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.item.component.SwingAnimation;
 import net.minecraft.world.level.ClipContext;
@@ -31,6 +33,7 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -80,6 +83,11 @@ public final class Combat {
 	private int lostSightTicks;
 	private BlockPos cover;
 	private long coverTick = -1000;
+	/** 前往掩體時若一直走不到(隔牆／溝渠)，暫時列入黑名單改換位置或退回逃跑。 */
+	private final Set<BlockPos> badCover = new HashSet<>();
+	private double coverClosest = Double.MAX_VALUE;
+	private int coverNoProgressTicks;
+	private long lastFleeAllTick = -100;
 	private RuleGuard.Verdict blocked;
 	private int hits;
 	private long lastHoldLog = -1000;
@@ -87,6 +95,10 @@ public final class Combat {
 	/** 這個 tick 有在拉弓或放箭；沒有的話 tick 最後把弓收起來。 */
 	private boolean shooting;
 	private final ShieldGuard guard = new ShieldGuard();
+	/** 這個 tick 有遠程攻擊需要戒備(擋箭空檔可平砍但不跳劈)。 */
+	private boolean guardActive;
+	/** 正在掩體後埋伏等遠程怪繞過來(容許較長的失去視線時間)。 */
+	private boolean ambushing;
 	/**
 	 * 打不贏，正在脫身(一旦決定就不再改主意，換目標也一樣，免得一下打一下跑)：借掩護擋住射手、
 	 * 往遠離整群怪的方向跑，甩掉整群才收手。
@@ -189,26 +201,39 @@ public final class Combat {
 		noCloserTicks = 0;
 		lostSightTicks = 0;
 		cover = null;
+		badCover.clear();
+		coverNoProgressTicks = 0;
+		coverClosest = Double.MAX_VALUE;
 		backoff = 0;
+		jumpedForCrit = false;
+		sprintWindup = false;
+		ambushing = false;
+		agent.danger.setIgnoredEntity(outmatched ? -1 : e.getId());
 	}
 
 	/**
-	 * 自己現在的戰力(R7)：最佳近戰武器、護甲、盾牌(副手或背包裡都算，開打時會換上)、弓箭、食物，
+	 * 自己現在的戰力(R7)：最佳近戰武器、護甲、盾牌(副手或開戰能換上去的未冷卻盾)、弓箭、食物，
 	 * 以及能不能跳劈。戰前評估(S9.1c)也用這個。
 	 */
 	public static CombatPolicy.Fighter assess(LocalPlayer p) {
 		Inv.Weapon w = Inv.bestWeapon(p, s -> true);
-		boolean shield = ShieldGuard.hasShield(p) || Inv.find(p, s -> s.has(DataComponents.BLOCKS_ATTACKS)) >= 0;
-		return new CombatPolicy.Fighter(p.getHealth(), w.damage(), w.interval(), Inv.wornArmor(p), shield, Bow.ready(p),
+		return new CombatPolicy.Fighter(p.getHealth(), w.damage(), w.interval(), Inv.wornArmor(p), canUseShield(p), Bow.ready(p),
 			Inv.hasFood(p), !p.isInLiquid() && !p.onClimbable());
 	}
 
-	/** 打到或射出過至少一次。 */
+	/** 副手已有未冷卻盾牌，或開戰時能把背包裡的未冷卻盾牌換上副手(副手不是不死圖騰且沒開其他容器)。 */
+	private static boolean canUseShield(LocalPlayer p) {
+		if (ShieldGuard.hasShield(p)) return true;
+		if (p.getOffhandItem().is(Items.TOTEM_OF_UNDYING) || p.containerMenu != p.inventoryMenu) return false;
+		return Inv.find(p, s -> s.has(DataComponents.BLOCKS_ATTACKS) && !p.getCooldowns().isOnCooldown(s)) >= 0;
+	}
+
 	/** 打不贏，正在(或剛)拉開距離。 */
 	public boolean outmatched() {
 		return outmatched;
 	}
 
+	/** 打到或射出過至少一次。 */
 	public boolean engaged() {
 		return hits > 0;
 	}
@@ -240,7 +265,8 @@ public final class Combat {
 			double nearest = nearestThreat(mc, 24);
 			return nearest > TRIGGER_RANGE + 2 || (nearest > 12 && unseenTicks > 60);
 		}
-		if (d > TRIGGER_RANGE + 2 || lostSightTicks > 60) return true;
+		int sightLimit = ambushing ? CombatPolicy.AMBUSH_LOST_SIGHT_TICKS : 60;
+		if (d > TRIGGER_RANGE + 2 || lostSightTicks > sightLimit) return true;
 		return switch (k) {
 			case EXPLODER -> d > 10;
 			case MELEE, NEUTRAL -> d > MELEE_RANGE && !(k == Threats.Kind.MELEE && Bow.ready(p) && lostSightTicks == 0);
@@ -277,12 +303,16 @@ public final class Combat {
 		boolean bow = hostile && Bow.ready(p);
 		// 狩獵的動物、打了自己的狼和蜜蜂當近戰處理；鐵傀儡打不過，照分類避開
 		Threats.Kind k = hostile || Threats.kind(target) == Threats.Kind.AVOID ? Threats.kind(target, bow) : Threats.Kind.MELEE;
+		agent.danger.setIgnoredEntity(outmatched ? -1 : target.getId());
 		shooting = false;
-		// 盾牌守備優先(R1)：苦力怕在膨脹、要避開的、正在拉開距離時照樣跑；攻擊冷卻滿了而且箭還沒到時可以先砍
-		// 脫身時 4 格內有近戰怪就先跑，沒有的話停下來擋箭(跟撤退一樣)
+		// 盾牌守備優先(R1)：身旁有苦力怕在膨脹、要避開的、脫身時近戰怪貼身(或停步會露背給其他射手)時照樣跑；
+		// 攻擊冷卻滿了而且箭還沒到時可以先平砍(但不跳劈)
 		boolean panic = k == Threats.Kind.AVOID || (outmatched && nearestMelee(mc) <= 4)
-			|| (k == Threats.Kind.EXPLODER && ((Creeper) target).getSwellDir() > 0);
-		if (!panic && guard.update(mc, agent.tick()) && !(canStrikeNow(mc, los) && !guard.arrowImminent())) {
+			|| (k == Threats.Kind.EXPLODER && ((Creeper) target).getSwellDir() > 0)
+			|| anySwellingCreeperNear(mc, 5);
+		guardActive = !panic && guard.update(mc, agent.tick())
+			&& (!outmatched || ShieldGuard.canSafelyStop(mc, agent.observation.recentAttacker(mc, 100), guard.faceAt()));
+		if (guardActive && !(canStrikeNow(mc, los) && !guard.arrowImminent())) {
 			holdGuard(mc);
 			return Outcome.CONTINUE;
 		}
@@ -321,6 +351,7 @@ public final class Combat {
 		halt();
 		releaseMoveKeys(mc);
 		jumpedForCrit = false;
+		sprintWindup = false;
 		if (guard.faceAt() != null) Moves.lookAt(mc.player, guard.faceAt());
 		raiseShield(mc);
 		String src = guard.source();
@@ -349,6 +380,24 @@ public final class Combat {
 		return los && inReach(mc) && mc.player.getAttackStrengthScale(0) >= 0.9f;
 	}
 
+	/** 暫停(例如 HuntTask 被反射暫時接手)：收盾／收弓、放開按鍵、停下移動，但不寫 fight_summary。 */
+	public void suspend(Minecraft mc) {
+		agent.danger.setIgnoredEntity(-1);
+		sprintWindup = false;
+		jumpedForCrit = false;
+		if (mc.player != null && mc.gameMode != null) {
+			if (drawingBow(mc.player)) cancelDraw(mc);
+			else lowerShield(mc);
+		}
+		releaseMoveKeys(mc);
+		if (mc.options != null && mc.options.keyUse.isDown()) mc.options.keyUse.setDown(false);
+		try {
+			halt();
+		} catch (RuntimeException ignored) {
+			// 不在世界裡時 Baritone 可能還沒準備好；按鍵已經放開了
+		}
+	}
+
 	/** 結束時：放下盾牌或收弓、放開使用鍵、停下移動。斷線時(沒有玩家)只放開按鍵(H9)。 */
 	public void release(Minecraft mc) {
 		release(mc, "ended");
@@ -361,13 +410,16 @@ public final class Combat {
 	 * @param how 結束原因(反射的結束原因；任務是 ended)
 	 */
 	public void release(Minecraft mc, String how) {
+		agent.danger.setIgnoredEntity(-1);
+		sprintWindup = false;
+		jumpedForCrit = false;
 		if (mc.player != null && mc.gameMode != null) {
 			if (drawingBow(mc.player)) cancelDraw(mc);
 			else lowerShield(mc);
 			summarize(mc, how);
 		}
 		releaseMoveKeys(mc);
-		if (mc.options.keyUse.isDown()) mc.options.keyUse.setDown(false);
+		if (mc.options != null && mc.options.keyUse.isDown()) mc.options.keyUse.setDown(false);
 		try {
 			halt();
 		} catch (RuntimeException ignored) {
@@ -469,6 +521,8 @@ public final class Combat {
 
 	private void creeper(Minecraft mc, Creeper c, double d, boolean los, boolean bow) {
 		if (c.getSwellDir() > 0) {
+			sprintWindup = false;
+			releaseMoveKeys(mc);
 			if (hasShield(mc) && d < 3.5 && c.getSwelling(1f) > 0.5f) {
 				tactic("creeper_shield");
 				halt();
@@ -482,24 +536,33 @@ public final class Combat {
 			return;
 		}
 		if (backoff > 0) {
+			sprintWindup = false;
+			releaseMoveKeys(mc);
 			backoff--;
 			flee(c, 5);
 			return;
 		}
-		if (bow && d >= 5 && los && shoot(mc, "bow_creeper")) return;
-		// 衝刺擊退：出手前一 tick 按住前進並開衝刺，這一下會把苦力怕打得更遠
-		if (!sprintWindup && canStrikeNow(mc, los) && !mc.player.isSprinting() && mc.player.getFoodData().getFoodLevel() > 6
-			&& mc.player.onGround()) {
-			halt();
-			lowerShield(mc);
-			Moves.lookAt(mc.player, c.getBoundingBox().getCenter());
-			mc.options.keyUp.setDown(true);
-			mc.player.setSprinting(true);
-			sprintWindup = true;
+		if (bow && d >= 5 && los && shoot(mc, "bow_creeper")) {
+			sprintWindup = false;
+			releaseMoveKeys(mc);
 			return;
 		}
+		// 衝刺擊退：出手前一 tick 先切好近戰武器，再按住前進並開衝刺，避免下一 tick 換武器重設冷卻
+		if (!sprintWindup && los && inReach(mc) && !mc.player.isSprinting() && mc.player.getFoodData().getFoodLevel() > 6
+			&& mc.player.onGround()) {
+			selectMeleeWeapon(mc);
+			if (mc.player.getAttackStrengthScale(0) >= 0.9f) {
+				halt();
+				lowerShield(mc);
+				Moves.lookAt(mc.player, c.getBoundingBox().getCenter());
+				mc.options.keyUp.setDown(true);
+				mc.player.setSprinting(true);
+				sprintWindup = true;
+				return;
+			}
+		}
+		sprintWindup = false;
 		if (strike(mc)) {
-			sprintWindup = false;
 			releaseMoveKeys(mc);
 			tactic("hit_and_back");
 			backoff = 12;
@@ -518,6 +581,7 @@ public final class Combat {
 		if (hunting && st == CombatPolicy.RangedStance.COVER) {
 			st = me.shield() ? CombatPolicy.RangedStance.GUARD_ADVANCE : CombatPolicy.RangedStance.CHARGE;
 		}
+		if (st != CombatPolicy.RangedStance.AMBUSH) ambushing = false;
 		if (st == CombatPolicy.RangedStance.SHOOT && shoot(mc, "bow_duel")) return;
 		if (st == CombatPolicy.RangedStance.AMBUSH) {
 			ambush(mc);
@@ -567,9 +631,10 @@ public final class Combat {
 
 	/**
 	 * 埋伏：打得贏但追不近(骷髏邊退邊射)。躲到擋住射手的位置等牠繞過來，走進攻擊距離就砍；
-	 * 找不到掩體就重新算「走不近」，再往前推。不是脫身，不會一直跑。
+	 * 找不到(或走不到)掩體就重新算「走不近」，再往前推。不是脫身，不會一直跑。
 	 */
 	private void ambush(Minecraft mc) {
+		ambushing = true;
 		if (strike(mc)) {
 			tactic("hit_from_cover");
 			return;
@@ -577,20 +642,18 @@ public final class Combat {
 		if (blocked != null) return;
 		List<LivingEntity> seeing = archersSeeingMe(mc);
 		if (!seeing.isEmpty()) {
-			if (cover == null || agent.tick() - coverTick > 40 || !hiddenAt(mc, cover, seeing)) {
-				cover = findCover(mc, seeing);
-				coverTick = agent.tick();
-			}
-			if (cover == null) {
-				// 附近沒有掩體可以埋伏：重新往前推
+			BlockPos spot = trackCover(mc, seeing);
+			if (spot == null) {
+				// 附近沒有走得到的掩體可以埋伏：重新往前推
+				ambushing = false;
 				noCloserTicks = 0;
 				closest = target.distanceTo(mc.player);
 				return;
 			}
-			if (!mc.player.blockPosition().equals(cover)) {
+			if (!mc.player.blockPosition().equals(spot)) {
 				lowerShield(mc);
 				tactic("ambush_from_cover");
-				goTo(new GoalBlock(cover), cover);
+				goTo(new GoalBlock(spot), spot);
 				return;
 			}
 		}
@@ -602,14 +665,19 @@ public final class Combat {
 	private void startEscape(String tactic) {
 		if (outmatched) return;
 		outmatched = true;
+		ambushing = false;
 		escapeTactic = tactic;
 		unseenTicks = 0;
 		cover = null;
+		badCover.clear();
+		coverNoProgressTicks = 0;
+		coverClosest = Double.MAX_VALUE;
+		agent.danger.setIgnoredEntity(-1);
 	}
 
 	/**
 	 * 脫身(R7、S9.1b)：射手看得到自己時，先躲到擋住所有射手、而且離射手比現在更遠的位置(不會往回躲)；
-	 * 沒有射手看得到(或找不到掩體)就往遠離整群怪的方向跑。遠程目標繞過來走進攻擊距離時照樣砍。
+	 * 沒有射手看得到(或找不到／走不到掩體)就往遠離整群怪的方向跑。遠程目標繞過來走進攻擊距離時照樣砍。
 	 */
 	private void escape(Minecraft mc) {
 		LocalPlayer p = mc.player;
@@ -624,13 +692,10 @@ public final class Combat {
 		}
 		lowerShield(mc);
 		if (!seeing.isEmpty()) {
-			if (cover == null || agent.tick() - coverTick > 40 || !hiddenAt(mc, cover, seeing)) {
-				cover = findCover(mc, seeing);
-				coverTick = agent.tick();
-			}
-			if (cover != null && !p.blockPosition().equals(cover)) {
+			BlockPos spot = trackCover(mc, seeing);
+			if (spot != null && !p.blockPosition().equals(spot)) {
 				tactic("hide_from_" + id(seeing.getFirst()));
-				goTo(new GoalBlock(cover), cover);
+				goTo(new GoalBlock(spot), spot);
 				return;
 			}
 		}
@@ -638,13 +703,51 @@ public final class Combat {
 		fleeAll(mc, TRIGGER_RANGE + 6);
 	}
 
-	/** 往遠離 24 格內所有威脅的方向跑。 */
+	/** 追蹤目前挑選的掩體：若 1 秒沒更接近(隔牆／溝渠不可達)就列入黑名單重挑，免得卡在原地挨射。 */
+	private BlockPos trackCover(Minecraft mc, List<LivingEntity> seeing) {
+		LocalPlayer p = mc.player;
+		long now = agent.tick();
+		if (cover != null) {
+			if (p.blockPosition().equals(cover)) {
+				coverNoProgressTicks = 0;
+				coverClosest = 0;
+			} else {
+				double dist = Math.sqrt(p.blockPosition().distSqr(cover));
+				if (dist < coverClosest - 0.5) {
+					coverClosest = dist;
+					coverNoProgressTicks = 0;
+				} else {
+					coverNoProgressTicks++;
+				}
+				if (coverNoProgressTicks >= 20) {
+					badCover.add(cover);
+					cover = null;
+					coverNoProgressTicks = 0;
+					coverClosest = Double.MAX_VALUE;
+				}
+			}
+		}
+		if (cover == null || now - coverTick > 40 || !hiddenAt(mc, cover, seeing)) {
+			cover = findCover(mc, seeing);
+			coverTick = now;
+			coverNoProgressTicks = 0;
+			coverClosest = cover == null ? Double.MAX_VALUE : Math.sqrt(p.blockPosition().distSqr(cover));
+		}
+		return cover;
+	}
+
+	/** 往遠離 24 格內所有威脅的方向跑(節流重規劃：4 格內有怪半秒一次、否則 1.5 秒一次)。 */
 	private void fleeAll(Minecraft mc, double distance) {
+		long now = agent.tick();
+		int interval = nearestThreat(mc, 4) <= 4 ? 10 : 30;
+		if (now - lastFleeAllTick < interval && Bari.busy()) return;
 		List<BlockPos> from = new ArrayList<>();
 		for (Entity e : threats(mc, 24)) from.add(e.blockPosition());
 		if (from.isEmpty()) from.add(target.blockPosition());
-		BlockPos key = from.getFirst();
-		goTo(new GoalRunAway(distance, from.toArray(new BlockPos[0])), key);
+		lastFleeAllTick = now;
+		pathKey = from.getFirst();
+		lastPathTick = now;
+		mover.path(new GoalRunAway(distance, from.toArray(new BlockPos[0])));
 	}
 
 	/** range 格內的威脅(包含目標)。 */
@@ -672,6 +775,15 @@ public final class Combat {
 		return best;
 	}
 
+	/** 身旁有沒有正在膨脹的苦力怕(不限當前目標，避免 10 tick 換目標空窗被盾牌定在原地)。 */
+	private boolean anySwellingCreeperNear(Minecraft mc, double range) {
+		LocalPlayer p = mc.player;
+		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(range), x -> x instanceof Creeper && x.isAlive())) {
+			if (e.distanceTo(p) <= range && ((Creeper) e).getSwellDir() > 0) return true;
+		}
+		return false;
+	}
+
 	private boolean anyThreatSees(Minecraft mc) {
 		for (Entity e : threats(mc, TRIGGER_RANGE)) if (mc.player.hasLineOfSight(e)) return true;
 		return false;
@@ -696,7 +808,7 @@ public final class Combat {
 		Vec3 facing = target.position().subtract(p.position()).multiply(1, 0, 1);
 		int n = 0;
 		for (LivingEntity a : archersSeeingMe(mc)) {
-			if (!shield) {
+			if (!shield || !Threats.shieldBlocks(a)) {
 				n++;
 				continue;
 			}
@@ -731,7 +843,7 @@ public final class Combat {
 		double bestD = Double.MAX_VALUE;
 		for (BlockPos b : BlockPos.betweenClosed(me.offset(-8, -2, -8), me.offset(8, 2, 8))) {
 			double dist = b.distSqr(me);
-			if (dist >= bestD) continue;
+			if (dist >= bestD || badCover.contains(b)) continue;
 			if (!level.getBlockState(b).getCollisionShape(level, b).isEmpty()
 				|| !level.getBlockState(b.above()).getCollisionShape(level, b.above()).isEmpty()
 				|| level.getBlockState(b.below()).getCollisionShape(level, b.below()).isEmpty()
@@ -762,6 +874,17 @@ public final class Combat {
 
 	// ---- 動作 ----
 
+	/** 依身旁有沒有受保護生物挑近戰武器並切到主手，回傳實際使用的武器數值。 */
+	private Inv.Weapon selectMeleeWeapon(Minecraft mc) {
+		LocalPlayer p = mc.player;
+		if (RuleGuard.protectedNearTarget(p, target) != null) {
+			if (!Inv.selectBestWeapon(mc, s -> s.is(ItemTags.AXES))) Inv.selectInHand(mc, s -> !s.is(ItemTags.SWORDS));
+			return Inv.bestWeapon(p, s -> s.is(ItemTags.AXES));
+		}
+		Inv.selectBestWeapon(mc, s -> true);
+		return Inv.bestWeapon(p, s -> true);
+	}
+
 	/**
 	 * 在攻擊距離內、冷卻滿了就打。打了回傳 true；被守門員擋下時記在 {@link #blocked}。
 	 * 用劍或斧頭、條件允許時先起跳，往下掉時才砍(跳劈暴擊 1.5 倍)。
@@ -777,14 +900,7 @@ public final class Combat {
 		Moves.lookAt(p, target.getBoundingBox().getCenter());
 		// 先換武器再看冷卻：換手上的東西會重設冷卻。
 		// 目標旁邊有玩家、寵物或村民時不用劍：劍的橫掃會打到牠們(M14)，改用斧頭或其他東西
-		Inv.Weapon weapon;
-		if (RuleGuard.protectedNearTarget(p, target) != null) {
-			if (!Inv.selectBestWeapon(mc, s -> s.is(ItemTags.AXES))) Inv.selectInHand(mc, s -> !s.is(ItemTags.SWORDS));
-			weapon = Inv.bestWeapon(p, s -> s.is(ItemTags.AXES));
-		} else {
-			Inv.selectBestWeapon(mc, s -> true);
-			weapon = Inv.bestWeapon(p, s -> true);
-		}
+		Inv.Weapon weapon = selectMeleeWeapon(mc);
 		float cd = p.getAttackStrengthScale(0);
 		boolean crit = false;
 		if (jumpedForCrit && !p.onGround()) {
@@ -792,9 +908,9 @@ public final class Combat {
 			crit = true;
 		} else {
 			jumpedForCrit = false;
-			// 苦力怕要的是擊退，不跳
+			// 苦力怕要的是擊退，不跳；擋箭空檔直接平砍，不放盾起跳
 			if (!(target instanceof Creeper) && CombatPolicy.shouldJumpForCrit(p.onGround(), p.isInLiquid(), p.onClimbable(),
-				headroom(mc), weapon.interval(), cd, false)) {
+				headroom(mc), weapon.interval(), cd, guardActive)) {
 				lowerShield(mc);
 				p.jumpFromGround();
 				jumpedForCrit = true;
@@ -827,6 +943,7 @@ public final class Combat {
 		swings++;
 		if (crit) crits++;
 		jumpedForCrit = false;
+		ambushing = false;
 		// 打中會把目標擊退：從這裡重新算「走不近」(R2)
 		closest = target.distanceTo(p);
 		noCloserTicks = 0;

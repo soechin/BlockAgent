@@ -95,7 +95,7 @@ public final class Reflexes {
 
 	private final Agent agent;
 	private final Map<Kind, Boolean> enabled = new EnumMap<>(Kind.class);
-	private Kind active;
+	private volatile Kind active;
 	private String activeReason;
 	private int activeTicks;
 	private boolean suspendedTask;
@@ -185,7 +185,7 @@ public final class Reflexes {
 		return active == null ? s : s + " active=" + active.id();
 	}
 
-	public synchronized Kind active() {
+	public Kind active() {
 		return active;
 	}
 
@@ -299,7 +299,7 @@ public final class Reflexes {
 				}
 			}
 			case RETREAT -> {
-				if (p.getHealth() > LOW_HEALTH || hostiles(mc, 12).isEmpty()) return null;
+				if (p.getHealth() > LOW_HEALTH || (hostiles(mc, 12).isEmpty() && visibleRangedThreats(mc, Combat.TRIGGER_RANGE) == 0)) return null;
 				// 正在吃東西、3 格內又沒有怪：讓這一口吃完(R3：吃西瓜吃到一半被撤退打斷)
 				if (p.isUsingItem() && p.getUseItem().has(DataComponents.FOOD) && hostiles(mc, 3).isEmpty()) return null;
 				// 剛因為回不了血放棄撤退：這段時間內不再觸發，除非之後又被打
@@ -308,7 +308,13 @@ public final class Reflexes {
 				return "hp=" + Math.round(p.getHealth()) + " hostiles_near";
 			}
 			case SELF_DEFENSE -> {
-				Combat.Threat t = Combat.pickThreat(mc, agent, coolingDown(mc));
+				var ignore = coolingDown(mc);
+				// hunt 已經在用 Combat(hunting=true) 打這隻怪，不讓自衛反射搶去脫身；旁邊有其他怪偷襲仍會觸發
+				if (agent.tasks.current() instanceof blockagent.game.tasks.HuntTask hunt) {
+					var ht = hunt.target();
+					ignore = ignore.or(e -> e == ht);
+				}
+				Combat.Threat t = Combat.pickThreat(mc, agent, ignore);
 				if (t != null) {
 					pendingThreat = t;
 					return t.why();
@@ -621,7 +627,8 @@ public final class Reflexes {
 		LocalPlayer p = mc.player;
 		boolean meleeClose = false;
 		for (Entity e : hostiles(mc, 4)) meleeClose |= Threats.kind(e) != Threats.Kind.RANGED;
-		if (!meleeClose && retreatGuard.update(mc, agent.tick())) {
+		if (!meleeClose && retreatGuard.update(mc, agent.tick())
+			&& ShieldGuard.canSafelyStop(mc, agent.observation.recentAttacker(mc, 100), retreatGuard.faceAt())) {
 			stopEating(mc);
 			Bari.stopAll();
 			if (retreatGuard.faceAt() != null) Moves.lookAt(p, retreatGuard.faceAt());
@@ -631,7 +638,7 @@ public final class Reflexes {
 		}
 		if (p.isUsingItem() && p.getUsedItemHand() == InteractionHand.OFF_HAND) ShieldGuard.lower(mc);
 		if (retreatPhase == RetreatPhase.RUN) {
-			if (visibleThreats(mc, 16) == 0) {
+			if (CombatPolicy.shouldEnterRetreatRecover(visibleThreats(mc, 16), hostiles(mc, 6).size())) {
 				retreatPhase = RetreatPhase.RECOVER;
 				recoverSince = activeTicks;
 				Bari.stopAll();
@@ -643,7 +650,7 @@ public final class Reflexes {
 			return;
 		}
 		// RECOVER
-		if (visibleThreats(mc, 12) > 0 || !hostiles(mc, 4).isEmpty()) {
+		if (CombatPolicy.shouldLeaveRetreatRecover(visibleThreats(mc, 12), hostiles(mc, 4).size())) {
 			stopEating(mc);
 			retreatPhase = RetreatPhase.RUN;
 			planRetreat(mc);
@@ -689,6 +696,15 @@ public final class Reflexes {
 	private int visibleThreats(Minecraft mc, double r) {
 		int n = 0;
 		for (Entity e : hostiles(mc, r)) if (e.distanceTo(mc.player) <= r && mc.player.hasLineOfSight(e)) n++;
+		return n;
+	}
+
+	/** 這麼多格內看得到自己的遠程威脅數量(骷髏在 13–16 格就能射，撤退觸發不能漏掉)。 */
+	private int visibleRangedThreats(Minecraft mc, double r) {
+		int n = 0;
+		for (Entity e : hostiles(mc, r)) {
+			if (e.distanceTo(mc.player) <= r && Threats.kind(e) == Threats.Kind.RANGED && mc.player.hasLineOfSight(e)) n++;
+		}
 		return n;
 	}
 
@@ -741,10 +757,7 @@ public final class Reflexes {
 			CombatPolicy.RetreatOutcome outcome = CombatPolicy.retreatOutcome(how, retreatCount);
 			text += " phase=" + (retreatPhase == null ? "run" : retreatPhase.name().toLowerCase(Locale.ROOT)) + " retreats=" + retreatCount;
 			if (outcome != CombatPolicy.RetreatOutcome.RESUME) {
-				if (suspendedTask) {
-					agent.tasks.resume();
-					suspendedTask = false;
-				}
+				suspendedTask = false;
 				String why = outcome == CombatPolicy.RetreatOutcome.CANCEL_REPEAT ? "retreated twice during this task; the area is too dangerous"
 					: "could not heal (no food and hunger too low to regenerate)";
 				if (interruptedTask != null) agent.tasks.interrupt("retreat (" + why + ")");

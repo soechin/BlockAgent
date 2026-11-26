@@ -37,6 +37,8 @@ public final class CombatPolicy {
 	public static final double RANGED_REENGAGE_SECS = 1.0;
 	/** 盾牌只擋正面：跟面對的方向差超過這個角度(cos 值)的射手擋不到。 */
 	public static final double SHIELD_FRONT_COS = 0.0;
+	/** 埋伏等遠程怪繞過來時，看不到目標最多等幾 tick(比一般戰鬥的 60 tick 長，免得牠還沒繞過來就收手)。 */
+	public static final int AMBUSH_LOST_SIGHT_TICKS = 200;
 	/** 尋路時要繞開遠程怪多遠(射程外)、近戰怪多遠。 */
 	public static final int AVOID_RANGED_RADIUS = 16;
 	public static final int AVOID_MELEE_RADIUS = 8;
@@ -118,6 +120,34 @@ public final class CombatPolicy {
 	/** 骷髏放箭後盾牌還要舉幾 tick：箭飛過來的時間再留一點餘裕，最少 8 tick。 */
 	public static int shieldHoldTicks(double distance) {
 		return Math.max(8, (int) Math.ceil(distance / ARROW_SPEED) + 4);
+	}
+
+	/**
+	 * 脫身或撤退時，停下舉盾面向 {@code (faceDx, faceDz)} 安不安全：
+	 * 如果有其他看得到自己的遠程怪在側面／背後(跟舉盾方向夾角超過 90 度)，停下來只會背對牠們挨射，應該繼續跑。
+	 *
+	 * @param archerOffsets 各個看得到自己的遠程怪相對於自己的水平向量 {@code {dx, dz}}
+	 */
+	public static boolean canSafelyStopToShield(double faceDx, double faceDz, List<double[]> archerOffsets) {
+		double fLen = Math.hypot(faceDx, faceDz);
+		if (fLen < 1e-4) return true;
+		double fx = faceDx / fLen, fz = faceDz / fLen;
+		for (double[] a : archerOffsets) {
+			double aLen = Math.hypot(a[0], a[1]);
+			if (aLen < 1e-4) continue;
+			if ((a[0] * fx + a[1] * fz) / aLen < SHIELD_FRONT_COS) return false;
+		}
+		return true;
+	}
+
+	/** 撤退 RUN → RECOVER：16 格內沒有看得到自己的威脅，且 6 格內沒有威脅(含隔牆，與 RECOVER 的 4 格條件留遲滯避免震盪)。 */
+	public static boolean shouldEnterRetreatRecover(int visible16, int near6) {
+		return visible16 == 0 && near6 == 0;
+	}
+
+	/** 撤退 RECOVER → RUN：12 格內有看得到自己的威脅，或 4 格內有威脅逼近。 */
+	public static boolean shouldLeaveRetreatRecover(int visible12, int near4) {
+		return visible12 > 0 || near4 > 0;
 	}
 
 	/**

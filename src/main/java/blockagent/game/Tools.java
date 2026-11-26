@@ -595,13 +595,15 @@ public final class Tools {
 				if (g.has("y")) {
 					BlockPos p = new BlockPos(x, g.integer("y"), z);
 					return act(a, "goto", args, mc -> {
-						warnHostileDestination(a, mc, x, p.getY(), z);
-						return a.tasks.start(new GotoTask(a, "goto", new GoalNear(p, range), Fmt.pos(p), p), replace, null);
+						ToolResult r = a.tasks.start(new GotoTask(a, "goto", new GoalNear(p, range), Fmt.pos(p), p), replace, null);
+						if (r.isOk()) warnHostileDestination(a, mc, x, p.getY(), z);
+						return r;
 					});
 				}
 				return act(a, "goto", args, mc -> {
-					warnHostileDestination(a, mc, x, null, z);
-					return a.tasks.start(new GotoTask(a, "goto", new GotoTask.GoalNearXZ(x, z, range), x + ",~," + z, x, null, z), replace, null);
+					ToolResult r = a.tasks.start(new GotoTask(a, "goto", new GotoTask.GoalNearXZ(x, z, range), x + ",~," + z, x, null, z), replace, null);
+					if (r.isOk()) warnHostileDestination(a, mc, x, null, z);
+					return r;
 				});
 			});
 		taskTool(t, a, "goto_block", "Walk next to the nearest block of a type.",

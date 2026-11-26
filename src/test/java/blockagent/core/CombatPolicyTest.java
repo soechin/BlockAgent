@@ -162,4 +162,28 @@ class CombatPolicyTest {
 		assertEquals(CombatPolicy.RetreatOutcome.CANCEL_CANNOT_HEAL, CombatPolicy.retreatOutcome("gave_up_after_60s", 1));
 		assertEquals(CombatPolicy.RetreatOutcome.RESUME, CombatPolicy.retreatOutcome("turned_off", 2), "AI 關掉撤退時照 S9.4 恢復任務");
 	}
+
+	@Test
+	void retreatRecoverPhaseHasHysteresisBehindWall() {
+		// 隔牆 4 格內有怪(visible16 == 0, near6 == 1)：不可進 RECOVER，避免與 RECOVER 的 near4 > 0 每 2 tick 震盪
+		assertFalse(CombatPolicy.shouldEnterRetreatRecover(0, 1));
+		assertFalse(CombatPolicy.shouldEnterRetreatRecover(1, 0));
+		assertTrue(CombatPolicy.shouldEnterRetreatRecover(0, 0));
+
+		assertFalse(CombatPolicy.shouldLeaveRetreatRecover(0, 0));
+		assertTrue(CombatPolicy.shouldLeaveRetreatRecover(1, 0));
+		assertTrue(CombatPolicy.shouldLeaveRetreatRecover(0, 1));
+	}
+
+	@Test
+	void stopToShieldWhileEscapingOnlyWhenNoFlankingArchers() {
+		// 單方向射手(正面)與兩隻都在正面扇形：可以停步舉盾
+		assertTrue(CombatPolicy.canSafelyStopToShield(10, 0, java.util.List.of(new double[]{10, 0})));
+		assertTrue(CombatPolicy.canSafelyStopToShield(10, 0, java.util.List.of(new double[]{10, 3}, new double[]{8, -4})));
+		// 背後或超過 90 度側翼有另一隻射手(例如三隻相隔 120 度包圍)：不可停步舉盾，優先跑出射程
+		assertFalse(CombatPolicy.canSafelyStopToShield(0, -12, java.util.List.of(
+			new double[]{0, -12}, new double[]{10, 6}, new double[]{-10, 6})));
+		assertFalse(CombatPolicy.canSafelyStopToShield(10, 0, java.util.List.of(
+			new double[]{10, 0}, new double[]{-10, 0})));
+	}
 }

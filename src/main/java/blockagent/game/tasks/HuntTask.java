@@ -47,6 +47,11 @@ public final class HuntTask extends Task {
 		this.targetName = target.getName().getString();
 	}
 
+	/** 正在狩獵的目標(給自衛反射排除，避免把 AI 主動要打的目標搶去脫身)。 */
+	public LivingEntity target() {
+		return target;
+	}
+
 	@Override
 	public String describe() {
 		return deathTick < 0 ? "狩獵 " + targetName : "撿取 " + targetName + " 的掉落物";
@@ -174,6 +179,12 @@ public final class HuntTask extends Task {
 		Bari.stopAll();
 		destination = null;
 		moving = false;
+	}
+
+	@Override
+	protected void onSuspend(Minecraft mc) {
+		if (combat != null) combat.suspend(mc);
+		stopMoving();
 	}
 
 	@Override

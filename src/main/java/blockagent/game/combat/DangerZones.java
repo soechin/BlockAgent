@@ -1,15 +1,18 @@
 package blockagent.game.combat;
 
 import blockagent.core.CombatPolicy;
+import blockagent.game.RuleGuard;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 尋路要繞開的怪物範圍(docs/SPEC.md S9.1b)：看得到(載入中)的威脅，加上脫身或撤退時記下、之後看不到的怪物位置。
@@ -17,7 +20,7 @@ import java.util.Map;
  * Baritone 在算路線的執行緒讀這份清單(AvoidanceMixin)，所以記憶用 synchronized。
  */
 public final class DangerZones {
-	public record Zone(BlockPos center, int radius, String what, long until) {
+	public record Zone(int entityId, BlockPos center, int radius, String what, String dim, long until) {
 	}
 
 	private static final double LIVE_RANGE = 64;
@@ -25,27 +28,61 @@ public final class DangerZones {
 	private final List<Zone> remembered = new ArrayList<>();
 	/** 主執行緒每 10 tick 更新的快照：Baritone 在背景執行緒算路線，不能在那裡讀遊戲世界的生物。 */
 	private volatile List<Zone> snapshot = List.of();
+	/** 主動交戰中的目標 entity id(-1 表示沒有)：避免接近目標打怪時被目標自己的避怪圈拖慢尋路。 */
+	private volatile int ignoredEntityId = -1;
 
 	/** 這種怪要繞開多遠。 */
 	public static int radius(Entity e) {
 		return Threats.kind(e) == Threats.Kind.RANGED ? CombatPolicy.AVOID_RANGED_RADIUS : CombatPolicy.AVOID_MELEE_RADIUS;
 	}
 
+	public void setIgnoredEntity(int entityId) {
+		ignoredEntityId = entityId;
+	}
+
+	public int ignoredEntityId() {
+		return ignoredEntityId;
+	}
+
 	/** 記下 range 格內所有威脅的位置({@link CombatPolicy#DANGER_MEMORY_TICKS} 內，看不到了也繞開)。 */
 	public synchronized void remember(Minecraft mc, Entity attacker, double range, long now) {
 		LocalPlayer p = mc.player;
 		if (p == null || mc.level == null) return;
+		String dim = RuleGuard.dim(mc.level);
 		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(range), e -> Threats.isThreat(e, attacker))) {
-			BlockPos at = e.blockPosition();
-			remembered.removeIf(z -> z.center().distManhattan(at) <= 3);
-			remembered.add(new Zone(at.immutable(), radius(e), Combat.id(e), now + CombatPolicy.DANGER_MEMORY_TICKS));
+			Zone z = new Zone(e.getId(), e.blockPosition().immutable(), radius(e), Combat.id(e), dim, now + CombatPolicy.DANGER_MEMORY_TICKS);
+			mergeRemembered(remembered, z, MAX_REMEMBERED);
 		}
-		while (remembered.size() > MAX_REMEMBERED) remembered.removeFirst();
+	}
+
+	/** 寫入記憶並去重：只覆蓋同一隻怪或同種類且 3 格內的舊紀錄，不讓近戰怪(半徑 8)覆蓋旁邊遠程怪(半徑 16)。 */
+	static void mergeRemembered(List<Zone> remembered, Zone incoming, int maxRemembered) {
+		remembered.removeIf(z -> (incoming.entityId() >= 0 && z.entityId() == incoming.entityId())
+			|| (z.dim().equals(incoming.dim()) && z.what().equals(incoming.what()) && z.center().distManhattan(incoming.center()) <= 3));
+		remembered.add(incoming);
+		while (remembered.size() > maxRemembered) remembered.removeFirst();
+	}
+
+	/** 合併活體與記憶：只留同維度且未過期的記憶；已在活體清單裡的同一隻怪不重複加入。 */
+	static List<Zone> combineZones(List<Zone> live, List<Zone> remembered, String dim, long now) {
+		Set<Integer> liveIds = new HashSet<>(live.size() * 2);
+		for (Zone z : live) {
+			if (z.entityId() >= 0) liveIds.add(z.entityId());
+		}
+		List<Zone> out = new ArrayList<>(live);
+		remembered.removeIf(z -> z.until() < now);
+		for (Zone z : remembered) {
+			if (!dim.equals(z.dim())) continue;
+			if (z.entityId() >= 0 && liveIds.contains(z.entityId())) continue;
+			out.add(z);
+		}
+		return out;
 	}
 
 	public synchronized void clear() {
 		remembered.clear();
 		snapshot = List.of();
+		ignoredEntityId = -1;
 	}
 
 	/** 在主執行緒更新快照(Reflexes 每 10 tick 呼叫)。 */
@@ -58,20 +95,19 @@ public final class DangerZones {
 		return snapshot;
 	}
 
-	/** 現在要繞開的範圍：載入中的威脅(64 格內)，加上還沒過期的記憶。只能在主執行緒呼叫。 */
+	/** 現在要繞開的範圍：載入中的威脅(64 格內)，加上還沒過期、同維度且未重複的記憶。只能在主執行緒呼叫。 */
 	public List<Zone> zones(Minecraft mc, Entity attacker, long now) {
-		List<Zone> out = new ArrayList<>();
+		List<Zone> live = new ArrayList<>();
 		LocalPlayer p = mc.player;
+		String dim = RuleGuard.dim(mc.level);
 		if (p != null && mc.level != null) {
 			for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(LIVE_RANGE), e -> Threats.isThreat(e, attacker))) {
-				out.add(new Zone(e.blockPosition(), radius(e), Combat.id(e), now));
+				live.add(new Zone(e.getId(), e.blockPosition().immutable(), radius(e), Combat.id(e), dim, now));
 			}
 		}
 		synchronized (this) {
-			remembered.removeIf(z -> z.until() < now);
-			out.addAll(remembered);
+			return combineZones(live, remembered, dim, now);
 		}
-		return out;
 	}
 
 	/**
