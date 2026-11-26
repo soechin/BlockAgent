@@ -121,3 +121,41 @@
   - **問題**：參數解析(`parseItem`/`parseBlock`/`Args`)在進入 `act(...)` 前拋出 `Args.BadArgument`，由 `ToolRegistry.call()` 直接轉成 `ERR INVALID_ARGUMENT` 回傳，未寫入 `ActionLog`。
   - **方向**：在 `ToolRegistry` 捕獲 `Args.BadArgument` 與 `INTERNAL` 例外時透過回呼補記一筆 `ActionLog`，讓遊戲端日誌完整保存所有工具呼叫失敗紀錄。
   - **處理(2026-11-26)**：於 `ToolRegistry` 新增 `setOnError` 回呼並在 `Args.BadArgument` 與 `INTERNAL` 例外時通知；`Agent` 建構子將錯誤寫入 `ActionLog`。
+
+---
+
+## 2026-11-26 戰鬥重製後續檢查(弓箭與自然地形)
+
+> 來源：2026-11-26 戰鬥重製審查(`f13c7ef`、`6cc37dc`)與 `NaturalCombatGameTest`(`seed=wild-158210`)實測日誌。
+
+- [ ] **R15. `CombatPolicy.rangedStance` 有弓時直接跳過勝算與近戰貼身檢查**
+  - **位置**：`src/main/java/blockagent/core/CombatPolicy.java:110-118`、`src/main/java/blockagent/game/combat/Combat.java:579-592`
+  - **問題**：`if (me.bow() && los && (distance > 8 || stalled)) return RangedStance.SHOOT;` 排在 `worthFighting(...)` 之前；當角色殘血無甲被多隻射手圍攻，或身旁 4 格內已有近戰怪貼身時，仍會直接進入 `SHOOT` 原地 `halt()` 站樁拉弓，不會轉 `COVER` 脫身。
+  - **方向**：`rangedStance` 應先判勝算(或至少檢查 `meleeNear == 0` 與血量／多方向曝露風險)，打不贏時優先 `COVER` 脫身而非站樁對射。
+
+- [ ] **R16. 拉弓途中目標跨進距離門檻即直接 `cancelDraw`，白費蓄力**
+  - **位置**：`src/main/java/blockagent/game/combat/Combat.java:345,465,545,579,960-993`
+  - **證據**：`NaturalCombatGameTest` 實測日誌多次出現拉弓 0.5–0.8 秒後，目標走進 8 格(`bow_duel`)或 6 格(`bow_first`)門檻即收弓切換近戰，一箭未發。
+  - **問題**：滿弓需拉 20 tick，距離判定沒有留遲滯(hysteresis)，也未在已經快拉滿時把箭放出去再換戰術，導致站樁近 1 秒卻整弓作廢。
+  - **方向**：若已在拉弓中(`drawingBow(p)`)且距離仍在安全容許範圍(例如近戰怪 > 3.5 格、遠程怪 > 5 格)或已蓄力 ≥ 14 tick，應讓這箭放完(或立刻半蓄力放箭)再切近戰，避免空轉。
+
+- [ ] **R17. `ShieldGuard` 與拉弓互搶，對射常永遠拉不滿 20 tick**
+  - **位置**：`src/main/java/blockagent/game/combat/Combat.java:305-318`、`src/main/java/blockagent/game/combat/ShieldGuard.java:130-156`
+  - **證據**：`NaturalCombatGameTest` 密林實測中，`bow_duel` 剛拉 0.5 秒就被 `shield_vs_bow` 呼叫 `UseKey.cancelUse()` 歸零，等擋完箭從 0 重拉又遇下一輪射擊。
+  - **問題**：舉盾無條件取消主手拉弓，未考量拉弓進度與來箭剩餘時間。
+  - **方向**：若已拉弓接近滿弓(例如 ≥ 15 tick)且 `!guard.arrowImminent()`，允許先放完這箭再舉盾；或與 `ShieldGuard` 協同在剛擋完箭的空檔立即起拉。
+
+- [ ] **R18. 終界使者未避用弓、`expectedLoss` 未計入弓箭戰力，且尚未支援弩**
+  - **位置**：`src/main/java/blockagent/game/combat/Combat.java:465`、`src/main/java/blockagent/core/CombatPolicy.java:74-88`、`src/main/java/blockagent/game/combat/Bow.java:27-35`
+  - **問題**：`melee()` 的 `bow_first` 只看 `target instanceof Enemy`，會對免疫箭矢的終界使者拉弓；`expectedLoss()` 只算近戰武器傷害，只帶弓箭沒好劍時會被誤判成空手戰力；`Bow` 目前也僅支援 `BowItem` 未含 `CrossbowItem`。
+  - **方向**：`shoot` 前排除 `Enderman`；`expectedLoss` 在遠距有弓時納入弓箭 DPS；後續評估補上已裝填弩的支援。
+
+- [ ] **R19. `fight_summary` 缺少射箭計數，且 `CombatGameTest` 尚無專測弓箭的情境**
+  - **位置**：`src/main/java/blockagent/game/combat/Combat.java:441,989`、`src/gametest/java/blockagent/testkit/CombatGameTest.java`
+  - **證據**：自然地形實測用弓射死骷髏時，`fight_summary` 僅顯示 `swings=0 crits=0 result=killed`，看不出實際射了幾箭；`CombatGameTest` 也沒有驗證 `bow_duel`、`bow_creeper`、`bow_first` 或屋頂／樹葉下切近戰的專用情境。
+  - **方向**：`Combat` 補記 `shots` 寫入 `fight_summary`，並在 `CombatGameTest` 新增弓箭對射、苦力怕遠距射殺與低天花板切近戰情境。
+
+- [ ] **R20. 自然地形深水坑追擊目標時易反覆觸發 `drowning` 搶佔**
+  - **位置**：`src/main/java/blockagent/game/combat/Combat.java:258-268,579-610`
+  - **證據**：`NaturalCombatGameTest`(`seed=wild-158210`)密林情境中，最後一隻骷髏落入深水坑(`y=56`)，角色在 75 秒內反覆下水追擊並被 `drowning` 搶佔 3 次(雖 0 死亡且剩 12.5 HP，但大幅拉長交戰時間)。
+  - **方向**：目標位於深水中時，有弓優先在岸上射擊；無弓且自身需要潛水才能追上時，縮短追擊時間或改為脫離，避免反覆下水與 `drowning` 循環。
