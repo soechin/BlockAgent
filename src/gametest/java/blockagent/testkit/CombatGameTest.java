@@ -51,6 +51,8 @@ public class CombatGameTest implements FabricClientGameTest {
 			if (TestKit.runCase("group_cover")) unarmedEscapesGroupWithCover(k, c);
 			if (TestKit.runCase("route")) routeHomeAvoidsGroup(k, c);
 			if (TestKit.runCase("surrounded")) surroundedDestinationIsReported(k, c);
+			if (TestKit.runCase("ring_unarmed")) surroundedOnAllSides(k, c, false);
+			if (TestKit.runCase("ring_geared")) surroundedOnAllSides(k, c, true);
 			if (TestKit.runCase("retreat")) retreatRecoversThenCancelsOnSecondRetreat(k, c);
 		} catch (Exception e) {
 			throw new RuntimeException(e);
@@ -328,6 +330,54 @@ public class CombatGameTest implements FabricClientGameTest {
 		System.out.println("[ok] B2 目的地被怪圍住：回報 destination_hostile");
 	}
 
+	/**
+	 * C：被遠程怪包圍(3 隻骷髏在 12 格外、每隔 120 度一隻，再加 2 隻殭屍從 5 格外過來)，空地沒有掩體，
+	 * normal 難度、背包有麵包、滿血。盾牌只擋得了一個方向，也找不到三隻都看不到的位置。
+	 * 空手：要跑出射程、甩掉整群；全副武裝：打得贏就打，打不贏也要脫身。兩種都不能死(死了又重生也算死)。
+	 */
+	private void surroundedOnAllSides(TestKit k, BlockPos c, boolean geared) throws Exception {
+		reset(k, c);
+		String label = geared ? "C2 全副武裝被遠程包圍" : "C1 空手被遠程包圍";
+		k.cmd("difficulty normal");
+		k.give("minecraft:bread", 8);
+		if (geared) {
+			for (String item : List.of("iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots", "shield", "stone_sword")) {
+				k.give("minecraft:" + item, 1);
+			}
+		}
+		int mark = mark(k);
+		for (String o : List.of("~ ~ ~-12", "~10 ~ ~6", "~-10 ~ ~6")) {
+			k.cmd("execute as @p at @s run summon minecraft:skeleton " + o + " {PersistenceRequired:1b}");
+		}
+		k.cmd("execute as @p at @s run summon minecraft:zombie ~5 ~ ~ {PersistenceRequired:1b}");
+		k.cmd("execute as @p at @s run summon minecraft:zombie ~-5 ~ ~ {PersistenceRequired:1b}");
+		k.cmd("item replace entity @e[type=minecraft:skeleton] weapon.mainhand with minecraft:bow");
+		long t0 = k.agent().tick();
+		float[] lowest = {20};
+		boolean settled = waitFor(k, 20 * 60, () -> {
+			lowest[0] = Math.min(lowest[0], k.ctx.computeOnClient(mc -> mc.player.getHealth()));
+			return groupCount(k) == 0 || (nearestGroupMob(k) > 16 && !anyReflex(k));
+		});
+		long secs = (k.agent().tick() - t0) / 20;
+		String log = since(k, mark);
+		float hp = k.ctx.computeOnClient(mc -> mc.player.getHealth());
+		k.cmd("difficulty easy");
+		int starts = log.split("self_defense_start", -1).length - 1;
+		int retreats = log.split("retreat_start", -1).length - 1;
+		int kills = summaries(log).split("result=killed", -1).length - 1;
+		String left = "skeleton=" + count(k, EntityTypes.SKELETON) + " zombie=" + count(k, EntityTypes.ZOMBIE);
+		System.out.println("[data] " + label + "：" + secs + " 秒、打死 " + kills + " 隻、剩 " + left + "、最低血量 " + lowest[0] + "、結束血量 " + hp
+			+ "、自衛 " + starts + " 次、撤退 " + retreats + " 次、最近的怪 " + Math.round(nearestGroupMob(k)) + " 格 | " + odds(log) + summaries(log));
+		check(alive(k), label + "不應該死：" + summaries(log));
+		check(settled, label + "：60 秒內應該打完或甩掉整群(剩 " + left + ")：" + summaries(log));
+		check(groupCount(k) == 0 || nearestGroupMob(k) > 8, label + "：結束時不應該還有怪貼在身邊(剩 " + left + ")");
+		if (!geared) {
+			check(!log.contains("skeleton：charge"), "空手不應該衝骷髏：" + summaries(log));
+			check(starts <= 3, "空手被圍觸發自衛 " + starts + " 次，應該一次甩掉(≤ 3 次)：" + summaries(log));
+		}
+		System.out.println("[ok] " + label + "：最低血量 " + lowest[0] + "、結束 " + hp + "、打死 " + kills + " 隻");
+	}
+
 	/** 2 隻骷髏分在東、南兩個方向(12 格)，2 隻殭屍在 5 格外。 */
 	private static void summonGroup(TestKit k) {
 		k.cmd("execute as @p at @s run summon minecraft:skeleton ~-12 ~ ~ {PersistenceRequired:1b}");
@@ -419,6 +469,9 @@ public class CombatGameTest implements FabricClientGameTest {
 		k.ctx.waitTicks(2);
 	}
 
+	/** 上次 reset 時 ActionLog 的行數，{@link #alive} 從這裡找有沒有死過。 */
+	private static int resetMark;
+
 	/** 清掉怪物、等反射結束、補滿血和飢餓、清空背包、回到場地中央。 */
 	private static void reset(TestKit k, BlockPos c) {
 		k.cmd("kill @e[type=!minecraft:player]");
@@ -435,6 +488,11 @@ public class CombatGameTest implements FabricClientGameTest {
 		k.cmd("tp @p " + TestKit.pos(c));
 		k.ctx.waitTicks(10);
 		k.agent().events.drainAll();
+		try {
+			resetMark = mark(k);
+		} catch (Exception e) {
+			throw new RuntimeException(e);
+		}
 	}
 
 	/** 在測試執行緒上每 10 tick 檢查一次(條件可以查伺服器)。 */
@@ -473,8 +531,9 @@ public class CombatGameTest implements FabricClientGameTest {
 		return "";
 	}
 
+	/** 從上次 reset 到現在都沒死過：只看當下血量會漏掉「死了又自動重生」(重生後是滿血)。 */
 	private static boolean alive(TestKit k) {
-		return k.ctx.computeOnClient(mc -> mc.player.isAlive() && mc.player.getHealth() > 0);
+		return k.ctx.computeOnClient(mc -> mc.player.isAlive() && mc.player.getHealth() > 0) && !since(k, resetMark).contains("死在 ");
 	}
 
 	private static int count(TestKit k, EntityType<?> type) {
