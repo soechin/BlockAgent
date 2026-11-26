@@ -59,6 +59,15 @@ public final class TestKit {
 		return skip;
 	}
 
+	/** -Dblockagent.test.case=a,b 時，類別裡只跑列出的情境；沒給就全部跑。 */
+	public static boolean runCase(String name) {
+		String only = System.getProperty("blockagent.test.case");
+		if (only == null || only.isBlank()) return true;
+		boolean run = java.util.Arrays.asList(only.split(",")).contains(name);
+		if (!run) System.out.println("[skip] case " + name);
+		return run;
+	}
+
 	public static void check(boolean cond, String msg) {
 		if (!cond) throw new AssertionError(msg);
 	}

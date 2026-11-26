@@ -209,6 +209,8 @@ public final class Reflexes {
 		history.addLast(p.position());
 		while (history.size() > 200) history.removeFirst();
 		if (agent.tick() % 20 == 0 && !invulnerable(p)) prepareForThreats(mc);
+		// 尋路繞怪的範圍：在主執行緒更新快照，Baritone 背景執行緒只讀快照(S9.1b)
+		if (agent.tick() % 10 == 0) agent.danger.refresh(mc, agent.observation.recentAttacker(mc, 100), agent.tick());
 
 		Kind trig = null;
 		String why = null;
@@ -704,12 +706,18 @@ public final class Reflexes {
 		unstuckFront = null;
 		if (k == Kind.SELF_DEFENSE && combat != null && combat.target() != null && combat.target().isAlive()) {
 			defenseCooldown.put(combat.target().getId(), agent.tick(), DEFENSE_COOLDOWN_TICKS, how.startsWith("preempted_by_"));
-			// 打不贏而拉開距離：一起追來的也冷卻，不然換另一隻馬上又觸發(遊戲測試：2 隻殭屍輪流觸發)
+			// 打不贏而拉開距離：一起追來的也冷卻，不然換另一隻馬上又觸發(遊戲測試：2 隻殭屍輪流觸發)。
+			// 脫身要甩到 18 格外才收手，所以範圍要比 16 格大
 			if (combat.outmatched() && mc.player != null) {
-				for (Entity e : hostiles(mc, Combat.TRIGGER_RANGE)) {
+				for (Entity e : hostiles(mc, 32)) {
 					defenseCooldown.put(e.getId(), agent.tick(), DEFENSE_COOLDOWN_TICKS, how.startsWith("preempted_by_"));
 				}
 			}
+		}
+		// 脫身或撤退後記住剛才那群怪的位置：之後回家的路線看不到牠們也會繞開(S9.1b)
+		if (mc.player != null && mc.level != null
+			&& ((k == Kind.SELF_DEFENSE && combat != null && combat.outmatched()) || k == Kind.RETREAT)) {
+			agent.danger.remember(mc, agent.observation.recentAttacker(mc, 100), 32, agent.tick());
 		}
 		eatingFood = null;
 		String action = describeAction(k);

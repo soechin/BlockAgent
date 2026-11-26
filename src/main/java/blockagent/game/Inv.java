@@ -384,6 +384,19 @@ public final class Inv {
 		return s.getOrDefault(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.EMPTY).compute(Attributes.ARMOR, 0, slot);
 	}
 
+	/**
+	 * 身上 4 件護甲的護甲值總和，直接從裝備算。{@code getArmorValue()} 要等伺服器同步屬性(單人也要幾個 tick)，
+	 * 剛自動穿上時還是 0，勝算會誤判成打不贏(2026-11-26 遊戲測試：全副武裝對一群卻馬上逃)。
+	 */
+	public static int wornArmor(Player p) {
+		double sum = 0;
+		for (EquipmentSlot slot : new EquipmentSlot[]{EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET}) {
+			ItemStack s = p.getItemBySlot(slot);
+			if (!s.isEmpty()) sum += armorPoints(s, slot);
+		}
+		return Math.max(p.getArmorValue(), (int) Math.round(sum));
+	}
+
 	/** 把背包第 idx 格的護甲穿上(跟玩家在背包按 Shift 點一下一樣)。開著別的容器時不做。 */
 	public static void wear(Minecraft mc, int idx) {
 		Player p = mc.player;

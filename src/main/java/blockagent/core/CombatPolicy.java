@@ -20,7 +20,7 @@ public final class CombatPolicy {
 	public static final float RECOVERED_HP = 10f;
 	/** 一隻近戰怪實際每秒打掉的血(殭屍一下 3 點、最多每秒一下，被擊退後大約一半)。 */
 	public static final double MELEE_DPS = 1.5;
-	/** 沒舉盾時遠程怪每秒打掉的血(骷髏一般難度 2 秒一箭、平均 3.5 點)。 */
+	/** 一隻射得到自己(盾牌擋不到)的遠程怪每秒打掉的血(骷髏一般難度 2 秒一箭、平均 3.5 點)。 */
 	public static final double RANGED_DPS = 2.0;
 	/** 每點護甲減免的傷害比例(原版約 4%)。 */
 	public static final double ARMOR_REDUCTION = 0.04;
@@ -35,6 +35,15 @@ public final class CombatPolicy {
 	 * (2026-11-26 遊戲測試：空手打骷髏實際 1.1–1.3 秒才一拳，不是 0.25 秒)。
 	 */
 	public static final double RANGED_REENGAGE_SECS = 1.0;
+	/** 盾牌只擋正面：跟面對的方向差超過這個角度(cos 值)的射手擋不到。 */
+	public static final double SHIELD_FRONT_COS = 0.0;
+	/** 尋路時要繞開遠程怪多遠(射程外)、近戰怪多遠。 */
+	public static final int AVOID_RANGED_RADIUS = 16;
+	public static final int AVOID_MELEE_RADIUS = 8;
+	/** 尋路經過怪物附近的成本倍數：繞半圈(約 1.6 倍路程)也比穿過去便宜。 */
+	public static final double AVOID_COEFFICIENT = 4.0;
+	/** 脫身時記住的怪物位置要避開多久(tick)。 */
+	public static final int DANGER_MEMORY_TICKS = 60 * 20;
 	/** 劍的攻擊距離約 3 格：衝到這裡就打得到。 */
 	public static final double MELEE_REACH = 3.0;
 	/** 箭的速度大約 1.6 格/tick。 */
@@ -56,22 +65,23 @@ public final class CombatPolicy {
 	 * 預估打死這個目標會掉多少血：打死要幾秒 × 每秒會被打掉多少(扣掉護甲)。
 	 * 打死要幾秒 = ceil(目標血量 / 每下傷害) × 攻擊間隔，遠程怪每下至少隔 {@link #RANGED_REENGAGE_SECS}、再加上衝過去的時間。
 	 *
-	 * @param meleeNear    6 格內的近戰怪數量(包含目標本身，如果牠是近戰怪)
-	 * @param rangedTarget 目標是遠程怪
+	 * @param meleeNear     6 格內的近戰怪數量(包含目標本身，如果牠是近戰怪)
+	 * @param rangedExposed 看得到自己、而且盾牌擋不到的遠程怪數量：沒盾時是全部；有盾時只算不在正面(跟目標方向差 90 度以上)的
+	 * @param rangedTarget  目標是遠程怪
 	 */
-	public static double expectedLoss(Fighter me, double targetHp, double distance, int meleeNear, boolean rangedTarget) {
+	public static double expectedLoss(Fighter me, double targetHp, double distance, int meleeNear, int rangedExposed, boolean rangedTarget) {
 		double perHit = Math.max(0.5, me.weaponDamage() * (me.critWorthIt() ? CRIT_MULTIPLIER : 1));
 		double interval = rangedTarget ? Math.max(me.attackInterval(), RANGED_REENGAGE_SECS) : me.attackInterval();
 		double secs = Math.ceil(Math.max(1, targetHp) / perHit) * interval;
 		if (rangedTarget) secs += Math.max(0, distance - MELEE_REACH) / APPROACH_SPEED;
-		double dps = meleeNear * MELEE_DPS + (rangedTarget && !me.shield() ? RANGED_DPS : 0);
+		double dps = meleeNear * MELEE_DPS + rangedExposed * RANGED_DPS;
 		dps *= Math.max(0, 1 - Math.min(20, me.armor()) * ARMOR_REDUCTION);
 		return secs * dps;
 	}
 
 	/** 勝算：打完血量還在撤退線以上才打。 */
-	public static boolean worthFighting(Fighter me, double targetHp, double distance, int meleeNear, boolean rangedTarget) {
-		return me.hp() - expectedLoss(me, targetHp, distance, meleeNear, rangedTarget) > RETREAT_HP;
+	public static boolean worthFighting(Fighter me, double targetHp, double distance, int meleeNear, int rangedExposed, boolean rangedTarget) {
+		return me.hp() - expectedLoss(me, targetHp, distance, meleeNear, rangedExposed, rangedTarget) > RETREAT_HP;
 	}
 
 	public enum RangedStance {
@@ -81,6 +91,11 @@ public final class CombatPolicy {
 		GUARD_ADVANCE,
 		/** 沒有盾，直接衝過去。 */
 		CHARGE,
+		/**
+		 * 打得贏但一直走不近(牠邊退邊射)：躲到掩體後埋伏，牠看不到人會繞過來找，走進攻擊距離就砍。
+		 * 跟 COVER 不同，這不是脫身(2026-11-26 遊戲測試：預估掉血 0 卻因為走不近就跑掉)。
+		 */
+		AMBUSH,
 		/** 打不贏：躲到看不到牠的地方(箭飛來照樣舉盾)。 */
 		COVER
 	}
@@ -90,9 +105,11 @@ public final class CombatPolicy {
 	 *
 	 * @param stalled 一直走不近(3 秒沒有更接近，砍中或擋箭時重算)
 	 */
-	public static RangedStance rangedStance(Fighter me, double distance, boolean los, boolean stalled, double targetHp, int meleeNear) {
+	public static RangedStance rangedStance(Fighter me, double distance, boolean los, boolean stalled, double targetHp, int meleeNear,
+		int rangedExposed) {
 		if (me.bow() && los && (distance > 8 || stalled)) return RangedStance.SHOOT;
-		if (!stalled && worthFighting(me, targetHp, distance, meleeNear, true)) {
+		if (worthFighting(me, targetHp, distance, meleeNear, rangedExposed, true)) {
+			if (stalled) return RangedStance.AMBUSH;
 			return me.shield() ? RangedStance.GUARD_ADVANCE : RangedStance.CHARGE;
 		}
 		return RangedStance.COVER;

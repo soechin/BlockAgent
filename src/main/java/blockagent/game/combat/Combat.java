@@ -30,7 +30,9 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -85,8 +87,15 @@ public final class Combat {
 	/** 這個 tick 有在拉弓或放箭；沒有的話 tick 最後把弓收起來。 */
 	private boolean shooting;
 	private final ShieldGuard guard = new ShieldGuard();
-	/** 打不贏，正在拉開距離(換目標前不再改主意，免得一下打一下跑)。 */
+	/**
+	 * 打不贏，正在脫身(一旦決定就不再改主意，換目標也一樣，免得一下打一下跑)：借掩護擋住射手、
+	 * 往遠離整群怪的方向跑，甩掉整群才收手。
+	 */
 	private boolean outmatched;
+	/** 脫身時記給 AI 看的戰術：近戰怪是 disengage_outmatched，遠程怪是 back_off。 */
+	private String escapeTactic = "back_off";
+	/** 脫身時連續多少 tick 沒有任何威脅看得到自己。 */
+	private int unseenTicks;
 	/** 為了跳劈起跳了，還沒出手。 */
 	private boolean jumpedForCrit;
 	/** 打苦力怕前先按前進+衝刺一 tick，讓這一下帶衝刺擊退。 */
@@ -181,7 +190,6 @@ public final class Combat {
 		lostSightTicks = 0;
 		cover = null;
 		backoff = 0;
-		outmatched = false;
 	}
 
 	/**
@@ -191,7 +199,7 @@ public final class Combat {
 	public static CombatPolicy.Fighter assess(LocalPlayer p) {
 		Inv.Weapon w = Inv.bestWeapon(p, s -> true);
 		boolean shield = ShieldGuard.hasShield(p) || Inv.find(p, s -> s.has(DataComponents.BLOCKS_ATTACKS)) >= 0;
-		return new CombatPolicy.Fighter(p.getHealth(), w.damage(), w.interval(), p.getArmorValue(), shield, Bow.ready(p),
+		return new CombatPolicy.Fighter(p.getHealth(), w.damage(), w.interval(), Inv.wornArmor(p), shield, Bow.ready(p),
 			Inv.hasFood(p), !p.isInLiquid() && !p.onClimbable());
 	}
 
@@ -226,10 +234,13 @@ public final class Combat {
 		double d = target.distanceTo(p);
 		Threats.Kind k = target instanceof Enemy || Threats.kind(target) == Threats.Kind.AVOID ? Threats.kind(target, Bow.ready(p)) : Threats.Kind.MELEE;
 		if (k == Threats.Kind.AVOID) return d > 24;
+		// 脫身要甩掉整群：最近的威脅超過 18 格，或超過 12 格而且 3 秒都沒有一隻看得到自己。
+		// 只看目標、躲到牆後就收手的話，牠們繞過來或追上來又觸發自衛(遊戲測試：被 2 隻殭屍追 30 秒觸發 8 次)
+		if (outmatched) {
+			double nearest = nearestThreat(mc, 24);
+			return nearest > TRIGGER_RANGE + 2 || (nearest > 12 && unseenTicks > 60);
+		}
 		if (d > TRIGGER_RANGE + 2 || lostSightTicks > 60) return true;
-		// 打不贏時要甩掉牠(超過 18 格或 3 秒看不到，上面已經判斷)：只跑到 8 格就收手的話，牠追上來打一下又觸發自衛，
-		// 遊戲測試裡空手被 2 隻殭屍追 30 秒觸發了 8 次
-		if (outmatched) return false;
 		return switch (k) {
 			case EXPLODER -> d > 10;
 			case MELEE, NEUTRAL -> d > MELEE_RANGE && !(k == Threats.Kind.MELEE && Bow.ready(p) && lostSightTicks == 0);
@@ -254,7 +265,8 @@ public final class Combat {
 		}
 		if (!prepared) {
 			prepared = true;
-			prepare(mc);
+			// 剛穿上的護甲下一個 tick 才算進護甲值：這個 tick 先不判斷勝算，免得用 0 護甲算出「打不贏」就決定脫身
+			if (prepare(mc)) return Outcome.CONTINUE;
 		}
 		trackDamage(p);
 		blocked = null;
@@ -267,7 +279,9 @@ public final class Combat {
 		Threats.Kind k = hostile || Threats.kind(target) == Threats.Kind.AVOID ? Threats.kind(target, bow) : Threats.Kind.MELEE;
 		shooting = false;
 		// 盾牌守備優先(R1)：苦力怕在膨脹、要避開的、正在拉開距離時照樣跑；攻擊冷卻滿了而且箭還沒到時可以先砍
-		boolean panic = k == Threats.Kind.AVOID || outmatched || (k == Threats.Kind.EXPLODER && ((Creeper) target).getSwellDir() > 0);
+		// 脫身時 4 格內有近戰怪就先跑，沒有的話停下來擋箭(跟撤退一樣)
+		boolean panic = k == Threats.Kind.AVOID || (outmatched && nearestMelee(mc) <= 4)
+			|| (k == Threats.Kind.EXPLODER && ((Creeper) target).getSwellDir() > 0);
 		if (!panic && guard.update(mc, agent.tick()) && !(canStrikeNow(mc, los) && !guard.arrowImminent())) {
 			holdGuard(mc);
 			return Outcome.CONTINUE;
@@ -278,6 +292,11 @@ public final class Combat {
 			noCloserTicks = 0;
 		} else {
 			noCloserTicks++;
+		}
+		if (outmatched) {
+			escape(mc);
+			if (!shooting) cancelDraw(mc);
+			return blocked != null ? Outcome.BLOCKED : Outcome.CONTINUE;
 		}
 		switch (k) {
 			case EXPLODER -> creeper(mc, (Creeper) target, d, los, bow);
@@ -309,9 +328,11 @@ public final class Combat {
 	}
 
 	/** 開打時自動備戰(S9.1b)：穿上背包裡的護甲、把盾牌換到副手。 */
-	private void prepare(Minecraft mc) {
+	private boolean prepare(Minecraft mc) {
 		String done = Inv.prepareForCombat(mc);
-		if (!done.isEmpty()) agent.log.log(source, logPrefix + "_equip", done);
+		if (done.isEmpty()) return false;
+		agent.log.log(source, logPrefix + "_equip", done);
+		return true;
 	}
 
 	/** 記下挨打次數和盾擋次數(盾牌耐久少了 = 擋下一次)。 */
@@ -391,11 +412,12 @@ public final class Combat {
 		// 還沒走過來的近戰怪：有弓就先射幾箭
 		if (d > 6 && target instanceof Enemy && Bow.ready(mc.player) && los && shoot(mc, "bow_first")) return;
 		// 打不贏就拉開距離(R7)：hunt 是 AI 自己要打的，照打
-		if (!hunting && (outmatched || !CombatPolicy.worthFighting(assess(mc.player), target.getHealth(), d, meleeNear(mc, true), false))) {
-			outmatched = true;
-			lowerShield(mc);
-			tactic("disengage_outmatched");
-			flee(target, TRIGGER_RANGE + 4);
+		CombatPolicy.Fighter me = assess(mc.player);
+		int melee = meleeNear(mc, true), exposed = rangedExposed(mc);
+		if (!hunting && !CombatPolicy.worthFighting(me, target.getHealth(), d, melee, exposed, false)) {
+			logOdds(me, CombatPolicy.expectedLoss(me, target.getHealth(), d, melee, exposed, false), melee, exposed);
+			startEscape("disengage_outmatched");
+			escape(mc);
 			return;
 		}
 		if (strike(mc)) {
@@ -490,14 +512,21 @@ public final class Combat {
 
 	private void ranged(Minecraft mc, double d, boolean los) {
 		CombatPolicy.Fighter me = assess(mc.player);
-		CombatPolicy.RangedStance st = CombatPolicy.rangedStance(me, d, los, noCloserTicks > STALL_TICKS, target.getHealth(), meleeNear(mc, false));
+		int melee = meleeNear(mc, false), exposed = rangedExposed(mc);
+		CombatPolicy.RangedStance st = CombatPolicy.rangedStance(me, d, los, noCloserTicks > STALL_TICKS, target.getHealth(), melee, exposed);
 		// hunt 是 AI 自己要打的：不躲，照衝
 		if (hunting && st == CombatPolicy.RangedStance.COVER) {
 			st = me.shield() ? CombatPolicy.RangedStance.GUARD_ADVANCE : CombatPolicy.RangedStance.CHARGE;
 		}
 		if (st == CombatPolicy.RangedStance.SHOOT && shoot(mc, "bow_duel")) return;
+		if (st == CombatPolicy.RangedStance.AMBUSH) {
+			ambush(mc);
+			return;
+		}
 		if (st == CombatPolicy.RangedStance.COVER) {
-			takeCover(mc);
+			if (!outmatched) logOdds(me, CombatPolicy.expectedLoss(me, target.getHealth(), d, melee, exposed, true), melee, exposed);
+			startEscape("back_off");
+			escape(mc);
 			return;
 		}
 		if (strike(mc)) {
@@ -529,33 +558,175 @@ public final class Combat {
 		if (d < 6) raiseShield(mc);
 	}
 
-	private void takeCover(Minecraft mc) {
-		// 躲的途中牠走進攻擊距離就砍(R2)；箭飛來時 tick() 已經先舉盾擋了，這裡才收盾移動
+	/** 決定脫身時記下勝算的依據(試玩後調 CombatPolicy 常數用)。 */
+	private void logOdds(CombatPolicy.Fighter me, double loss, int melee, int exposed) {
+		if (outmatched) return;
+		agent.log.log(source, logPrefix + "_odds", id(target) + " expected_loss=" + fmt(loss) + " hp=" + fmt(me.hp()) + " melee=" + melee
+			+ " ranged_exposed=" + exposed + " armor=" + me.armor() + " weapon=" + fmt(me.weaponDamage()) + " shield=" + me.shield());
+	}
+
+	/**
+	 * 埋伏：打得贏但追不近(骷髏邊退邊射)。躲到擋住射手的位置等牠繞過來，走進攻擊距離就砍；
+	 * 找不到掩體就重新算「走不近」，再往前推。不是脫身，不會一直跑。
+	 */
+	private void ambush(Minecraft mc) {
 		if (strike(mc)) {
 			tactic("hit_from_cover");
 			return;
 		}
 		if (blocked != null) return;
-		lowerShield(mc);
-		if (cover == null || agent.tick() - coverTick > 40) {
-			cover = findCover(mc);
-			coverTick = agent.tick();
+		List<LivingEntity> seeing = archersSeeingMe(mc);
+		if (!seeing.isEmpty()) {
+			if (cover == null || agent.tick() - coverTick > 40 || !hiddenAt(mc, cover, seeing)) {
+				cover = findCover(mc, seeing);
+				coverTick = agent.tick();
+			}
+			if (cover == null) {
+				// 附近沒有掩體可以埋伏：重新往前推
+				noCloserTicks = 0;
+				closest = target.distanceTo(mc.player);
+				return;
+			}
+			if (!mc.player.blockPosition().equals(cover)) {
+				lowerShield(mc);
+				tactic("ambush_from_cover");
+				goTo(new GoalBlock(cover), cover);
+				return;
+			}
 		}
-		if (cover != null) {
-			tactic("hide_from_" + id(target));
-			goTo(new GoalBlock(cover), cover);
-		} else {
-			tactic("back_off");
-			flee(target, 16);
-		}
+		// 躲好了：停下來等牠繞過來(箭飛來時 ShieldGuard 會先擋)
+		halt();
+		tactic("ambush_from_cover");
 	}
 
-	/** 8 格內站得住、從那裡看不到目標的位置，取最近的。 */
-	private BlockPos findCover(Minecraft mc) {
+	private void startEscape(String tactic) {
+		if (outmatched) return;
+		outmatched = true;
+		escapeTactic = tactic;
+		unseenTicks = 0;
+		cover = null;
+	}
+
+	/**
+	 * 脫身(R7、S9.1b)：射手看得到自己時，先躲到擋住所有射手、而且離射手比現在更遠的位置(不會往回躲)；
+	 * 沒有射手看得到(或找不到掩體)就往遠離整群怪的方向跑。遠程目標繞過來走進攻擊距離時照樣砍。
+	 */
+	private void escape(Minecraft mc) {
+		LocalPlayer p = mc.player;
+		List<LivingEntity> seeing = archersSeeingMe(mc);
+		unseenTicks = seeing.isEmpty() && !anyThreatSees(mc) ? unseenTicks + 1 : 0;
+		if (Threats.kind(target) == Threats.Kind.RANGED) {
+			if (strike(mc)) {
+				tactic("hit_from_cover");
+				return;
+			}
+			if (blocked != null) return;
+		}
+		lowerShield(mc);
+		if (!seeing.isEmpty()) {
+			if (cover == null || agent.tick() - coverTick > 40 || !hiddenAt(mc, cover, seeing)) {
+				cover = findCover(mc, seeing);
+				coverTick = agent.tick();
+			}
+			if (cover != null && !p.blockPosition().equals(cover)) {
+				tactic("hide_from_" + id(seeing.getFirst()));
+				goTo(new GoalBlock(cover), cover);
+				return;
+			}
+		}
+		tactic(escapeTactic);
+		fleeAll(mc, TRIGGER_RANGE + 6);
+	}
+
+	/** 往遠離 24 格內所有威脅的方向跑。 */
+	private void fleeAll(Minecraft mc, double distance) {
+		List<BlockPos> from = new ArrayList<>();
+		for (Entity e : threats(mc, 24)) from.add(e.blockPosition());
+		if (from.isEmpty()) from.add(target.blockPosition());
+		BlockPos key = from.getFirst();
+		goTo(new GoalRunAway(distance, from.toArray(new BlockPos[0])), key);
+	}
+
+	/** range 格內的威脅(包含目標)。 */
+	private List<Entity> threats(Minecraft mc, double range) {
+		LocalPlayer p = mc.player;
+		Entity attacker = agent.observation.recentAttacker(mc, 100);
+		List<Entity> out = new ArrayList<>();
+		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(range), e -> e == target || Threats.isThreat(e, attacker))) {
+			if (e.isAlive() && e.distanceTo(p) <= range) out.add(e);
+		}
+		return out;
+	}
+
+	private double nearestThreat(Minecraft mc, double range) {
+		double best = Double.MAX_VALUE;
+		for (Entity e : threats(mc, range)) best = Math.min(best, e.distanceTo(mc.player));
+		return best;
+	}
+
+	private double nearestMelee(Minecraft mc) {
+		double best = Double.MAX_VALUE;
+		for (Entity e : threats(mc, 8)) {
+			if (Threats.kind(e) != Threats.Kind.RANGED) best = Math.min(best, e.distanceTo(mc.player));
+		}
+		return best;
+	}
+
+	private boolean anyThreatSees(Minecraft mc) {
+		for (Entity e : threats(mc, TRIGGER_RANGE)) if (mc.player.hasLineOfSight(e)) return true;
+		return false;
+	}
+
+	/** 16 格內看得到自己的遠程怪。 */
+	private List<LivingEntity> archersSeeingMe(Minecraft mc) {
+		List<LivingEntity> out = new ArrayList<>();
+		for (Entity e : threats(mc, TRIGGER_RANGE)) {
+			if (e instanceof LivingEntity le && Threats.kind(e) == Threats.Kind.RANGED && mc.player.hasLineOfSight(e)) out.add(le);
+		}
+		return out;
+	}
+
+	/**
+	 * 射得到自己、盾牌又擋不到的遠程怪數量：沒盾時是全部；有盾時只算不在正面(跟目標方向差 90 度以上)的。
+	 * 盾牌只擋正面，射手分散在兩邊時擋了一邊、另一邊照樣射得到。
+	 */
+	private int rangedExposed(Minecraft mc) {
+		LocalPlayer p = mc.player;
+		boolean shield = assess(p).shield();
+		Vec3 facing = target.position().subtract(p.position()).multiply(1, 0, 1);
+		int n = 0;
+		for (LivingEntity a : archersSeeingMe(mc)) {
+			if (!shield) {
+				n++;
+				continue;
+			}
+			Vec3 dir = a.position().subtract(p.position()).multiply(1, 0, 1);
+			if (facing.lengthSqr() < 1e-4 || dir.lengthSqr() < 1e-4) continue;
+			if (dir.normalize().dot(facing.normalize()) < CombatPolicy.SHIELD_FRONT_COS) n++;
+		}
+		return n;
+	}
+
+	/** 從這一格看出去，這些射手都看不到。 */
+	private static boolean hiddenAt(Minecraft mc, BlockPos b, List<LivingEntity> archers) {
+		Vec3 from = Vec3.atBottomCenterOf(b).add(0, 1.62, 0);
+		for (LivingEntity a : archers) {
+			if (mc.level.clip(new ClipContext(from, a.getEyePosition(), ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, mc.player))
+				.getType() != HitResult.Type.BLOCK) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * 8 格內站得住、所有射手都看不到，而且離最近的射手比現在更遠的位置(往外躲，不會往回走)，取最近的。
+	 */
+	private BlockPos findCover(Minecraft mc, List<LivingEntity> archers) {
 		LocalPlayer p = mc.player;
 		Level level = mc.level;
 		BlockPos me = p.blockPosition();
-		Vec3 eye = target.getEyePosition();
+		double myGap = nearestArcher(Vec3.atBottomCenterOf(me), archers);
 		BlockPos best = null;
 		double bestD = Double.MAX_VALUE;
 		for (BlockPos b : BlockPos.betweenClosed(me.offset(-8, -2, -8), me.offset(8, 2, 8))) {
@@ -567,12 +738,18 @@ public final class Combat {
 				|| !level.getFluidState(b).isEmpty() || lavaAround(level, b)) {
 				continue;
 			}
-			Vec3 from = Vec3.atBottomCenterOf(b).add(0, 1.62, 0);
-			if (level.clip(new ClipContext(from, eye, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, p)).getType() == HitResult.Type.BLOCK) {
+			if (nearestArcher(Vec3.atBottomCenterOf(b), archers) < myGap + 1) continue;
+			if (hiddenAt(mc, b, archers)) {
 				best = b.immutable();
 				bestD = dist;
 			}
 		}
+		return best;
+	}
+
+	private static double nearestArcher(Vec3 at, List<LivingEntity> archers) {
+		double best = Double.MAX_VALUE;
+		for (LivingEntity a : archers) best = Math.min(best, a.position().distanceTo(at));
 		return best;
 	}
 

@@ -594,11 +594,15 @@ public final class Tools {
 				boolean replace = g.bool("replace", false);
 				if (g.has("y")) {
 					BlockPos p = new BlockPos(x, g.integer("y"), z);
-					return act(a, "goto", args, mc -> a.tasks.start(new GotoTask(a, "goto", new GoalNear(p, range), Fmt.pos(p), p),
-						replace, null));
+					return act(a, "goto", args, mc -> {
+						warnHostileDestination(a, mc, x, p.getY(), z);
+						return a.tasks.start(new GotoTask(a, "goto", new GoalNear(p, range), Fmt.pos(p), p), replace, null);
+					});
 				}
-				return act(a, "goto", args, mc -> a.tasks.start(new GotoTask(a, "goto", new GotoTask.GoalNearXZ(x, z, range), x + ",~," + z, x, null, z),
-					replace, null));
+				return act(a, "goto", args, mc -> {
+					warnHostileDestination(a, mc, x, null, z);
+					return a.tasks.start(new GotoTask(a, "goto", new GotoTask.GoalNearXZ(x, z, range), x + ",~," + z, x, null, z), replace, null);
+				});
 			});
 		taskTool(t, a, "goto_block", "Walk next to the nearest block of a type.",
 			Hints.ACTION, Schema.object().string("type", "Block id or group", true).integer("radius", null, false).range(4, 96).def(48),
@@ -1296,6 +1300,16 @@ public final class Tools {
 		p.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
 		String change = Inv.diff(before, Inv.summary(p));
 		return ToolResult.ok(Kv.of("OK used").add(at).putIf(!change.isEmpty(), "inv_change", change));
+	}
+
+	/**
+	 * 目的地被怪物圍住(在遠程怪射程或近戰怪 8 格內)：尋路會盡量繞開，但目的地本身繞不開，先告訴 AI(S9.1b)。
+	 */
+	static void warnHostileDestination(Agent a, Minecraft mc, int x, Integer y, int z) {
+		String near = a.danger.nearDestination(mc, a.observation.recentAttacker(mc, 100), x, y, z, a.tick());
+		if (near.isEmpty()) return;
+		a.events.add("destination_hostile", blockagent.core.Event.Level.PROMPT, Kv.of().put("target", x + "," + (y == null ? "~" : y) + "," + z)
+			.put("hostiles", near) + " | hint=hostiles are around the destination; wait for daylight, clear them with good gear, or go somewhere else");
 	}
 
 	static ToolResult equip(Minecraft mc, Item item, String slot) {

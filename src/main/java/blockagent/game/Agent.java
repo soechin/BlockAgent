@@ -69,6 +69,8 @@ public final class Agent {
 	public final Observation observation;
 	public final TaskRunner tasks;
 	public final Reflexes reflexes;
+	/** 尋路要繞開的怪物範圍，包含脫身時記下的位置(S9.1b)。 */
+	public final blockagent.game.combat.DangerZones danger = new blockagent.game.combat.DangerZones();
 	public final Respawn respawn;
 	public final Hud hud;
 	public final Recipes recipes;
@@ -220,6 +222,7 @@ public final class Agent {
 		session.setTimeLimitMs(config.sessionMinutes * 60_000L);
 		reflexes.resetEnabled();
 		observation.resetWorld();
+		danger.clear();
 		chat.clear();
 		setStatusText("");
 		session.enterWorld();

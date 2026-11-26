@@ -50,6 +50,8 @@ loom {
 			vmArg "-Dblockagent.home=${project.layout.buildDirectory.dir(homeDir).get().asFile.absolutePath}"
 			// ./gradlew runClientGameTest -PtestOnly=ChatGameTest,RulesGameTest：只跑指定的遊戲測試
 			if (project.hasProperty('testOnly')) vmArg "-Dblockagent.test.only=${project.property('testOnly')}"
+			// -PtestCase=route,group_geared：類別裡只跑指定的情境(目前 CombatGameTest 支援)
+			if (project.hasProperty('testCase')) vmArg "-Dblockagent.test.case=${project.property('testCase')}"
 		}
 	}
 }

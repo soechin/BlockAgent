@@ -67,34 +67,49 @@ class CombatPolicyTest {
 
 	@Test
 	void unarmedFightOddsAgainstZombies() {
-		assertEquals(7.5, CombatPolicy.expectedLoss(fist(20, 0), 20, 2, 1, false), 1e-9, "空手 20 拳 × 0.25 秒 × 1.5 HP/秒");
-		assertTrue(CombatPolicy.worthFighting(fist(20, 0), 20, 2, 1, false), "滿血空手對 1 隻殭屍打得贏");
-		assertFalse(CombatPolicy.worthFighting(fist(12, 0), 20, 2, 1, false), "12 HP 空手打完會掉到撤退線以下");
-		assertFalse(CombatPolicy.worthFighting(fist(20, 0), 20, 2, 2, false), "空手對 2 隻殭屍不打");
-		assertTrue(CombatPolicy.worthFighting(fist(12, 15), 20, 2, 1, false), "鐵甲減傷 60%");
+		assertEquals(7.5, CombatPolicy.expectedLoss(fist(20, 0), 20, 2, 1, 0, false), 1e-9, "空手 20 拳 × 0.25 秒 × 1.5 HP/秒");
+		assertTrue(CombatPolicy.worthFighting(fist(20, 0), 20, 2, 1, 0, false), "滿血空手對 1 隻殭屍打得贏");
+		assertFalse(CombatPolicy.worthFighting(fist(12, 0), 20, 2, 1, 0, false), "12 HP 空手打完會掉到撤退線以下");
+		assertFalse(CombatPolicy.worthFighting(fist(20, 0), 20, 2, 2, 0, false), "空手對 2 隻殭屍不打");
+		assertTrue(CombatPolicy.worthFighting(fist(12, 15), 20, 2, 1, 0, false), "鐵甲減傷 60%");
 	}
 
 	@Test
 	void swordAndCritFightOdds() {
 		var noCrit = new CombatPolicy.Fighter(10, 5, 0.625, 0, false, false, true, false);
-		assertEquals(3.75, CombatPolicy.expectedLoss(noCrit, 20, 2, 1, false), 1e-9);
-		assertTrue(CombatPolicy.worthFighting(noCrit, 20, 2, 1, false));
-		assertTrue(CombatPolicy.expectedLoss(stoneSword(10, 0, false), 20, 2, 1, false) < 3.75, "跳劈少一刀");
+		assertEquals(3.75, CombatPolicy.expectedLoss(noCrit, 20, 2, 1, 0, false), 1e-9);
+		assertTrue(CombatPolicy.worthFighting(noCrit, 20, 2, 1, 0, false));
+		assertTrue(CombatPolicy.expectedLoss(stoneSword(10, 0, false), 20, 2, 1, 0, false) < 3.75, "跳劈少一刀");
 		assertFalse(fist(20, 0).critWorthIt(), "空手冷卻太短，跳劈反而慢");
 	}
 
 	@Test
 	void rangedStanceDependsOnGear() {
-		assertEquals(CombatPolicy.RangedStance.COVER, CombatPolicy.rangedStance(fist(20, 0), 12, true, false, 20, 0), "空手無盾不衝骷髏");
-		assertEquals(CombatPolicy.RangedStance.COVER, CombatPolicy.rangedStance(fist(20, 0), 10, true, false, 20, 0),
+		assertEquals(CombatPolicy.RangedStance.COVER, CombatPolicy.rangedStance(fist(20, 0), 12, true, false, 20, 0, 1), "空手無盾不衝骷髏");
+		assertEquals(CombatPolicy.RangedStance.COVER, CombatPolicy.rangedStance(fist(20, 0), 10, true, false, 20, 0, 1),
 			"空手 10 格也不衝(遊戲測試：每一拳都把骷髏擊退，實際 1 秒多才打得到下一拳)");
-		assertEquals(CombatPolicy.RangedStance.GUARD_ADVANCE, CombatPolicy.rangedStance(stoneSword(20, 15, true), 12, true, false, 20, 0));
-		assertEquals(CombatPolicy.RangedStance.CHARGE, CombatPolicy.rangedStance(stoneSword(20, 0, false), 12, true, false, 20, 0));
-		assertEquals(CombatPolicy.RangedStance.COVER, CombatPolicy.rangedStance(stoneSword(12, 0, false), 12, true, false, 20, 0));
+		assertEquals(CombatPolicy.RangedStance.GUARD_ADVANCE, CombatPolicy.rangedStance(stoneSword(20, 15, true), 12, true, false, 20, 0, 0));
+		assertEquals(CombatPolicy.RangedStance.CHARGE, CombatPolicy.rangedStance(stoneSword(20, 0, false), 12, true, false, 20, 0, 1));
+		assertEquals(CombatPolicy.RangedStance.COVER, CombatPolicy.rangedStance(stoneSword(12, 0, false), 12, true, false, 20, 0, 1));
 		var archer = new CombatPolicy.Fighter(20, 5, 0.625, 0, false, true, true, true);
-		assertEquals(CombatPolicy.RangedStance.SHOOT, CombatPolicy.rangedStance(archer, 10, true, false, 20, 0));
-		assertEquals(CombatPolicy.RangedStance.CHARGE, CombatPolicy.rangedStance(archer, 6, true, false, 20, 0));
-		assertEquals(CombatPolicy.RangedStance.SHOOT, CombatPolicy.rangedStance(archer, 6, true, true, 20, 0), "走不近就對射");
+		assertEquals(CombatPolicy.RangedStance.SHOOT, CombatPolicy.rangedStance(archer, 10, true, false, 20, 0, 1));
+		assertEquals(CombatPolicy.RangedStance.CHARGE, CombatPolicy.rangedStance(archer, 6, true, false, 20, 0, 1));
+		assertEquals(CombatPolicy.RangedStance.SHOOT, CombatPolicy.rangedStance(archer, 6, true, true, 20, 0, 1), "走不近就對射");
+		assertEquals(CombatPolicy.RangedStance.AMBUSH, CombatPolicy.rangedStance(stoneSword(20, 15, true), 12, true, true, 20, 0, 0),
+			"打得贏但走不近、沒弓：躲起來埋伏，不是脫身");
+		assertEquals(CombatPolicy.RangedStance.COVER, CombatPolicy.rangedStance(fist(20, 0), 12, true, true, 20, 0, 1), "打不贏又走不近：脫身");
+	}
+
+	@Test
+	void groupsChangeTheOdds() {
+		var geared = stoneSword(20, 15, true);
+		assertEquals(CombatPolicy.RangedStance.GUARD_ADVANCE, CombatPolicy.rangedStance(geared, 12, true, false, 20, 0, 0),
+			"射手都在正面：盾牌擋得住");
+		assertEquals(CombatPolicy.RangedStance.COVER, CombatPolicy.rangedStance(stoneSword(14, 0, true), 12, true, false, 20, 2, 2),
+			"沒甲、2 隻殭屍貼身、另外 2 隻骷髏從側面射：盾牌擋不住，躲");
+		assertTrue(CombatPolicy.expectedLoss(fist(20, 0), 20, 2, 1, 2, false) > CombatPolicy.expectedLoss(fist(20, 0), 20, 2, 1, 0, false),
+			"打殭屍時旁邊有骷髏在射：掉更多血");
+		assertFalse(CombatPolicy.worthFighting(fist(20, 0), 20, 2, 1, 1, false), "空手打殭屍時還有一隻骷髏在射：不打");
 	}
 
 	@Test
