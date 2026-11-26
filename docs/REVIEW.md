@@ -127,38 +127,46 @@
 ## 2026-11-26 戰鬥重製後續檢查(弓箭與自然地形)
 
 > 來源：2026-11-26 戰鬥重製審查(`f13c7ef`、`6cc37dc`)與 `NaturalCombatGameTest`(`seed=wild-158210`)實測日誌。
+> 2026-11-27 回歸結果：`CombatGameTest` 的 29 個固定情境分批通過。`NaturalCombatGameTest` 在 `wild-158210` 與 `blockagent-combat-1` 各跑 4 個情境，合計無死亡或溺水搶佔。
 
-- [ ] **R15. `CombatPolicy.rangedStance` 有弓時直接跳過勝算與近戰貼身檢查**
+- [x] **R15. `CombatPolicy.rangedStance` 有弓時直接跳過勝算與近戰貼身檢查**
   - **位置**：`src/main/java/blockagent/core/CombatPolicy.java:110-118`、`src/main/java/blockagent/game/combat/Combat.java:579-592`
   - **問題**：`if (me.bow() && los && (distance > 8 || stalled)) return RangedStance.SHOOT;` 排在 `worthFighting(...)` 之前；當角色殘血無甲被多隻射手圍攻，或身旁 4 格內已有近戰怪貼身時，仍會直接進入 `SHOOT` 原地 `halt()` 站樁拉弓，不會轉 `COVER` 脫身。
   - **方向**：`rangedStance` 應先判勝算(或至少檢查 `meleeNear == 0` 與血量／多方向曝露風險)，打不贏時優先 `COVER` 脫身而非站樁對射。
+  - **處理(2026-11-27)**：對射先檢查安全彈道、近戰威脅和預估掉血，對射勝算不足時評估能否近戰，否則脫身。單元測試覆蓋只有弓的戰力、貼身怪和低血量被多位射手瞄準。
 
-- [ ] **R16. 拉弓途中目標跨進距離門檻即直接 `cancelDraw`，白費蓄力**
+- [x] **R16. 拉弓途中目標跨進距離門檻即直接 `cancelDraw`，白費蓄力**
   - **位置**：`src/main/java/blockagent/game/combat/Combat.java:345,465,545,579,960-993`
   - **證據**：`NaturalCombatGameTest` 實測日誌多次出現拉弓 0.5–0.8 秒後，目標走進 8 格(`bow_duel`)或 6 格(`bow_first`)門檻即收弓切換近戰，一箭未發。
   - **問題**：滿弓需拉 20 tick，距離判定沒有留遲滯(hysteresis)，也未在已經快拉滿時把箭放出去再換戰術，導致站樁近 1 秒卻整弓作廢。
   - **方向**：若已在拉弓中(`drawingBow(p)`)且距離仍在安全容許範圍(例如近戰怪 > 3.5 格、遠程怪 > 5 格)或已蓄力 ≥ 14 tick，應讓這箭放完(或立刻半蓄力放箭)再切近戰，避免空轉。
+  - **處理(2026-11-27)**：起弓與收弓採不同距離門檻，距離仍安全時完成當前射擊。遊戲測試在蓄力途中讓目標跨進六格，驗證確實消耗一支箭。
 
-- [ ] **R17. `ShieldGuard` 與拉弓互搶，對射常永遠拉不滿 20 tick**
+- [x] **R17. `ShieldGuard` 與拉弓互搶，對射常永遠拉不滿 20 tick**
   - **位置**：`src/main/java/blockagent/game/combat/Combat.java:305-318`、`src/main/java/blockagent/game/combat/ShieldGuard.java:130-156`
   - **證據**：`NaturalCombatGameTest` 密林實測中，`bow_duel` 剛拉 0.5 秒就被 `shield_vs_bow` 呼叫 `UseKey.cancelUse()` 歸零，等擋完箭從 0 重拉又遇下一輪射擊。
   - **問題**：舉盾無條件取消主手拉弓，未考量拉弓進度與來箭剩餘時間。
   - **方向**：若已拉弓接近滿弓(例如 ≥ 15 tick)且 `!guard.arrowImminent()`，允許先放完這箭再舉盾；或與 `ShieldGuard` 協同在剛擋完箭的空檔立即起拉。
+  - **處理(2026-11-27)**：接近滿弓且來箭仍留有盾牌生效時間，可以先放箭再立即舉盾。遊戲測試確認同一場雙向對射既能出箭也能成功格擋。
 
-- [ ] **R18. 終界使者未避用弓、`expectedLoss` 未計入弓箭戰力，且尚未支援弩**
+- [x] **R18. 終界使者未避用弓、`expectedLoss` 未計入弓箭戰力，且尚未支援弩**
   - **位置**：`src/main/java/blockagent/game/combat/Combat.java:465`、`src/main/java/blockagent/core/CombatPolicy.java:74-88`、`src/main/java/blockagent/game/combat/Bow.java:27-35`
   - **問題**：`melee()` 的 `bow_first` 只看 `target instanceof Enemy`，會對免疫箭矢的終界使者拉弓；`expectedLoss()` 只算近戰武器傷害，只帶弓箭沒好劍時會被誤判成空手戰力；`Bow` 目前也僅支援 `BowItem` 未含 `CrossbowItem`。
   - **方向**：`shoot` 前排除 `Enderman`；`expectedLoss` 在遠距有弓時納入弓箭 DPS；後續評估補上已裝填弩的支援。
+  - **處理(2026-11-27)**：依弓箭輸出及拉弓期間暴露給射手的風險評估勝算，終界使者用近戰。支援發射已裝單支箭的弩，並沿用受保護實體的彈道檢查。
 
-- [ ] **R19. `fight_summary` 缺少射箭計數，且 `CombatGameTest` 尚無專測弓箭的情境**
+- [x] **R19. `fight_summary` 缺少射箭計數，且 `CombatGameTest` 尚無專測弓箭的情境**
   - **位置**：`src/main/java/blockagent/game/combat/Combat.java:441,989`、`src/gametest/java/blockagent/testkit/CombatGameTest.java`
   - **證據**：自然地形實測用弓射死骷髏時，`fight_summary` 僅顯示 `swings=0 crits=0 result=killed`，看不出實際射了幾箭；`CombatGameTest` 也沒有驗證 `bow_duel`、`bow_creeper`、`bow_first` 或屋頂／樹葉下切近戰的專用情境。
   - **方向**：`Combat` 補記 `shots` 寫入 `fight_summary`，並在 `CombatGameTest` 新增弓箭對射、苦力怕遠距射殺與低天花板切近戰情境。
+  - **處理(2026-11-27)**：戰鬥摘要記錄 `shots` 與同場累計 `kills`。固定遊戲測試涵蓋對射、遠射苦力怕、距離門檻變動，以及低簷遮住彈道時的近戰移動。
 
-- [ ] **R20. 自然地形深水坑追擊目標時易反覆觸發 `drowning` 搶佔**
+- [x] **R20. 自然地形深水坑追擊目標時易反覆觸發 `drowning` 搶佔**
   - **位置**：`src/main/java/blockagent/game/combat/Combat.java:258-268,579-610`
   - **證據**：`NaturalCombatGameTest`(`seed=wild-158210`)密林情境中，最後一隻骷髏落入深水坑(`y=56`)，角色在 75 秒內反覆下水追擊並被 `drowning` 搶佔 3 次(雖 0 死亡且剩 12.5 HP，但大幅拉長交戰時間)。
   - **方向**：目標位於深水中時，有弓優先在岸上射擊；無弓且自身需要潛水才能追上時，縮短追擊時間或改為脫離，避免反覆下水與 `drowning` 循環。
+  - **處理(2026-11-27)**：深水目標有射線時先從岸上射擊，無法有效射擊時自衛脫身、狩獵回報深水阻擋。一格深的水域仍可近戰。近距離遇苦力怕引爆時優先避開或舉盾，包含正在脫身的情況。
+  - **驗證(2026-11-27)**：固定場景確認無弓留岸、有弓岸射與一格深水近戰。密林 `wild-158210` 在 `afa27ee` 對照跑觸發 2 次溺水，修正後觸發 0 次，以 13.7 HP 脫身；`blockagent-combat-1` 的雪地針葉林複測也無死亡或溺水。
 
 ---
 
@@ -206,11 +214,12 @@
   - **決定(2026-11-26)**：屋內積水與床格案例依使用者指定略過。
   - **室外驗證與處理(2026-11-26)**：角色站在露天的一格深水流，或站在四周皆為水流的單一水源，均可重現 `PathNode map size: 1`。`goto` 正常尋路失敗時，從仍可踩地的室外淺水找最多 8 步的上岸路線，落地後重新尋路到原目標。遊戲測試驗證同高度的岸、高一格的岸、中止後放開移動鍵，以及有屋頂時沿用原本行為。
 
-- [ ] **R33. 豬布林(`Piglin`)一律歸為 `NEUTRAL` 且受限 6 格距離，遠程開弩或無金甲遇襲皆無自衛反應**
+- [x] **R33. 豬布林(`Piglin`)一律歸為 `NEUTRAL` 且受限 6 格距離，遠程開弩或無金甲遇襲皆無自衛反應**
   - **位置**：`src/main/java/blockagent/game/combat/Threats.java:71-76`、`src/main/java/blockagent/game/combat/Combat.java:167-180`、`src/main/java/blockagent/game/combat/ShieldGuard.java:137-148`
   - **證據**：`20:24:52` 角色身穿全套鐵甲(無金甲)，門口 `piglin id=10929` 距離 7 格；`20:24:56` 遭該豬布林擊中(`[URGENT] attacked: by=piglin id=10929 lost=2 hp=18`)，全程未觸發 `self_defense`，也未舉盾或反擊。
   - **問題**：`Threats.kind()` 將 `AbstractPiglin` 排在 `if (ranged(e))` 之前並一律歸類為 `Kind.NEUTRAL`，而 `Combat.pickThreat()` 對 `NEUTRAL` 限制 `d <= 6`，導致 7–16 格開弩射擊或追打的豬布林即使已打傷玩家(`hurtMe=true`)仍不觸發自衛；就算進入 6 格內也走 `melee()` 而非 `ranged()`，`ShieldGuard.canSafelyStop()` 亦未將其視為遠程威脅，且未依玩家是否穿戴金甲區分敵意。
   - **方向**：依玩家是否穿戴金甲區分一般豬布林是否中立；敵對或已攻擊玩家的拿弩豬布林應視為 `RANGED`(16 格內觸發、舉盾與 `rangedStance` 應對)，近戰豬布林在 `hurtMe` 時比照 `MELEE` 套用 `MELEE_RANGE`(8 格)。
+  - **處理(2026-11-27)**：依金甲與敵意區分普通豬布林。敵對弩手在遠程範圍內觸發自衛及舉盾，近戰型依近戰距離處理。遊戲測試驗證金甲中立、換下金甲後在六格外觸發自衛與舉盾。
 
 - [x] **R34. 地獄/終界仍推送主世界日夜與 `can_sleep` 事件，且 `sleep` 未封鎖會引爆床的維度**
   - **位置**：`src/main/java/blockagent/game/Observation.java:122-124,143,572-601`、`src/main/java/blockagent/game/Tools.java:1375-1402`
@@ -283,9 +292,10 @@
   - **方向**：改於 `t.start(mc)` 完成初始化後(或在建構子/進入前先初始化基準值)再寫入 `task_start` 進度。
   - **處理(2026-11-26)**：`task_start` 在任務初始化後記錄，合成進度以起始庫存為基準。
 
-- [ ] **R32. 混戰收尾 13ms 後立刻重啟 `self_defense`，且對非強制工具方塊缺工具提醒**
+- [x] **R32. 混戰收尾 13ms 後立刻重啟 `self_defense`，且對非強制工具方塊缺工具提醒**
   - **位置**：`src/main/java/blockagent/game/combat/Combat.java:256-275`、`src/main/java/blockagent/game/tasks/MineTask.java:120-130`
   - **證據**：`19:54:26.632` 混戰擊殺第一隻骷髏與蜘蛛後結束自衛反射，僅 13ms 後(`19:54:26.645`)即對 5.8 格外的第二隻骷髏再次觸發 `self_defense_start`；另 `19:45:27` AI 在背包無斧頭時直接徒手 `mine(jungle_log)`，直至 `19:46:06` 使用者提醒「採集工具呢」才中止改做石斧。
   - **方向**：`Combat.finished()` 在目標陣亡時檢查交戰範圍內是否已有其他立即威脅，若有則直接轉目標避免反覆進出反射；`MineTask` 開始採集原木/泥土等有加速工具的方塊時，若無對應工具可於回傳附上 `warn="no axe/shovel in inventory"` 提醒 AI。
 
-  - **部分處理(2026-11-26)**：缺斧或鏟時在 `mine` 啟動回應附提醒。混戰接續留在戰鬥批次。
+  - **部分處理(2026-11-26)**：缺斧或鏟時在 `mine` 啟動回應附提醒。
+  - **處理(2026-11-27)**：擊殺後若已有立即威脅，在同一次自衛中更換目標。固定混戰只觸發一次自衛，摘要累計兩次擊殺。

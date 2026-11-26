@@ -76,9 +76,27 @@ public final class CombatPolicy {
 		double interval = rangedTarget ? Math.max(me.attackInterval(), RANGED_REENGAGE_SECS) : me.attackInterval();
 		double secs = Math.ceil(Math.max(1, targetHp) / perHit) * interval;
 		if (rangedTarget) secs += Math.max(0, distance - MELEE_REACH) / APPROACH_SPEED;
-		double dps = meleeNear * MELEE_DPS + rangedExposed * RANGED_DPS;
-		dps *= Math.max(0, 1 - Math.min(20, me.armor()) * ARMOR_REDUCTION);
-		return secs * dps;
+		return secs * incomingDps(me, meleeNear, rangedExposed);
+	}
+
+	/** 滿弓算每箭 6 點，並留一點瞄準、箭飛行及換手的時間。拉弓期間無法用盾。 */
+	public static double expectedBowLoss(Fighter me, double targetHp, int meleeNear, int rangedShooters) {
+		double secs = Math.ceil(Math.max(1, targetHp) / 6.0) * 1.25;
+		return secs * incomingDps(me, meleeNear, rangedShooters);
+	}
+
+	private static double incomingDps(Fighter me, int meleeNear, int rangedExposed) {
+		return (meleeNear * MELEE_DPS + rangedExposed * RANGED_DPS)
+			* Math.max(0, 1 - Math.min(20, me.armor()) * ARMOR_REDUCTION);
+	}
+
+	public static boolean worthShooting(Fighter me, double targetHp, int meleeNear, int rangedShooters) {
+		return me.bow() && meleeNear == 0 && me.hp() - expectedBowLoss(me, targetHp, meleeNear, rangedShooters) > RETREAT_HP;
+	}
+
+	/** 跨過開始拉弓的門檻後，保留一段緩衝距離，或在安全時放出已經拉了一段的箭。 */
+	public static boolean canContinueDraw(double distance, double preferredMinimum, int drawTicks) {
+		return distance > preferredMinimum || (distance > MELEE_REACH + 0.5 && drawTicks >= 14);
 	}
 
 	/** 勝算：打完血量還在撤退線以上才打。 */
@@ -109,7 +127,15 @@ public final class CombatPolicy {
 	 */
 	public static RangedStance rangedStance(Fighter me, double distance, boolean los, boolean stalled, double targetHp, int meleeNear,
 		int rangedExposed) {
-		if (me.bow() && los && (distance > 8 || stalled)) return RangedStance.SHOOT;
+		return rangedStance(me, distance, los, stalled, targetHp, meleeNear, rangedExposed, Math.max(1, rangedExposed));
+	}
+
+	public static RangedStance rangedStance(Fighter me, double distance, boolean clearShot, boolean stalled, double targetHp,
+		int meleeNear, int rangedExposed, int rangedShooters) {
+		boolean preferRange = distance > 8 || (distance > 5 && (stalled || me.weaponDamage() <= 1));
+		if (clearShot && preferRange && worthShooting(me, targetHp, meleeNear, rangedShooters)) {
+			return RangedStance.SHOOT;
+		}
 		if (worthFighting(me, targetHp, distance, meleeNear, rangedExposed, true)) {
 			if (stalled) return RangedStance.AMBUSH;
 			return me.shield() ? RangedStance.GUARD_ADVANCE : RangedStance.CHARGE;

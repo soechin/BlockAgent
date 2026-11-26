@@ -1,6 +1,8 @@
 package blockagent.game.combat;
 
+import net.minecraft.tags.ItemTags;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.animal.golem.IronGolem;
@@ -18,11 +20,13 @@ import net.minecraft.world.entity.monster.Vex;
 import net.minecraft.world.entity.monster.Witch;
 import net.minecraft.world.entity.monster.breeze.Breeze;
 import net.minecraft.world.entity.monster.piglin.AbstractPiglin;
+import net.minecraft.world.entity.monster.piglin.Piglin;
 import net.minecraft.world.entity.monster.piglin.PiglinBrute;
 import net.minecraft.world.entity.monster.spider.Spider;
 import net.minecraft.world.entity.monster.warden.Warden;
 import net.minecraft.world.entity.monster.zombie.Drowned;
 import net.minecraft.world.entity.monster.zombie.ZombifiedPiglin;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.CrossbowItem;
 import net.minecraft.world.item.ItemStack;
@@ -58,22 +62,33 @@ public final class Threats {
 		return e instanceof Enemy;
 	}
 
-	/** 沒有弓的時候用的分類。有弓時，ghast 改當遠程對射(見 {@link #kind(Entity, boolean)})。 */
+	/** 沒有弓的時候用的分類。有弓時，ghast 改當遠程對射(見 {@link #kind(Entity, boolean, Player, Entity)})。 */
 	public static Kind kind(Entity e) {
-		return kind(e, false);
+		return kind(e, false, null, null);
 	}
 
-	public static Kind kind(Entity e, boolean haveBow) {
+	public static Kind kind(Entity e, boolean haveBow, Player player, Entity attacker) {
 		if (e instanceof Creeper) return Kind.EXPLODER;
 		// 鐵傀儡不是敵對生物，但被惹毛時打不過，跟凋零、伏守者一樣避開(M14)
 		if (e instanceof Warden || e instanceof WitherBoss || e instanceof EnderDragon || e instanceof IronGolem) return Kind.AVOID;
 		if (e instanceof Ghast) return haveBow ? Kind.RANGED : Kind.AVOID;
+		if (e instanceof Piglin piglin && (e == attacker || angry(e)
+			|| player != null && !piglin.isBaby() && !hasPiglinSafeArmor(player))) {
+			return ranged(e) ? Kind.RANGED : Kind.MELEE;
+		}
 		if (e instanceof Enderman || e instanceof ZombifiedPiglin || e instanceof Spider
 			|| (e instanceof AbstractPiglin && !(e instanceof PiglinBrute))) {
 			return Kind.NEUTRAL;
 		}
 		if (ranged(e)) return Kind.RANGED;
 		return Kind.MELEE;
+	}
+
+	private static boolean hasPiglinSafeArmor(Player player) {
+		for (EquipmentSlot slot : new EquipmentSlot[]{EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET}) {
+			if (player.getItemBySlot(slot).is(ItemTags.PIGLIN_SAFE_ARMOR)) return true;
+		}
+		return false;
 	}
 
 	/** 會從遠處打人的生物：拿弓或弩、拿三叉戟的溺屍，以及女巫、烈焰使者、旋風人、界伏蚌、深海守衛。 */
@@ -113,12 +128,12 @@ public final class Threats {
 	 *
 	 * @param attacker 最近打過自己的生物，可以是 null
 	 */
-	public static boolean isThreat(Entity e, Entity attacker) {
+	public static boolean isThreat(Entity e, Player player, Entity attacker) {
 		if (!e.isAlive()) return false;
 		if (!(e instanceof Enemy)) {
 			return e == attacker && e instanceof LivingEntity && !blockagent.game.RuleGuard.isProtectedEntity(e);
 		}
-		if (kind(e) != Kind.NEUTRAL) return true;
+		if (kind(e, false, player, attacker) != Kind.NEUTRAL) return true;
 		return e == attacker || angry(e);
 	}
 

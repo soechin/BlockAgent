@@ -105,7 +105,12 @@ public final class HuntTask extends Task {
 			combat.engage(target);
 		}
 		int before = combat.hits();
-		if (combat.tick(mc) == Combat.Outcome.BLOCKED) {
+		Combat.Outcome outcome = combat.tick(mc);
+		if (outcome == Combat.Outcome.SUBMERGED_TARGET) {
+			fail(ErrorCode.PATH_BLOCKED, "target is in deep water", "use a bow from shore or wait for the target to surface");
+			return;
+		}
+		if (outcome == Combat.Outcome.BLOCKED) {
 			fail(combat.blocked().code(), combat.blocked().reason(), combat.blocked().hint());
 			return;
 		}

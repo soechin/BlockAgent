@@ -260,7 +260,7 @@ public final class Reflexes {
 	private List<Entity> hostiles(Minecraft mc, double r) {
 		LocalPlayer p = mc.player;
 		Entity attacker = agent.observation.recentAttacker(mc, 100);
-		return mc.level.getEntities(p, p.getBoundingBox().inflate(r), e -> Threats.isThreat(e, attacker));
+		return mc.level.getEntities(p, p.getBoundingBox().inflate(r), e -> Threats.isThreat(e, p, attacker));
 	}
 
 	private List<BlockPos> lavaNear(Minecraft mc, int r) {
@@ -313,13 +313,7 @@ public final class Reflexes {
 				return "hp=" + Math.round(p.getHealth()) + " hostiles_near";
 			}
 			case SELF_DEFENSE -> {
-				var ignore = coolingDown(mc);
-				// hunt 已經在用 Combat(hunting=true) 打這隻怪，不讓自衛反射搶去脫身；旁邊有其他怪偷襲仍會觸發
-				if (agent.tasks.current() instanceof blockagent.game.tasks.HuntTask hunt) {
-					var ht = hunt.target();
-					ignore = ignore.or(e -> e == ht);
-				}
-				Combat.Threat t = Combat.pickThreat(mc, agent, ignore);
+				Combat.Threat t = nextThreat(mc);
 				if (t != null) {
 					pendingThreat = t;
 					return t.why();
@@ -365,6 +359,20 @@ public final class Reflexes {
 		int attackerId = agent.observation.lastAttackerId();
 		long attackedAt = agent.observation.lastAttackedTick();
 		return e -> defenseCooldown.isCoolingDown(e.getId(), now, attackerId, attackedAt);
+	}
+
+	private Combat.Threat nextThreat(Minecraft mc) {
+		var ignore = coolingDown(mc);
+		if (agent.tasks.current() instanceof blockagent.game.tasks.HuntTask hunt) {
+			ignore = ignore.or(e -> e == hunt.target());
+		}
+		return Combat.pickThreat(mc, agent, ignore);
+	}
+
+	private void retarget(Combat.Threat threat) {
+		combat.engage(threat.entity());
+		engagedPriority = threat.priority();
+		agent.log.log(ActionLog.Source.reflex, "self_defense_retarget", threat.why());
 	}
 
 	private void begin(Minecraft mc, Kind k, String why) {
@@ -507,7 +515,18 @@ public final class Reflexes {
 			case FALL -> p.onGround() && (!bucketPlaced || Inv.count(p, Items.WATER_BUCKET) >= bucketsBefore
 				|| (landedAt >= 0 && activeTicks - landedAt > 40));
 			case RETREAT -> false;
-			case SELF_DEFENSE -> combat == null || combat.finished(mc);
+			case SELF_DEFENSE -> {
+				if (combat == null) yield true;
+				if (!combat.finished(mc)) yield false;
+				if (combat.targetDied()) {
+					Combat.Threat next = nextThreat(mc);
+					if (next != null) {
+						retarget(next);
+						yield false;
+					}
+				}
+				yield true;
+			}
 			case EAT -> {
 				// 只看實際在吃的那種食物(C5：看「最好的食物」會換成別種，數量一比就誤判吃完了)
 				boolean ate = eatingFood == null || Inv.count(p, eatingFood) < eatStartCount;
@@ -564,11 +583,10 @@ public final class Reflexes {
 				if (combat == null) return;
 				// 每半秒重新看一次：更危險的(例如苦力怕摸過來)就先處理
 				if (activeTicks % 10 == 0) {
-					Combat.Threat t = Combat.pickThreat(mc, agent, coolingDown(mc));
+					Combat.Threat t = nextThreat(mc);
 					if (t != null && t.entity() != combat.target()
 						&& (combat.target() == null || !combat.target().isAlive() || t.priority() < engagedPriority)) {
-						combat.engage(t.entity());
-						engagedPriority = t.priority();
+						retarget(t);
 					}
 				}
 				combat.tick(mc);
@@ -631,7 +649,7 @@ public final class Reflexes {
 	private void retreat(Minecraft mc) {
 		LocalPlayer p = mc.player;
 		boolean meleeClose = false;
-		for (Entity e : hostiles(mc, 4)) meleeClose |= Threats.kind(e) != Threats.Kind.RANGED;
+		for (Entity e : hostiles(mc, 4)) meleeClose |= Threats.kind(e, false, mc.player, agent.observation.recentAttacker(mc, 100)) != Threats.Kind.RANGED;
 		if (!meleeClose && retreatGuard.update(mc, agent.tick())
 			&& ShieldGuard.canSafelyStop(mc, agent.observation.recentAttacker(mc, 100), retreatGuard.faceAt())) {
 			stopEating(mc);
@@ -708,7 +726,7 @@ public final class Reflexes {
 	private int visibleRangedThreats(Minecraft mc, double r) {
 		int n = 0;
 		for (Entity e : hostiles(mc, r)) {
-			if (e.distanceTo(mc.player) <= r && Threats.kind(e) == Threats.Kind.RANGED && mc.player.hasLineOfSight(e)) n++;
+			if (e.distanceTo(mc.player) <= r && Threats.kind(e, false, mc.player, agent.observation.recentAttacker(mc, 100)) == Threats.Kind.RANGED && mc.player.hasLineOfSight(e)) n++;
 		}
 		return n;
 	}

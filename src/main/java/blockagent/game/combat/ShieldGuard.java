@@ -87,6 +87,11 @@ public final class ShieldGuard {
 		return arrowEta <= 3;
 	}
 
+	/** 若要先放箭，至少保留盾牌的 5 tick 預熱時間。 */
+	public boolean canFireBeforeBlocking() {
+		return arrowEta > 5;
+	}
+
 	/** 給紀錄看的原因，例如 {@code skeleton_drawing}、{@code arrow_incoming}。 */
 	public String source() {
 		return source;
@@ -139,8 +144,8 @@ public final class ShieldGuard {
 		if (faceAt == null) return true;
 		double faceDx = faceAt.x - p.getX(), faceDz = faceAt.z - p.getZ();
 		List<double[]> offsets = new ArrayList<>();
-		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(DRAW_RANGE), x -> Threats.isThreat(x, attacker))) {
-			if (e.distanceTo(p) > DRAW_RANGE || Threats.kind(e) != Threats.Kind.RANGED || !p.hasLineOfSight(e)) continue;
+		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(DRAW_RANGE), x -> Threats.isThreat(x, p, attacker))) {
+			if (e.distanceTo(p) > DRAW_RANGE || Threats.kind(e, false, p, attacker) != Threats.Kind.RANGED || !p.hasLineOfSight(e)) continue;
 			if (!Threats.shieldBlocks(e)) return false;
 			offsets.add(new double[]{e.getX() - p.getX(), e.getZ() - p.getZ()});
 		}

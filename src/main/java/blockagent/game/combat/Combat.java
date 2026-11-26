@@ -18,6 +18,8 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.tags.ItemTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
@@ -53,7 +55,7 @@ public final class Combat {
 		void stop();
 	}
 
-	public enum Outcome {CONTINUE, BLOCKED, GONE}
+	public enum Outcome {CONTINUE, BLOCKED, GONE, SUBMERGED_TARGET}
 
 	/** priority 越小越優先：0 膨脹中的苦力怕，1 苦力怕或要避開的，2 貼身的，3 瞄準中的遠程，4 其他。 */
 	public record Threat(LivingEntity entity, int priority, String why) {
@@ -116,6 +118,10 @@ public final class Combat {
 	private long startTick = -1;
 	private float hpStart;
 	private int swings;
+	private int shots;
+	private int kills;
+	private int submergedMisses;
+	private float submergedHealth;
 	private int crits;
 	private int hitsTaken;
 	private int shieldBlocks;
@@ -126,6 +132,7 @@ public final class Combat {
 	private long lastHitTick = -1000;
 	/** 打中後這麼多 tick 內死掉算自己打死的(箭還在飛、死亡動畫)。 */
 	private static final int KILL_CREDIT_TICKS = 40;
+	private static final int SUBMERGED_MISS_LIMIT = 3;
 	private final Set<String> targets = new LinkedHashSet<>();
 
 	public Combat(Agent agent, ActionLog.Source source, String logPrefix, Mover mover, boolean hunting) {
@@ -159,12 +166,13 @@ public final class Combat {
 			if (d > TRIGGER_RANGE || ignore.test(e)) continue;
 			boolean hurtMe = e == attacker;
 			boolean los = p.hasLineOfSight(e);
-			if (!los && Threats.kind(e, bow) != Threats.Kind.AVOID) continue;
+			Threats.Kind kind = Threats.kind(e, bow, p, attacker);
+			if (!los && kind != Threats.Kind.AVOID) continue;
 			Vec3 moved = e.position().subtract(e.xo, e.yo, e.zo);
 			boolean approaching = moved.dot(p.position().subtract(e.position())) > 0 || e.getDeltaMovement().dot(p.position().subtract(e.position())) > 0;
 			boolean angry = Threats.angry(e);
 			String name = id(e);
-			Threat t = switch (Threats.kind(e, bow)) {
+			Threat t = switch (kind) {
 				case EXPLODER -> {
 					boolean swelling = ((Creeper) e).getSwellDir() > 0;
 					yield d <= 3.5 || (d <= 6 && (angry || approaching || hurtMe))
@@ -175,7 +183,7 @@ public final class Combat {
 					? new Threat(le, d <= 3 ? 2 : 3, name + (le.isUsingItem() ? " aiming_bow" : " targeting_you") + " dist=" + fmt(d)) : null;
 				case NEUTRAL -> (hurtMe || angry) && d <= 6 ? new Threat(le, d <= 3 ? 2 : 4, name + " angry dist=" + fmt(d)) : null;
 				// 打過自己的近戰怪：8 格內才處理(跟結束條件一致)；有弓而且看得到時 16 格內就先射
-				case MELEE -> (hurtMe && (d <= MELEE_RANGE || bow)) || (d <= 6 && angry) || (d <= 3.5 && approaching)
+				case MELEE -> (hurtMe && (d <= MELEE_RANGE || (bow && Bow.canShoot(e)))) || (d <= 6 && angry) || (d <= 3.5 && approaching)
 					? new Threat(le, d <= 3 ? 2 : 4, name + " close dist=" + fmt(d)) : null;
 			};
 			if (t != null && (best == null || t.priority() < best.priority() || (t.priority() == best.priority() && d < bestD))) {
@@ -195,7 +203,13 @@ public final class Combat {
 	/** 換目標(或第一次指定)。 */
 	public void engage(LivingEntity e) {
 		if (e == target) return;
+		if (target != null) {
+			if (targetDied() && recentlyAttackedTarget()) kills++;
+			cancelDraw(Minecraft.getInstance());
+		}
 		target = e;
+		submergedMisses = 0;
+		submergedHealth = e.getHealth();
 		targets.add(id(e));
 		closest = e.distanceTo(Minecraft.getInstance().player);
 		noCloserTicks = 0;
@@ -252,12 +266,16 @@ public final class Combat {
 		return used.isEmpty() ? "none" : String.join(",", used);
 	}
 
+	private Threats.Kind targetKind(Minecraft mc, boolean bow) {
+		return Threats.kind(target, bow, mc.player, agent.observation.recentAttacker(mc, 100));
+	}
+
 	/** 自衛反射什麼時候可以收手。 */
 	public boolean finished(Minecraft mc) {
 		LocalPlayer p = mc.player;
 		if (gone(mc)) return true;
 		double d = target.distanceTo(p);
-		Threats.Kind k = target instanceof Enemy || Threats.kind(target) == Threats.Kind.AVOID ? Threats.kind(target, Bow.ready(p)) : Threats.Kind.MELEE;
+		Threats.Kind k = targetKind(mc, Bow.ready(p));
 		if (k == Threats.Kind.AVOID) return d > 24;
 		// 脫身要甩掉整群：最近的威脅超過 18 格，或超過 12 格而且 3 秒都沒有一隻看得到自己。
 		// 只看目標、躲到牆後就收手的話，牠們繞過來或追上來又觸發自衛(遊戲測試：被 2 隻殭屍追 30 秒觸發 8 次)
@@ -300,19 +318,32 @@ public final class Combat {
 		boolean los = p.hasLineOfSight(target);
 		lostSightTicks = los ? 0 : lostSightTicks + 1;
 		boolean hostile = target instanceof Enemy;
-		boolean bow = hostile && Bow.ready(p);
-		// 狩獵的動物、打了自己的狼和蜜蜂當近戰處理；鐵傀儡打不過，照分類避開
-		Threats.Kind k = hostile || Threats.kind(target) == Threats.Kind.AVOID ? Threats.kind(target, bow) : Threats.Kind.MELEE;
+		boolean bow = hostile && Bow.canShoot(target) && Bow.ready(p);
+		Threats.Kind k = targetKind(mc, bow);
 		agent.danger.setIgnoredEntity(outmatched ? -1 : target.getId());
 		shooting = false;
+		Creeper swelling = nearestSwellingCreeper(mc, 5);
+		if (swelling != null) {
+			avoidExplosion(mc, swelling);
+			return Outcome.CONTINUE;
+		}
+		boolean deepTarget = k != Threats.Kind.AVOID && deepWaterTarget()
+			&& (p.isEyeInFluid(FluidTags.WATER) || !(los && inReach(mc)));
+		if (deepTarget && !outmatched && !(bow && los && !p.isInWater() && worthShooting(mc) && clearShot(p))) {
+			cancelDraw(mc);
+			if (hunting) return Outcome.SUBMERGED_TARGET;
+			startEscape("leave_deep_water");
+		}
 		// 盾牌守備優先(R1)：身旁有苦力怕在膨脹、要避開的、脫身時近戰怪貼身(或停步會露背給其他射手)時照樣跑；
 		// 攻擊冷卻滿了而且箭還沒到時可以先平砍(但不跳劈)
-		boolean panic = k == Threats.Kind.AVOID || (outmatched && nearestMelee(mc) <= 4)
-			|| (k == Threats.Kind.EXPLODER && ((Creeper) target).getSwellDir() > 0)
-			|| anySwellingCreeperNear(mc, 5);
+		boolean panic = k == Threats.Kind.AVOID || (outmatched && nearestMelee(mc) <= 4);
 		guardActive = !panic && guard.update(mc, agent.tick())
 			&& (!outmatched || ShieldGuard.canSafelyStop(mc, agent.observation.recentAttacker(mc, 100), guard.faceAt()));
 		if (guardActive && !(canStrikeNow(mc, los) && !guard.arrowImminent())) {
+			if (!outmatched && drawingBow(p) && p.getTicksUsingItem() >= 15 && d > 3.5 && los
+				&& guard.canFireBeforeBlocking() && worthShooting(mc)) {
+				releaseArrow(mc, "bow_before_guard");
+			}
 			holdGuard(mc);
 			return Outcome.CONTINUE;
 		}
@@ -328,6 +359,21 @@ public final class Combat {
 			if (!shooting) cancelDraw(mc);
 			return blocked != null ? Outcome.BLOCKED : Outcome.CONTINUE;
 		}
+		if (deepTarget) {
+			if (target.getHealth() < submergedHealth) submergedMisses = 0;
+			submergedHealth = target.getHealth();
+			int before = shots;
+			if (submergedMisses < SUBMERGED_MISS_LIMIT && shoot(mc, "bow_from_shore", 5)) {
+				submergedMisses += shots - before;
+				return Outcome.CONTINUE;
+			}
+			cancelDraw(mc);
+			if (hunting) return Outcome.SUBMERGED_TARGET;
+			startEscape("leave_deep_water");
+			escape(mc);
+			return Outcome.CONTINUE;
+		}
+		submergedMisses = 0;
 		switch (k) {
 			case EXPLODER -> creeper(mc, (Creeper) target, d, los, bow);
 			case RANGED -> ranged(mc, d, los);
@@ -344,6 +390,15 @@ public final class Combat {
 		// 這個 tick 換了別的戰術(或瞄不到)：拉到一半的弓收起來，不然會一直拉著、也舉不起盾(H8)
 		if (!shooting) cancelDraw(mc);
 		return blocked != null ? Outcome.BLOCKED : Outcome.CONTINUE;
+	}
+
+	/** 正在深水下或浮在深水面上，追過去會離開可站立的淺灘。 */
+	private boolean deepWaterTarget() {
+		if (!target.isInWater()) return false;
+		Level level = target.level();
+		BlockPos at = target.blockPosition();
+		return level.getFluidState(at.below()).is(FluidTags.WATER)
+			|| level.getFluidState(at.above()).is(FluidTags.WATER);
 	}
 
 	/** 舉盾擋：停下 Baritone(走路會轉視角，R1)、對準射手或箭的來向、舉盾。 */
@@ -427,19 +482,28 @@ public final class Combat {
 		}
 	}
 
+	public boolean targetDied() {
+		return target != null && (target.isDeadOrDying() || target.getRemovalReason() == Entity.RemovalReason.KILLED);
+	}
+
+	/** 只有剛出手的目標才算自己打死的，免得把自然死亡或別人的擊殺算進來。 */
+	private boolean recentlyAttackedTarget() {
+		return target.getId() == lastHitId && agent.tick() - lastHitTick <= KILL_CREDIT_TICKS;
+	}
+
 	private void summarize(Minecraft mc, String how) {
 		if (startTick < 0) return;
 		LocalPlayer p = mc.player;
+		boolean targetDied = targetDied();
+		boolean killed = targetDied && recentlyAttackedTarget();
 		String result;
 		if (p.isDeadOrDying()) result = "died";
-		else if (target != null && (target.isDeadOrDying() || target.getRemovalReason() == Entity.RemovalReason.KILLED)) {
-			// 只有剛打中過牠才算自己打死的；不然是被別人、岩漿、陽光或指令弄死的
-			result = target.getId() == lastHitId && agent.tick() - lastHitTick <= KILL_CREDIT_TICKS ? "killed" : "target_died";
-		}
+		else if (targetDied) result = killed ? "killed" : "target_died";
 		else if (outmatched) result = "disengaged";
 		else result = how;
 		agent.log.log(source, "fight_summary", "targets=" + String.join(",", targets) + " secs=" + fmt((agent.tick() - startTick) / 20.0)
-			+ " tactics=" + summary() + " swings=" + swings + " crits=" + crits + " hp=" + Math.round(hpStart) + "->" + Math.round(p.getHealth())
+			+ " tactics=" + summary() + " swings=" + swings + " crits=" + crits + " shots=" + shots
+			+ " kills=" + (kills + (killed ? 1 : 0)) + " hp=" + Math.round(hpStart) + "->" + Math.round(p.getHealth())
 			+ " hits_taken=" + hitsTaken + " shield_blocks=" + shieldBlocks + " result=" + result);
 		startTick = -1;
 	}
@@ -461,11 +525,13 @@ public final class Combat {
 	// ---- 戰術 ----
 
 	private void melee(Minecraft mc, double d, boolean los) {
-		// 還沒走過來的近戰怪：有弓就先射幾箭
-		if (d > 6 && target instanceof Enemy && Bow.ready(mc.player) && los && shoot(mc, "bow_first")) return;
-		// 打不贏就拉開距離(R7)：hunt 是 AI 自己要打的，照打
 		CombatPolicy.Fighter me = assess(mc.player);
-		int melee = meleeNear(mc, true), exposed = rangedExposed(mc);
+		int others = meleeNear(mc);
+		if (los && target instanceof Enemy && Bow.canShoot(target) && (d > 6 || keepDrawing(mc.player, d, 3.5))
+			&& CombatPolicy.worthShooting(me, target.getHealth(), others, archersSeeingMe(mc).size())
+			&& shoot(mc, "bow_first", 4.5)) return;
+		// 打不贏就拉開距離(R7)：hunt 是 AI 自己要打的，照打
+		int melee = others + 1, exposed = rangedExposed(mc);
 		if (!hunting && !CombatPolicy.worthFighting(me, target.getHealth(), d, melee, exposed, false)) {
 			logOdds(me, CombatPolicy.expectedLoss(me, target.getHealth(), d, melee, exposed, false), melee, exposed);
 			startEscape("disengage_outmatched");
@@ -488,19 +554,16 @@ public final class Combat {
 		approach(mc);
 	}
 
-	/** 6 格內的近戰威脅數量；{@code includeTarget} 時目標不在 6 格內也算 1 隻。 */
-	private int meleeNear(Minecraft mc, boolean includeTarget) {
+	/** 6 格內、除了目前交戰目標的近戰威脅數量。 */
+	private int meleeNear(Minecraft mc) {
 		LocalPlayer p = mc.player;
 		Entity attacker = agent.observation.recentAttacker(mc, 100);
 		int n = 0;
-		boolean sawTarget = false;
-		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(6), e -> Threats.isThreat(e, attacker))) {
-			Threats.Kind k = Threats.kind(e);
-			if (e.distanceTo(p) > 6 || k == Threats.Kind.RANGED || k == Threats.Kind.AVOID) continue;
-			n++;
-			if (e == target) sawTarget = true;
+		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(6), e -> Threats.isThreat(e, p, attacker))) {
+			Threats.Kind k = Threats.kind(e, false, p, attacker);
+			if (e != target && e.distanceTo(p) <= 6 && k != Threats.Kind.RANGED && k != Threats.Kind.AVOID) n++;
 		}
-		return includeTarget && !sawTarget ? n + 1 : n;
+		return n;
 	}
 
 	/** 背後(被擊退的方向)1 格是落差 4 格以上、岩漿或水：不要停在這裡挨打，往前挪(S9.1b 站位檢查)。 */
@@ -519,20 +582,32 @@ public final class Combat {
 		return true;
 	}
 
+	/** 引爆比持續追擊、舉盾擋箭或走向原本的掩體更急迫。 */
+	private void avoidExplosion(Minecraft mc, Creeper creeper) {
+		cancelDraw(mc);
+		jumpedForCrit = false;
+		sprintWindup = false;
+		releaseMoveKeys(mc);
+		LocalPlayer p = mc.player;
+		if (hasShield(mc) && creeper.distanceTo(p) < 4.5 && creeper.getSwelling(1f) > 0.5f) {
+			tactic("creeper_shield");
+			halt();
+			Moves.lookAt(p, creeper.getBoundingBox().getCenter());
+			raiseShield(mc);
+		} else {
+			lowerShield(mc);
+			if (!"creeper_run".equals(tactic)) {
+				halt();
+				lastPathTick = -1000;
+			}
+			tactic("creeper_run");
+			flee(creeper, 8);
+		}
+	}
+
 	private void creeper(Minecraft mc, Creeper c, double d, boolean los, boolean bow) {
 		if (c.getSwellDir() > 0) {
-			sprintWindup = false;
-			releaseMoveKeys(mc);
-			if (hasShield(mc) && d < 3.5 && c.getSwelling(1f) > 0.5f) {
-				tactic("creeper_shield");
-				halt();
-				Moves.lookAt(mc.player, c.getBoundingBox().getCenter());
-				raiseShield(mc);
-			} else {
-				lowerShield(mc);
-				tactic("creeper_run");
-				flee(c, 8);
-			}
+			avoidExplosion(mc, c);
 			return;
 		}
 		if (backoff > 0) {
@@ -542,7 +617,7 @@ public final class Combat {
 			flee(c, 5);
 			return;
 		}
-		if (bow && d >= 5 && los && shoot(mc, "bow_creeper")) {
+		if (bow && los && (d >= 5 || keepDrawing(mc.player, d, 3.5)) && worthShooting(mc) && shoot(mc, "bow_creeper", 4.5)) {
 			sprintWindup = false;
 			releaseMoveKeys(mc);
 			return;
@@ -575,14 +650,24 @@ public final class Combat {
 
 	private void ranged(Minecraft mc, double d, boolean los) {
 		CombatPolicy.Fighter me = assess(mc.player);
-		int melee = meleeNear(mc, false), exposed = rangedExposed(mc);
-		CombatPolicy.RangedStance st = CombatPolicy.rangedStance(me, d, los, noCloserTicks > STALL_TICKS, target.getHealth(), melee, exposed);
+		List<LivingEntity> archers = archersSeeingMe(mc);
+		int melee = meleeNear(mc), exposed = rangedExposed(mc, archers);
+		int shooters = archers.size();
+		boolean canShoot = me.bow() && los && clearShot(mc.player);
+		CombatPolicy.RangedStance st = CombatPolicy.rangedStance(me, d, canShoot, noCloserTicks > STALL_TICKS, target.getHealth(),
+			melee, exposed, shooters);
+		if (canShoot && keepDrawing(mc.player, d, 5)
+			&& CombatPolicy.worthShooting(me, target.getHealth(), melee, shooters)) st = CombatPolicy.RangedStance.SHOOT;
 		// hunt 是 AI 自己要打的：不躲，照衝
 		if (hunting && st == CombatPolicy.RangedStance.COVER) {
 			st = me.shield() ? CombatPolicy.RangedStance.GUARD_ADVANCE : CombatPolicy.RangedStance.CHARGE;
 		}
 		if (st != CombatPolicy.RangedStance.AMBUSH) ambushing = false;
-		if (st == CombatPolicy.RangedStance.SHOOT && shoot(mc, "bow_duel")) return;
+		if (st == CombatPolicy.RangedStance.SHOOT) {
+			if (shoot(mc, "bow_duel", 5)) return;
+			st = CombatPolicy.rangedStance(me, d, false, noCloserTicks > STALL_TICKS, target.getHealth(), melee, exposed, shooters);
+			if (hunting && st == CombatPolicy.RangedStance.COVER) st = CombatPolicy.RangedStance.CHARGE;
+		}
 		if (st == CombatPolicy.RangedStance.AMBUSH) {
 			ambush(mc);
 			return;
@@ -610,7 +695,7 @@ public final class Combat {
 
 	/** 會飛的(幻翼、惱鬼)：追不到，等牠飛近再打，有弓就射。 */
 	private void flyer(Minecraft mc, double d, boolean los, boolean bow) {
-		if (bow && los && d > 4 && shoot(mc, "bow")) return;
+		if (bow && los && (d > 4 || keepDrawing(mc.player, d, 3.5)) && worthShooting(mc) && shoot(mc, "bow", 4)) return;
 		if (strike(mc)) {
 			tactic("hit_when_close");
 			return;
@@ -683,7 +768,7 @@ public final class Combat {
 		LocalPlayer p = mc.player;
 		List<LivingEntity> seeing = archersSeeingMe(mc);
 		unseenTicks = seeing.isEmpty() && !anyThreatSees(mc) ? unseenTicks + 1 : 0;
-		if (Threats.kind(target) == Threats.Kind.RANGED) {
+		if (!p.isEyeInFluid(FluidTags.WATER) && targetKind(mc, false) == Threats.Kind.RANGED) {
 			if (strike(mc)) {
 				tactic("hit_from_cover");
 				return;
@@ -755,7 +840,7 @@ public final class Combat {
 		LocalPlayer p = mc.player;
 		Entity attacker = agent.observation.recentAttacker(mc, 100);
 		List<Entity> out = new ArrayList<>();
-		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(range), e -> e == target || Threats.isThreat(e, attacker))) {
+		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(range), e -> e == target || Threats.isThreat(e, p, attacker))) {
 			if (e.isAlive() && e.distanceTo(p) <= range) out.add(e);
 		}
 		return out;
@@ -769,19 +854,26 @@ public final class Combat {
 
 	private double nearestMelee(Minecraft mc) {
 		double best = Double.MAX_VALUE;
+		Entity attacker = agent.observation.recentAttacker(mc, 100);
 		for (Entity e : threats(mc, 8)) {
-			if (Threats.kind(e) != Threats.Kind.RANGED) best = Math.min(best, e.distanceTo(mc.player));
+			if (Threats.kind(e, false, mc.player, attacker) != Threats.Kind.RANGED) best = Math.min(best, e.distanceTo(mc.player));
 		}
 		return best;
 	}
 
-	/** 身旁有沒有正在膨脹的苦力怕(不限當前目標，避免 10 tick 換目標空窗被盾牌定在原地)。 */
-	private boolean anySwellingCreeperNear(Minecraft mc, double range) {
+	private static Creeper nearestSwellingCreeper(Minecraft mc, double range) {
 		LocalPlayer p = mc.player;
-		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(range), x -> x instanceof Creeper && x.isAlive())) {
-			if (e.distanceTo(p) <= range && ((Creeper) e).getSwellDir() > 0) return true;
+		Creeper nearest = null;
+		double best = range;
+		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(range), x -> x instanceof Creeper c
+			&& c.isAlive() && c.getSwellDir() > 0)) {
+			double distance = e.distanceTo(p);
+			if (distance <= best) {
+				best = distance;
+				nearest = (Creeper) e;
+			}
 		}
-		return false;
+		return nearest;
 	}
 
 	private boolean anyThreatSees(Minecraft mc) {
@@ -792,8 +884,10 @@ public final class Combat {
 	/** 16 格內看得到自己的遠程怪。 */
 	private List<LivingEntity> archersSeeingMe(Minecraft mc) {
 		List<LivingEntity> out = new ArrayList<>();
+		Entity attacker = agent.observation.recentAttacker(mc, 100);
 		for (Entity e : threats(mc, TRIGGER_RANGE)) {
-			if (e instanceof LivingEntity le && Threats.kind(e) == Threats.Kind.RANGED && mc.player.hasLineOfSight(e)) out.add(le);
+			if (e instanceof LivingEntity le && Threats.kind(e, true, mc.player, attacker) == Threats.Kind.RANGED
+				&& mc.player.hasLineOfSight(e)) out.add(le);
 		}
 		return out;
 	}
@@ -803,11 +897,15 @@ public final class Combat {
 	 * 盾牌只擋正面，射手分散在兩邊時擋了一邊、另一邊照樣射得到。
 	 */
 	private int rangedExposed(Minecraft mc) {
+		return rangedExposed(mc, archersSeeingMe(mc));
+	}
+
+	private int rangedExposed(Minecraft mc, List<LivingEntity> archers) {
 		LocalPlayer p = mc.player;
 		boolean shield = assess(p).shield();
 		Vec3 facing = target.position().subtract(p.position()).multiply(1, 0, 1);
 		int n = 0;
-		for (LivingEntity a : archersSeeingMe(mc)) {
+		for (LivingEntity a : archers) {
 			if (!shield || !Threats.shieldBlocks(a)) {
 				n++;
 				continue;
@@ -956,40 +1054,85 @@ public final class Combat {
 		return mc.level.getBlockState(head).getCollisionShape(mc.level, head).isEmpty();
 	}
 
-	/** 拉弓、瞄準，蓄力滿就放箭。沒有弓或打不到時回傳 false，讓呼叫的人改用別的戰術。 */
-	private boolean shoot(Minecraft mc, String label) {
+	private boolean worthShooting(Minecraft mc) {
+		return CombatPolicy.worthShooting(assess(mc.player), target.getHealth(), meleeNear(mc), archersSeeingMe(mc).size());
+	}
+
+	private static boolean keepDrawing(LocalPlayer player, double distance, double minimum) {
+		return drawingBow(player) && CombatPolicy.canContinueDraw(distance, minimum, player.getTicksUsingItem());
+	}
+
+	private static double shotSpeed(LocalPlayer p) {
+		return Inv.find(p, Bow::loadedArrowCrossbow) >= 0 ? Bow.CROSSBOW_SPEED : Ballistics.FULL_BOW_SPEED;
+	}
+
+	private boolean clearShot(LocalPlayer p) {
+		return Bow.canShoot(target) && Bow.hasClearShot(p, target, drawingBow(p) ? Ballistics.FULL_BOW_SPEED : shotSpeed(p));
+	}
+
+	/** 用已裝填的弩，或拉弓到滿弓／安全距離下限。失去射線時由呼叫端切回近戰或掩護。 */
+	private boolean shoot(Minecraft mc, String label, double releaseDistance) {
 		LocalPlayer p = mc.player;
-		boolean drawing = drawingBow(p);
-		if (!drawing) {
-			// 先確認彈道沒被屋頂/牆擋住且身上有弓，再放盾拉弓，免得在屋頂下每 tick 收盾又舉盾(P3-H5)
-			if (!CombatPolicy.canPrepareShot(Bow.hasClearShot(p, target), Inv.find(p, Bow::isBow) >= 0)) return false;
-			if (!Bow.aim(p, target)) return false;
-			if (p.isUsingItem() && p.getUsedItemHand() == InteractionHand.OFF_HAND) lowerShield(mc);
-			if (!Inv.selectInHand(mc, Bow::isBow)) return false;
+		if (!Bow.canShoot(target)) return false;
+		if (drawingBow(p)) {
+			if (p.getTicksUsingItem() >= Bow.FULL_DRAW || p.getTicksUsingItem() >= 14 && target.distanceTo(p) <= releaseDistance) {
+				return releaseArrow(mc, label);
+			}
+			if (!clearShot(p) || !Bow.aim(p, target, Ballistics.FULL_BOW_SPEED)) return false;
 			halt();
-			UseKey.startUsing(mc, InteractionHand.MAIN_HAND);
 			tactic(label);
 			shooting = true;
 			return true;
 		}
+		boolean crossbow = Inv.find(p, Bow::loadedArrowCrossbow) >= 0;
+		if (!crossbow && !Bow.bowAndAmmo(p)) return false;
+		double speed = crossbow ? shotSpeed(p) : Ballistics.FULL_BOW_SPEED;
+		if (!Bow.hasClearShot(p, target, speed) || !Bow.aim(p, target, speed)) return false;
+		if (p.isUsingItem()) {
+			if (p.getUsedItemHand() != InteractionHand.OFF_HAND) return false;
+			lowerShield(mc);
+		}
+		if (!Inv.selectInHand(mc, crossbow ? Bow::loadedArrowCrossbow : Bow::isBow)) return false;
 		halt();
 		tactic(label);
-		// 瞄不到了(太遠)或箭會先撞到屋頂、牆壁：交給別的戰術，tick 最後會收弓(H8、M14)
-		if (!Bow.aim(p, target) || !Bow.hasClearShot(p, target)) return false;
-		shooting = true;
-		if (p.getTicksUsingItem() < Bow.FULL_DRAW) return true;
-		Entity friend = RuleGuard.protectedOnProjectilePath(p, Ballistics.FULL_BOW_SPEED);
-		if (friend != null) {
-			tactic("hold_fire_protected_in_line");
+		if (crossbow) {
+			if (RuleGuard.protectedOnProjectilePath(p, speed) != null) {
+				tactic("hold_fire_protected_in_line");
+				return false;
+			}
+			if (!mc.gameMode.useItem(p, InteractionHand.MAIN_HAND).consumesAction()) return false;
+			recordShot(p);
 			return true;
 		}
-		agent.log.log(source, logPrefix + "_shoot", id(target) + " 距離 " + fmt(target.distanceTo(p)));
-		mc.options.keyUse.setDown(false);
-		mc.gameMode.releaseUsingItem(p);
+		UseKey.startUsing(mc, InteractionHand.MAIN_HAND);
+		shooting = drawingBow(p);
+		return shooting;
+	}
+
+	private boolean releaseArrow(Minecraft mc, String label) {
+		LocalPlayer p = mc.player;
+		double speed = Bow.releaseSpeed(p);
+		if (!Bow.bowAndAmmo(p) || !Bow.canShoot(target) || speed < 0.3 || !Bow.hasClearShot(p, target, speed) || !Bow.aim(p, target, speed)) return false;
+		halt();
+		if (RuleGuard.protectedOnProjectilePath(p, speed) != null) {
+			tactic("hold_fire_protected_in_line");
+			return false;
+		}
+		tactic(label);
+		// 放弓封包沒有視角，先同步瞄準方向再放箭(同 tick 可能立刻轉頭舉盾)。
+		p.connection.send(new ServerboundMovePlayerPacket.Rot(p.getYRot(), p.getXRot(), p.onGround(), p.horizontalCollision));
+		UseKey.release(mc);
+		recordShot(p);
+		shooting = true;
+		return true;
+	}
+
+	private void recordShot(LocalPlayer player) {
+		agent.log.log(source, logPrefix + "_shoot", id(target) + " 距離 " + fmt(target.distanceTo(player)));
+		shots++;
 		hits++;
 		lastHitId = target.getId();
 		lastHitTick = agent.tick();
-		return true;
 	}
 
 	private boolean hasShield(Minecraft mc) {

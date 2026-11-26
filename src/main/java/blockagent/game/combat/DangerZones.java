@@ -33,7 +33,11 @@ public final class DangerZones {
 
 	/** 這種怪要繞開多遠。 */
 	public static int radius(Entity e) {
-		return Threats.kind(e) == Threats.Kind.RANGED ? CombatPolicy.AVOID_RANGED_RADIUS : CombatPolicy.AVOID_MELEE_RADIUS;
+		return radius(e, null, null);
+	}
+
+	private static int radius(Entity e, LocalPlayer player, Entity attacker) {
+		return Threats.kind(e, false, player, attacker) == Threats.Kind.RANGED ? CombatPolicy.AVOID_RANGED_RADIUS : CombatPolicy.AVOID_MELEE_RADIUS;
 	}
 
 	public void setIgnoredEntity(int entityId) {
@@ -49,8 +53,8 @@ public final class DangerZones {
 		LocalPlayer p = mc.player;
 		if (p == null || mc.level == null) return;
 		String dim = RuleGuard.dim(mc.level);
-		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(range), e -> Threats.isThreat(e, attacker))) {
-			Zone z = new Zone(e.getId(), e.blockPosition().immutable(), radius(e), Combat.id(e), dim, now + CombatPolicy.DANGER_MEMORY_TICKS);
+		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(range), e -> Threats.isThreat(e, p, attacker))) {
+			Zone z = new Zone(e.getId(), e.blockPosition().immutable(), radius(e, p, attacker), Combat.id(e), dim, now + CombatPolicy.DANGER_MEMORY_TICKS);
 			mergeRemembered(remembered, z, MAX_REMEMBERED);
 		}
 	}
@@ -101,8 +105,8 @@ public final class DangerZones {
 		LocalPlayer p = mc.player;
 		String dim = RuleGuard.dim(mc.level);
 		if (p != null && mc.level != null) {
-			for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(LIVE_RANGE), e -> Threats.isThreat(e, attacker))) {
-				live.add(new Zone(e.getId(), e.blockPosition().immutable(), radius(e), Combat.id(e), dim, now));
+			for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(LIVE_RANGE), e -> Threats.isThreat(e, p, attacker))) {
+				live.add(new Zone(e.getId(), e.blockPosition().immutable(), radius(e, p, attacker), Combat.id(e), dim, now));
 			}
 		}
 		synchronized (this) {

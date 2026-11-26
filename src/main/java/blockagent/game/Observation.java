@@ -154,7 +154,7 @@ public final class Observation {
 		boolean dark = (outdoors && night) || (!outdoors && unlit);
 		Entity attacker = recentAttacker(mc, 100);
 		int hostiles = 0;
-		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(24), e -> Threats.isThreat(e, attacker))) {
+		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(24), e -> Threats.isThreat(e, p, attacker))) {
 			if (e.distanceTo(p) <= 24) hostiles++;
 		}
 		return CombatPolicy.danger(dark, outdoors, hostiles, p.getHealth(), r.gear());
@@ -395,7 +395,7 @@ public final class Observation {
 			}
 			if (!(e instanceof LivingEntity)) continue;
 			// 中立生物(終界使者、殭屍化豬布林…)沒生氣時單獨列出，別去惹(S9.1b)
-			String kind = Threats.isThreat(e, attacker) ? "hostile"
+			String kind = Threats.isThreat(e, p, attacker) ? "hostile"
 				: e instanceof Enemy ? "neutral"
 				: e.getType().getCategory() == MobCategory.MONSTER ? "hostile"
 				: RuleGuard.isProtectedEntity(e) ? "protected" : "passive";
@@ -657,7 +657,7 @@ public final class Observation {
 		if (t % 20 == 0) {
 			Set<Integer> now = new HashSet<>();
 			Entity attacker = recentAttacker(mc, 100);
-			for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(16), e -> Threats.isThreat(e, attacker))) {
+			for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(16), e -> Threats.isThreat(e, p, attacker))) {
 				now.add(e.getId());
 				if (!reportedHostiles.contains(e.getId())) {
 					agent.events.add(new Event("hostile_near", Event.Level.BATCH,

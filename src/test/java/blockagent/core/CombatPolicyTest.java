@@ -101,6 +101,21 @@ class CombatPolicyTest {
 	}
 
 	@Test
+	void considersBowDamageAndChecksThreatsBeforeShooting() {
+		var bowOnly = new CombatPolicy.Fighter(20, 1, 0.25, 0, false, true, true, true);
+		var injured = new CombatPolicy.Fighter(11, 1, 0.25, 0, false, true, true, true);
+		assertEquals(CombatPolicy.RangedStance.SHOOT, CombatPolicy.rangedStance(bowOnly, 12, true, false, 20, 0, 1));
+		assertEquals(CombatPolicy.RangedStance.SHOOT, CombatPolicy.rangedStance(bowOnly, 6, true, false, 20, 0, 1));
+		assertEquals(CombatPolicy.RangedStance.COVER, CombatPolicy.rangedStance(bowOnly, 12, true, false, 20, 1, 1));
+		assertEquals(CombatPolicy.RangedStance.COVER, CombatPolicy.rangedStance(injured, 12, true, false, 20, 0, 2));
+		assertEquals(CombatPolicy.RangedStance.COVER, CombatPolicy.rangedStance(bowOnly, 12, false, false, 20, 0, 1));
+		assertTrue(CombatPolicy.canContinueDraw(5.5, 5, 8));
+		assertTrue(CombatPolicy.canContinueDraw(4, 5, 14));
+		assertFalse(CombatPolicy.canContinueDraw(4, 5, 13));
+		assertFalse(CombatPolicy.canContinueDraw(3.5, 5, 20));
+	}
+
+	@Test
 	void groupsChangeTheOdds() {
 		var geared = stoneSword(20, 15, true);
 		assertEquals(CombatPolicy.RangedStance.GUARD_ADVANCE, CombatPolicy.rangedStance(geared, 12, true, false, 20, 0, 0),

@@ -210,14 +210,16 @@ public class NaturalCombatGameTest implements FabricClientGameTest {
 		k.ai.call(k.ctx, "stop");
 
 		int fights = countOccurrences(log, "\"action\":\"fight_summary\"");
-		int kills = countOccurrences(log, "result=killed");
+		int kills = TestKit.sumFightMetric(log, "kills=");
 		int disengaged = countOccurrences(log, "result=disengaged");
 		int retreats = countOccurrences(log, "\"action\":\"retreat_start\"");
 		int deaths = countOccurrences(log, "死在 ");
-		int totalCrits = sumMetric(log, "crits=");
-		int totalSwings = sumMetric(log, "swings=");
-		int totalBlocks = sumMetric(log, "shield_blocks=");
-		int totalHits = sumMetric(log, "hits_taken=");
+		int totalCrits = TestKit.sumFightMetric(log, "crits=");
+		int totalSwings = TestKit.sumFightMetric(log, "swings=");
+		int shots = TestKit.sumFightMetric(log, "shots=");
+		int drownings = countOccurrences(log, "\"action\":\"drowning_start\"");
+		int totalBlocks = TestKit.sumFightMetric(log, "shield_blocks=");
+		int totalHits = TestKit.sumFightMetric(log, "hits_taken=");
 		double moved = horizDist(start, endPos);
 
 		System.out.println("[natural-data] " + label + "："
@@ -229,12 +231,12 @@ public class NaturalCombatGameTest implements FabricClientGameTest {
 			+ " 戰鬥=" + fights + "(擊殺=" + kills + ",脫身=" + disengaged + ")"
 			+ " 撤退=" + retreats
 			+ " 揮劍=" + totalSwings + "(暴擊=" + totalCrits + ")"
-			+ " 盾擋=" + totalBlocks + " 挨打=" + totalHits);
-		for (String line : summaries(log)) {
+			+ " 射箭=" + shots + " 盾擋=" + totalBlocks + " 挨打=" + totalHits + " 溺水搶佔=" + drownings);
+		for (String line : TestKit.fightSummaries(log)) {
 			System.out.println("  [fight] " + line);
 		}
 
-		check(alive(k), label + " 在自然地形夜行時死亡(死亡次數=" + deaths + ")：\n" + String.join("\n", summaries(log)));
+		check(alive(k), label + " 在自然地形夜行時死亡(死亡次數=" + deaths + ")：\n" + String.join("\n", TestKit.fightSummaries(log)));
 		check(moved >= 15 || arrived, label + " 幾乎沒前進(位移=" + Math.round(moved) + "格)");
 		if (expectProgress) {
 			check(fights > 0 || arrived, label + " 既沒到達也沒交戰");
@@ -263,14 +265,16 @@ public class NaturalCombatGameTest implements FabricClientGameTest {
 		String log = since(k, mark);
 		int left16 = nearbyHostiles(k, 16);
 		int fights = countOccurrences(log, "\"action\":\"fight_summary\"");
-		int kills = countOccurrences(log, "result=killed");
+		int kills = TestKit.sumFightMetric(log, "kills=");
 		int disengaged = countOccurrences(log, "result=disengaged");
 		int retreats = countOccurrences(log, "\"action\":\"retreat_start\"");
 		int deaths = countOccurrences(log, "死在 ");
-		int totalCrits = sumMetric(log, "crits=");
-		int totalSwings = sumMetric(log, "swings=");
-		int totalBlocks = sumMetric(log, "shield_blocks=");
-		int totalHits = sumMetric(log, "hits_taken=");
+		int totalCrits = TestKit.sumFightMetric(log, "crits=");
+		int totalSwings = TestKit.sumFightMetric(log, "swings=");
+		int shots = TestKit.sumFightMetric(log, "shots=");
+		int drownings = countOccurrences(log, "\"action\":\"drowning_start\"");
+		int totalBlocks = TestKit.sumFightMetric(log, "shield_blocks=");
+		int totalHits = TestKit.sumFightMetric(log, "hits_taken=");
 
 		System.out.println("[natural-data] " + label + "："
 			+ "耗時=" + secs + "s 16格內剩怪=" + left16
@@ -280,12 +284,12 @@ public class NaturalCombatGameTest implements FabricClientGameTest {
 			+ " 戰鬥=" + fights + "(擊殺=" + kills + ",脫身=" + disengaged + ")"
 			+ " 撤退=" + retreats
 			+ " 揮劍=" + totalSwings + "(暴擊=" + totalCrits + ")"
-			+ " 盾擋=" + totalBlocks + " 挨打=" + totalHits);
-		for (String line : summaries(log)) {
+			+ " 射箭=" + shots + " 盾擋=" + totalBlocks + " 挨打=" + totalHits + " 溺水搶佔=" + drownings);
+		for (String line : TestKit.fightSummaries(log)) {
 			System.out.println("  [fight] " + line);
 		}
 
-		check(alive(k), label + " 死亡(死亡次數=" + deaths + ")：\n" + String.join("\n", summaries(log)));
+		check(alive(k), label + " 死亡(死亡次數=" + deaths + ")：\n" + String.join("\n", TestKit.fightSummaries(log)));
 		if (expectFight) check(fights > 0, label + " 應該有發生戰鬥");
 		System.out.println("[ok] " + label + " 存活完成(最低HP=" + String.format("%.1f", minHp) + " 結束HP=" + String.format("%.1f", endHp) + ")");
 	}
@@ -414,29 +418,6 @@ public class NaturalCombatGameTest implements FabricClientGameTest {
 
 	private static int countOccurrences(String text, String needle) {
 		return text.split(java.util.regex.Pattern.quote(needle), -1).length - 1;
-	}
-
-	private static int sumMetric(String log, String prefix) {
-		int sum = 0;
-		for (String line : summaries(log)) {
-			int idx = line.indexOf(prefix);
-			if (idx < 0) continue;
-			int start = idx + prefix.length();
-			int end = start;
-			while (end < line.length() && Character.isDigit(line.charAt(end))) end++;
-			if (end > start) sum += Integer.parseInt(line.substring(start, end));
-		}
-		return sum;
-	}
-
-	private static List<String> summaries(String log) {
-		ArrayList<String> out = new ArrayList<>();
-		for (String line : log.split("\n")) {
-			if (!line.contains("fight_summary")) continue;
-			int i = line.indexOf("\"result\":\"");
-			if (i >= 0) out.add(line.substring(i + 10, line.lastIndexOf('"')));
-		}
-		return out;
 	}
 
 	private static int mark(TestKit k) throws Exception {

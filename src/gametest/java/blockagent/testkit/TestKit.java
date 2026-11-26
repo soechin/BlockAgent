@@ -81,6 +81,29 @@ public final class TestKit {
 		return run;
 	}
 
+	public static int sumFightMetric(String log, String prefix) {
+		int sum = 0;
+		for (String line : fightSummaries(log)) {
+			int idx = line.indexOf(prefix);
+			if (idx < 0) continue;
+			int start = idx + prefix.length();
+			int end = start;
+			while (end < line.length() && Character.isDigit(line.charAt(end))) end++;
+			if (end > start) sum += Integer.parseInt(line.substring(start, end));
+		}
+		return sum;
+	}
+
+	public static List<String> fightSummaries(String log) {
+		var out = new java.util.ArrayList<String>();
+		for (String line : log.split("\n")) {
+			if (!line.contains("fight_summary")) continue;
+			int i = line.indexOf("\"result\":\"");
+			if (i >= 0) out.add(line.substring(i + 10, line.lastIndexOf('"')));
+		}
+		return out;
+	}
+
 	public static void check(boolean cond, String msg) {
 		if (!cond) throw new AssertionError(msg);
 	}
