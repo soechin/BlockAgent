@@ -217,6 +217,8 @@ public class NaturalCombatGameTest implements FabricClientGameTest {
 		int totalCrits = TestKit.sumFightMetric(log, "crits=");
 		int totalSwings = TestKit.sumFightMetric(log, "swings=");
 		int shots = TestKit.sumFightMetric(log, "shots=");
+		int arrowHits = TestKit.sumFightMetric(log, "arrow_hits=");
+		int drawCancels = TestKit.sumFightMetric(log, "draw_cancelled=");
 		int drownings = countOccurrences(log, "\"action\":\"drowning_start\"");
 		int totalBlocks = TestKit.sumFightMetric(log, "shield_blocks=");
 		int totalHits = TestKit.sumFightMetric(log, "hits_taken=");
@@ -231,7 +233,7 @@ public class NaturalCombatGameTest implements FabricClientGameTest {
 			+ " 戰鬥=" + fights + "(擊殺=" + kills + ",脫身=" + disengaged + ")"
 			+ " 撤退=" + retreats
 			+ " 揮劍=" + totalSwings + "(暴擊=" + totalCrits + ")"
-			+ " 射箭=" + shots + " 盾擋=" + totalBlocks + " 挨打=" + totalHits + " 溺水搶佔=" + drownings);
+			+ " 射箭=" + shots + "(結算前確認命中=" + arrowHits + ") 收弓=" + drawCancels + " 盾擋=" + totalBlocks + " 挨打=" + totalHits + " 溺水搶佔=" + drownings);
 		for (String line : TestKit.fightSummaries(log)) {
 			System.out.println("  [fight] " + line);
 		}
@@ -249,6 +251,7 @@ public class NaturalCombatGameTest implements FabricClientGameTest {
 		float minHp = 20f;
 		int minY = site.getY(), maxY = site.getY();
 		int calmSteps = 0;
+		boolean engaged = false;
 		for (int i = 0; i < maxSecs * 2; i++) {
 			k.ctx.waitTicks(10);
 			var pos = k.ctx.computeOnClient(mc -> mc.player.blockPosition());
@@ -256,9 +259,13 @@ public class NaturalCombatGameTest implements FabricClientGameTest {
 			minHp = Math.min(minHp, hp);
 			minY = Math.min(minY, pos.getY());
 			maxY = Math.max(maxY, pos.getY());
-			boolean calm = k.agent().reflexes.active() == null && visibleHostiles(k, 16) == 0;
+			Reflexes.Kind reflex = k.agent().reflexes.active();
+			engaged |= reflex == Reflexes.Kind.SELF_DEFENSE;
+			boolean calm = reflex == null && visibleHostiles(k, 16) == 0;
 			calmSteps = calm ? calmSteps + 1 : 0;
-			if ((nearbyHostiles(k, 16) == 0 && k.agent().reflexes.active() == null && i >= 6) || (i >= 20 && calmSteps >= 12)) break;
+			// 怪還在繞過樹或山坡時，沒有射線不代表交戰已結束。
+			if ((!expectFight || engaged)
+				&& ((nearbyHostiles(k, 16) == 0 && reflex == null && i >= 6) || (i >= 20 && calmSteps >= 12))) break;
 		}
 		long secs = (k.agent().tick() - t0) / 20;
 		float endHp = k.ctx.computeOnClient(mc -> mc.player.getHealth());
@@ -272,6 +279,8 @@ public class NaturalCombatGameTest implements FabricClientGameTest {
 		int totalCrits = TestKit.sumFightMetric(log, "crits=");
 		int totalSwings = TestKit.sumFightMetric(log, "swings=");
 		int shots = TestKit.sumFightMetric(log, "shots=");
+		int arrowHits = TestKit.sumFightMetric(log, "arrow_hits=");
+		int drawCancels = TestKit.sumFightMetric(log, "draw_cancelled=");
 		int drownings = countOccurrences(log, "\"action\":\"drowning_start\"");
 		int totalBlocks = TestKit.sumFightMetric(log, "shield_blocks=");
 		int totalHits = TestKit.sumFightMetric(log, "hits_taken=");
@@ -284,7 +293,7 @@ public class NaturalCombatGameTest implements FabricClientGameTest {
 			+ " 戰鬥=" + fights + "(擊殺=" + kills + ",脫身=" + disengaged + ")"
 			+ " 撤退=" + retreats
 			+ " 揮劍=" + totalSwings + "(暴擊=" + totalCrits + ")"
-			+ " 射箭=" + shots + " 盾擋=" + totalBlocks + " 挨打=" + totalHits + " 溺水搶佔=" + drownings);
+			+ " 射箭=" + shots + "(結算前確認命中=" + arrowHits + ") 收弓=" + drawCancels + " 盾擋=" + totalBlocks + " 挨打=" + totalHits + " 溺水搶佔=" + drownings);
 		for (String line : TestKit.fightSummaries(log)) {
 			System.out.println("  [fight] " + line);
 		}

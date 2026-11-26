@@ -11,6 +11,7 @@ import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.network.protocol.game.ClientboundBlockDestructionPacket;
 import net.minecraft.network.protocol.game.ClientboundDamageEventPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerCombatKillPacket;
+import net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket;
 import net.minecraft.network.protocol.game.ClientboundTakeItemEntityPacket;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
@@ -85,8 +86,17 @@ public abstract class ClientPacketListenerMixin {
 		if (!Minecraft.getInstance().isSameThread()) return;
 		Agent a = Agent.get();
 		var mc = Minecraft.getInstance();
-		if (a != null && mc.player != null && packet.entityId() == mc.player.getId()) {
-			a.observation.onSelfDamaged(packet.sourceCauseId());
+		if (a == null || mc.player == null) return;
+		if (packet.entityId() == mc.player.getId()) a.observation.onSelfDamaged(packet.sourceCauseId());
+		if (mc.level != null && packet.sourceCauseId() == mc.player.getId()) {
+			a.archery.onDamage(mc.level, packet.sourceCauseId(), packet.sourceDirectId(), packet.entityId());
 		}
+	}
+
+	@Inject(method = "handleSetEntityData", at = @At("TAIL"))
+	private void blockagent$arrowData(ClientboundSetEntityDataPacket packet, CallbackInfo ci) {
+		Agent a = Agent.get();
+		var level = Minecraft.getInstance().level;
+		if (a != null && level != null) a.archery.onEntityData(level, packet);
 	}
 }

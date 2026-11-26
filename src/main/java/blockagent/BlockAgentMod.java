@@ -46,7 +46,10 @@ public final class BlockAgentMod implements ClientModInitializer {
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, mc) -> agent.onDisconnect(mc));
 		ClientReceiveMessageEvents.CHAT.register((message, signed, sender, params, time) -> agent.chat.onPlayerChat(message, signed, sender, params));
 		ClientReceiveMessageEvents.GAME.register(agent.chat::onGameMessage);
-		ClientEntityEvents.ENTITY_LOAD.register((entity, level) -> agent.tracker.onEntityLoad(entity));
+		ClientEntityEvents.ENTITY_LOAD.register((entity, level) -> {
+			agent.tracker.onEntityLoad(entity);
+			agent.archery.onEntityLoad(entity, agent.tick());
+		});
 		// 天然方塊的判斷會快取，tag 重新載入(換世界、/reload)時清掉(M15)
 		net.fabricmc.fabric.api.event.lifecycle.v1.CommonLifecycleEvents.TAGS_LOADED.register((registries, client) -> agent.guard.clearCache());
 		ClientLifecycleEvents.CLIENT_STARTED.register(mc -> {

@@ -2,9 +2,11 @@ package blockagent.game.tasks;
 
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalXZ;
+import blockagent.game.ActionLog;
 import blockagent.game.Agent;
 import blockagent.game.Bari;
 import blockagent.game.BuildCommands;
+import blockagent.game.combat.DangerZones;
 import blockagent.mcp.ErrorCode;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -18,11 +20,16 @@ import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.List;
 
 /** 走到某處(Baritone CustomGoalProcess)。 */
 public final class GotoTask extends Task {
 	private static final int SHORE_MAX_STEPS = 8;
 	private static final int SHORE_TIMEOUT_TICKS = 160;
+	private static final int ESCAPE_WATCH_TICKS = 20 * 30;
+	private static final int ESCAPE_REPLAN_INTERVAL = 20;
+	private static final int ESCAPE_REPLAN_LIMIT = 2;
+	private static final int ESCAPE_LOOKAHEAD = 12;
 	/** 只比對水平座標的目標(省略 y 時用，沿地表走，避免山地猜錯海拔)。 */
 	public record GoalNearXZ(int x, int z, int range) implements Goal {
 		@Override
@@ -55,6 +62,10 @@ public final class GotoTask extends Task {
 	private ClientLevel shoreLevel;
 	private BlockPos shoreFrom;
 	private long shoreDeadline;
+	private long escapeWatchUntil;
+	private long nextThreatCheck;
+	private int escapeReplans;
+	private List<DangerZones.Zone> routeThreats = List.of();
 
 	private record ShoreNode(BlockPos pos, ShoreNode previous, int steps) {
 	}
@@ -116,6 +127,7 @@ public final class GotoTask extends Task {
 			walkToShore(mc);
 			return;
 		}
+		if (replanIfThreatMoved(mc)) return;
 		double h = goal.heuristic(mc.player.blockPosition());
 		if (h + 4.0 < bestHeuristic) {
 			bestHeuristic = h;
@@ -129,6 +141,54 @@ public final class GotoTask extends Task {
 		} else {
 			idleTicks = 0;
 		}
+	}
+
+	/** 脫身後的第一段路會短暫檢查追兵移動，原本的目的地及任務逾時照舊。 */
+	public void watchThreatsAfterEscape() {
+		escapeWatchUntil = agent.tick() + ESCAPE_WATCH_TICKS;
+		nextThreatCheck = agent.tick() + ESCAPE_REPLAN_INTERVAL;
+		escapeReplans = 0;
+	}
+
+	private boolean replanIfThreatMoved(Minecraft mc) {
+		long now = agent.tick();
+		if (now >= escapeWatchUntil || now < nextThreatCheck || escapeReplans >= ESCAPE_REPLAN_LIMIT
+			|| !mc.player.onGround()) return false;
+		var pathing = Bari.b().getPathingBehavior();
+		var executor = pathing.getCurrent();
+		if (executor == null) return false;
+		nextThreatCheck = now + ESCAPE_REPLAN_INTERVAL;
+		var positions = executor.getPath().positions();
+		int first = executor.getPosition() + 1;
+		int limit = Math.min(first + ESCAPE_LOOKAHEAD, positions.size());
+		BlockPos here = mc.player.blockPosition();
+		for (DangerZones.Zone zone : agent.danger.snapshot()) {
+			// 位置沒實質改變的怪或已離開視野的記憶，原路徑已經考慮過。
+			if (zone.until() > now || routeThreats.stream().anyMatch(old -> old.entityId() == zone.entityId()
+				&& old.radius() == zone.radius() && old.center().distSqr(zone.center()) < 4)) continue;
+			double maxDistance = Math.min(here.distSqr(zone.center()), (double) zone.radius() * zone.radius());
+			for (int i = first; i < limit; i++) {
+				if (positions.get(i).distSqr(zone.center()) >= maxDistance) continue;
+				var movements = executor.getPath().movements();
+				if (executor.getPosition() >= movements.size() || !movements.get(executor.getPosition()).safeToCancel()) {
+					nextThreatCheck = now + 1;
+					return false;
+				}
+				boolean cancelled = pathing.cancelEverything();
+				// Baritone 可能只取消流程而保留目前動作，此時同樣要把原本的目標交還給它。
+				Bari.b().getCustomGoalProcess().setGoalAndPath(goal);
+				if (cancelled) {
+					escapeReplans++;
+					routeThreats = agent.danger.snapshot();
+					agent.log.log(ActionLog.Source.ai, "goto_replan", "moving threat=" + zone.what()
+						+ " at=" + zone.center().toShortString());
+				} else {
+					nextThreatCheck = now + 1;
+				}
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** 只有正常尋路失敗、腳底有支撐的室外淺水，才嘗試沿水面走回最近的乾地。 */
@@ -266,6 +326,7 @@ public final class GotoTask extends Task {
 
 	@Override
 	protected void onResume(Minecraft mc) {
+		if (agent.tick() < escapeWatchUntil) routeThreats = agent.danger.snapshot();
 		Bari.b().getCustomGoalProcess().setGoalAndPath(goal);
 	}
 }

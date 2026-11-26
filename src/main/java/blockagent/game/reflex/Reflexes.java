@@ -12,9 +12,11 @@ import blockagent.game.Inv;
 import blockagent.game.RuleGuard;
 import blockagent.game.UseKey;
 import blockagent.game.combat.Combat;
+import blockagent.game.combat.CoverRoute;
 import blockagent.game.combat.ShieldGuard;
 import blockagent.game.combat.Threats;
 import blockagent.game.tasks.BreakTask;
+import blockagent.game.tasks.GotoTask;
 import blockagent.game.tasks.Moves;
 import blockagent.game.tasks.Task;
 import net.minecraft.client.Minecraft;
@@ -124,6 +126,7 @@ public final class Reflexes {
 	private enum RetreatPhase {RUN, RECOVER}
 
 	private RetreatPhase retreatPhase;
+	private final CoverRoute retreatCover = new CoverRoute();
 	private int recoverSince;
 	/** 這個任務撤退了幾次(第二次回血後就取消任務)。 */
 	private Task retreatTask;
@@ -422,6 +425,7 @@ public final class Reflexes {
 			}
 			case RETREAT -> {
 				eatingFood = null;
+				retreatCover.clear();
 				planRetreat(mc);
 			}
 			case EAT -> {
@@ -459,11 +463,26 @@ public final class Reflexes {
 	}
 
 	private void planRetreat(Minecraft mc) {
+		LocalPlayer player = mc.player;
+		List<Entity> threats = hostiles(mc, 16);
+		if (threats.isEmpty()) return;
+		List<Entity> shooters = new ArrayList<>();
 		List<BlockPos> from = new ArrayList<>();
-		for (Entity e : hostiles(mc, 16)) from.add(e.blockPosition());
-		if (from.isEmpty()) return;
+		Entity attacker = agent.observation.recentAttacker(mc, 100);
+		boolean meleeClose = false;
+		for (Entity threat : threats) {
+			from.add(threat.blockPosition());
+			double distance = player.distanceTo(threat);
+			if (Threats.kind(threat, false, player, attacker) == Threats.Kind.RANGED) {
+				if (distance <= 16 && player.hasLineOfSight(threat)) shooters.add(threat);
+			} else if (distance <= 4) {
+				meleeClose = true;
+			}
+		}
 		retreatPlannedAt = activeTicks;
-		path(new GoalRunAway(20, from.toArray(new BlockPos[0])));
+		BlockPos cover = meleeClose ? null : retreatCover.choose(mc, shooters, agent.tick());
+		path(cover != null && !player.blockPosition().equals(cover)
+			? new GoalBlock(cover) : new GoalRunAway(20, from.toArray(new BlockPos[0])));
 	}
 
 	private void path(Goal g) {
@@ -754,9 +773,12 @@ public final class Reflexes {
 			}
 		}
 		// 脫身或撤退後記住剛才那群怪的位置：之後回家的路線看不到牠們也會繞開(S9.1b)
-		if (mc.player != null && mc.level != null
-			&& ((k == Kind.SELF_DEFENSE && combat != null && combat.outmatched()) || k == Kind.RETREAT)) {
-			agent.danger.remember(mc, agent.observation.recentAttacker(mc, 100), 32, agent.tick());
+		boolean fled = (k == Kind.SELF_DEFENSE && combat != null && combat.outmatched()) || k == Kind.RETREAT;
+		if (fled && mc.player != null && mc.level != null) {
+			Entity attacker = agent.observation.recentAttacker(mc, 100);
+			agent.danger.remember(mc, attacker, 32, agent.tick());
+			// 任務恢復時立刻起算第一段路，先發布剛記下的避怪範圍。
+			agent.danger.refresh(mc, attacker, agent.tick());
 		}
 		eatingFood = null;
 		String action = describeAction(k);
@@ -816,7 +838,12 @@ public final class Reflexes {
 			}
 			history.clear();
 		}
-		if (suspendedTask) agent.tasks.resume();
+		if (suspendedTask) {
+			if (fled && (how.equals("done") || how.equals("recovered")) && agent.tasks.current() instanceof GotoTask go) {
+				go.watchThreatsAfterEscape();
+			}
+			agent.tasks.resume();
+		}
 		suspendedTask = false;
 		agent.log.log(ActionLog.Source.reflex, k.id() + "_end", how);
 		if (k.urgent()) agent.events.add("reflex", Event.Level.URGENT, text);

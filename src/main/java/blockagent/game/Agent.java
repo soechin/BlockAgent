@@ -62,6 +62,7 @@ public final class Agent {
 	public final Memory memory = new Memory();
 	public final Plan plan = new Plan();
 	public final ActionLog log = new ActionLog();
+	public final blockagent.game.combat.ArcheryLog archery = new blockagent.game.combat.ArcheryLog(log);
 	public final RuleGuard guard;
 	public final OwnershipTracker tracker;
 	public final BuildCommands blockCommands = new BuildCommands(this);
@@ -270,6 +271,7 @@ public final class Agent {
 			planFile = null;
 			plan.clear();
 		}
+		archery.disconnect();
 		log.log(ActionLog.Source.system, "disconnect", reason.name() + (disconnectReason != null ? " " + disconnectReason : ""));
 		log.close();
 		worldKey = null;
@@ -548,6 +550,7 @@ public final class Agent {
 		control.tick(mc);
 		if (mc.player == null || mc.level == null) return;
 		tracker.tick(mc);
+		archery.tick(mc.level, tick);
 		// 暫停、待命時使用者自己放的方塊也要定期存檔(M5)
 		if (tick % 200 == 0 && ledger.takeDirty()) saveLedger();
 		if (session.tick()) {

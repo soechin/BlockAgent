@@ -1,14 +1,21 @@
 package blockagent.testkit;
 
+import blockagent.game.Bari;
+import blockagent.game.combat.CoverRoute;
 import blockagent.game.reflex.Reflexes;
 import net.fabricmc.fabric.api.client.gametest.v1.FabricClientGameTest;
 import net.fabricmc.fabric.api.client.gametest.v1.context.ClientGameTestContext;
 import net.fabricmc.fabric.api.client.gametest.v1.context.TestSingleplayerContext;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.monster.skeleton.Skeleton;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 
@@ -53,15 +60,25 @@ public class CombatGameTest implements FabricClientGameTest {
 			if (TestKit.runCase("group_geared")) gearedVsGroup(k, c);
 			if (TestKit.runCase("group_cover")) unarmedEscapesGroupWithCover(k, c);
 			if (TestKit.runCase("route")) routeHomeAvoidsGroup(k, c);
+			if (TestKit.runCase("resume_home")) resumeHomeAfterEscaping(k, c, ShooterBehavior.STILL);
+			if (TestKit.runCase("resume_home_pursuit")) resumeHomeAfterEscaping(k, c, ShooterBehavior.PURSUE);
+			if (TestKit.runCase("resume_home_moved")) resumeHomeAfterEscaping(k, c, ShooterBehavior.MOVE_INTO_ROUTE);
 			if (TestKit.runCase("surrounded")) surroundedDestinationIsReported(k, c);
 			if (TestKit.runCase("ring_unarmed")) surroundedOnAllSides(k, c, false);
 			if (TestKit.runCase("ring_geared")) surroundedOnAllSides(k, c, true);
 			if (TestKit.runCase("retreat")) retreatRecoversThenCancelsOnSecondRetreat(k, c);
 			if (TestKit.runCase("retreat_wall")) retreatBehindWallDoesNotOscillate(k, c);
 			if (TestKit.runCase("terrain_high")) elevatedArcherAndUnreachableCover(k, c);
+			if (TestKit.runCase("cover_route")) retreatPrefersLessExposedRoute(k, c);
 			if (TestKit.runCase("bow_duel")) bowAndShieldDuel(k, c);
 			if (TestKit.runCase("bow_creeper")) shootCreeperBeforeItSwells(k, c);
 			if (TestKit.runCase("bow_distance")) finishDrawAcrossDistanceThreshold(k, c);
+			if (TestKit.runCase("bow_cancel_close")) logDrawCancelWhenTargetCloses(k, c);
+			if (TestKit.runCase("bow_cancel_blocked")) logDrawCancelWhenTrajectoryCloses(k, c);
+			if (TestKit.runCase("bow_cancel_shield")) logDrawCancelForShield(k, c);
+			if (TestKit.runCase("bow_cancel_retarget")) logDrawCancelForRetarget(k, c);
+			if (TestKit.runCase("bow_embedded")) logArrowAfterLaunch(k, c, false);
+			if (TestKit.runCase("bow_unconfirmed")) logArrowAfterLaunch(k, c, true);
 			if (TestKit.runCase("bow_roof")) turnToMeleeWhenShotIsBlocked(k, c);
 			if (TestKit.runCase("enderman")) doNotShootEnderman(k, c);
 			if (TestKit.runCase("crossbow")) useLoadedCrossbow(k, c);
@@ -329,6 +346,74 @@ public class CombatGameTest implements FabricClientGameTest {
 		System.out.println("[ok] B 回家繞開怪：骷髏 " + Math.round(min[0]) + " 格、殭屍 " + Math.round(min[1]) + " 格、靠記憶 " + Math.round(back[0]) + " 格");
 	}
 
+	private enum ShooterBehavior { STILL, PURSUE, MOVE_INTO_ROUTE }
+
+	/** 在回家途中遇到射手，實測脫身後接回同一個 goto，量測回程與重啟自衛。 */
+	private void resumeHomeAfterEscaping(TestKit k, BlockPos c, ShooterBehavior behavior) throws Exception {
+		reset(k, c);
+		k.ctx.runOnClient(mc -> k.agent().danger.clear());
+		k.cmd("difficulty normal");
+		k.give("minecraft:bread", 8);
+		BlockPos home = c.offset(0, 0, 42);
+		BlockPos west = c.offset(-9, 0, 13);
+		BlockPos east = c.offset(8, 0, 14);
+		int mark = mark(k);
+		var go = k.ai.call(k.ctx, "goto", args("x", home.getX(), "y", home.getY(), "z", home.getZ(), "wait_sec", 0));
+		check(go.ok(), "回家 goto 失敗：" + go.text());
+		var originalTask = k.agent().tasks.current();
+		check(k.waitUntil(80, mc -> mc.player.blockPosition().getZ() >= c.getZ() + 3), "應先開始走回家");
+		for (BlockPos archer : List.of(west, east)) {
+			k.cmd("summon minecraft:skeleton " + TestKit.pos(archer) + " {NoAI:1b,PersistenceRequired:1b}");
+		}
+		k.cmd("item replace entity @e[type=minecraft:skeleton] weapon.mainhand with minecraft:bow");
+		k.onServer(server -> server.overworld().getEntities(EntityTypes.SKELETON, mob -> mob.isAlive()).forEach(mob -> {
+			mob.setAggressive(true);
+			mob.setNoAi(behavior != ShooterBehavior.PURSUE);
+		}));
+		check(waitLog(k, mark, "self_defense_start", 100), "應在回家途中進入自衛：" + since(k, mark));
+		check(waitFor(k, 20 * 20, () -> since(k, mark).contains("self_defense_end")),
+			"應有脫身結算：" + since(k, mark));
+		BlockPos escapedAt = k.myPos();
+		check(k.agent().tasks.current() == originalTask, "應接回原本的 goto：" + since(k, mark));
+		if (behavior == ShooterBehavior.MOVE_INTO_ROUTE) {
+			check(k.waitUntil(100, mc -> {
+				var executor = Bari.b().getPathingBehavior().getCurrent();
+				return executor != null && executor.getPath().length() - executor.getPosition() > 18;
+			}), "應先算出恢復後的路徑");
+			BlockPos acrossRoute = k.ctx.computeOnClient(mc -> {
+				var executor = Bari.b().getPathingBehavior().getCurrent();
+				return executor.getPath().positions().get(executor.getPosition() + 16);
+			});
+			k.cmd("tp @e[type=minecraft:skeleton,limit=1,sort=nearest] " + TestKit.pos(acrossRoute));
+		}
+		double closestToEncounter = Double.MAX_VALUE;
+		double closestToLiveShooter = Double.MAX_VALUE;
+		for (int t = 0; t < 20 * 30 && k.agent().tasks.hasActiveTask(); t++) {
+			BlockPos at = k.myPos();
+			closestToEncounter = Math.min(closestToEncounter, Math.sqrt(Math.min(at.distSqr(west), at.distSqr(east))));
+			closestToLiveShooter = Math.min(closestToLiveShooter, nearestGroupMob(k));
+			k.ctx.waitTick();
+		}
+		String log = since(k, mark);
+		int starts = log.split("\"action\":\"self_defense_start\"", -1).length - 1;
+		boolean arrived = k.myPos().distManhattan(home) <= 3;
+		int replans = log.split("\"action\":\"goto_replan\"", -1).length - 1;
+		System.out.println("[data] 脫身後回家 behavior=" + behavior + " escaped=" + escapedAt.toShortString() + " end="
+			+ k.myPos().toShortString() + " arrived=" + arrived + " starts=" + starts + " replans=" + replans
+			+ " closestToEncounter=" + closestToEncounter + " closestToLiveShooter=" + closestToLiveShooter
+			+ " | " + summaries(log));
+		check(alive(k) && arrived, "應保有原目標並成功回家：" + log);
+		if (behavior == ShooterBehavior.STILL) {
+			check(starts == 1 && replans == 0, "固定射手情境應只自衛一次並沿原定避讓路徑回家：" + log);
+		} else if (behavior == ShooterBehavior.MOVE_INTO_ROUTE) {
+			check(starts == 1 && replans > 0 && replans <= 2, "射手移到原路時應有限重算並避免再觸發自衛：" + log);
+			check(closestToLiveShooter >= 8, "重算後應遠離切入路線的射手，最近 " + closestToLiveShooter + " 格");
+		}
+		k.ai.call(k.ctx, "stop");
+		k.ctx.runOnClient(mc -> k.agent().danger.clear());
+		k.cmd("difficulty easy");
+	}
+
 	/** B2：目的地被怪圍住：goto 不卡住，回報 destination_hostile 給 AI。 */
 	private void surroundedDestinationIsReported(TestKit k, BlockPos c) throws Exception {
 		reset(k, c);
@@ -528,6 +613,40 @@ public class CombatGameTest implements FabricClientGameTest {
 	}
 
 
+	/** 直線較近的西側掩體需要承受更多兩側火力；較遠的南側掩體沿路較早避開一位射手。 */
+	private void retreatPrefersLessExposedRoute(TestKit k, BlockPos c) throws Exception {
+		reset(k, c);
+		k.give("minecraft:bread", 8);
+		int[][] walls = {{0, -4, 2, -4}, {-3, -1, -3, 0}, {1, 4, 1, 6}};
+		for (int[] wall : walls) {
+			k.cmd("fill " + TestKit.pos(c.offset(wall[0], 0, wall[1])) + " "
+				+ TestKit.pos(c.offset(wall[2], 2, wall[3])) + " minecraft:stone");
+		}
+		try {
+			k.cmd("summon minecraft:skeleton " + TestKit.pos(c.offset(9, 0, -4)) + " {NoAI:1b,PersistenceRequired:1b}");
+			k.cmd("summon minecraft:skeleton " + TestKit.pos(c.offset(9, 0, 5)) + " {NoAI:1b,PersistenceRequired:1b}");
+			k.cmd("item replace entity @e[type=minecraft:skeleton] weapon.mainhand with minecraft:bow");
+			check(k.waitUntil(60, mc -> mc.level.getEntitiesOfClass(Skeleton.class,
+				mc.player.getBoundingBox().inflate(16), mc.player::hasLineOfSight).size() == 2), "起點應同時暴露於兩位射手");
+			BlockPos cover = k.ctx.computeOnClient(mc -> new CoverRoute().choose(mc,
+				mc.level.getEntitiesOfClass(Skeleton.class,
+					mc.player.getBoundingBox().inflate(16)), k.agent().tick()));
+			check(c.offset(-2, 0, 6).equals(cover), "應優先選沿路曝露較少的南側掩體，選到 " + cover);
+			long started = k.agent().tick();
+			lowHealth(k);
+			check(k.waitUntil(20 * 8, mc -> mc.player.blockPosition().getZ() - c.getZ() >= 4
+				&& mc.level.getEntitiesOfClass(Skeleton.class,
+					mc.player.getBoundingBox().inflate(16), mc.player::hasLineOfSight).isEmpty()),
+				"低血撤退應沿南側切斷兩位射手的視線");
+			System.out.println("[ok] 兩側射手：撤往沿路曝露較少的掩體，切斷視線耗時 " + (k.agent().tick() - started) + " tick");
+		} finally {
+			for (int[] wall : walls) {
+				k.cmd("fill " + TestKit.pos(c.offset(wall[0], 0, wall[1])) + " "
+					+ TestKit.pos(c.offset(wall[2], 2, wall[3])) + " minecraft:air");
+			}
+		}
+	}
+
 	/** R17、R19：同一場對射要能在箭到前舉盾，也要能還擊。 */
 	private void bowAndShieldDuel(TestKit k, BlockPos c) throws Exception {
 		reset(k, c);
@@ -539,6 +658,21 @@ public class CombatGameTest implements FabricClientGameTest {
 		int mark = mark(k);
 		k.cmd("execute as @p at @s run summon minecraft:skeleton ~12 ~ ~ {PersistenceRequired:1b}");
 		k.cmd("item replace entity @e[type=minecraft:skeleton] weapon.mainhand with minecraft:bow");
+		check(k.waitUntil(100, mc -> mc.player.getOffhandItem().is(Items.SHIELD) && mc.player.getUseItem().is(Items.BOW)),
+			"對射開始時應備妥弓盾：" + since(k, mark));
+		// 骷髏自然射擊可能全數偏離，額外送一支飛向角色且足以扣盾耐久的箭。
+		k.onServer(server -> {
+			ServerPlayer player = k.me(server);
+			var level = player.level();
+			var archer = level.getEntities(EntityTypes.SKELETON, mob -> mob.isAlive()).getFirst();
+			var arrow = EntityTypes.ARROW.create(level, EntitySpawnReason.COMMAND);
+			check(arrow != null, "應能生成朝玩家飛來的箭");
+			arrow.setOwner(archer);
+			arrow.setBaseDamage(6);
+			arrow.setPos(player.getX() + 10, player.getY() + 1.4, player.getZ());
+			arrow.setDeltaMovement(-1.25, 0.15, 0);
+			level.addFreshEntity(arrow);
+		});
 		check(waitFor(k, 20 * 45, () -> count(k, EntityTypes.SKELETON) == 0), "弓盾對射應能擊殺骷髏：" + since(k, mark));
 		check(waitLog(k, mark, "fight_summary", 40), "對射應留下統計：" + since(k, mark));
 		String log = since(k, mark);
@@ -565,6 +699,11 @@ public class CombatGameTest implements FabricClientGameTest {
 		check(count(k, EntityTypes.CREEPER) == 0 && summary.contains("result=killed"), "應射倒苦力怕：" + log);
 		check(summary.contains("bow_creeper") && summary.contains("swings=0") && summary.matches(".*shots=[1-9][0-9]*.*"),
 			"苦力怕在遠處時應用弓擊倒：" + summary);
+		int fired = TestKit.sumFightMetric(log, "shots=");
+		check(fired > 0 && TestKit.sumFightMetric(log, "arrow_hits=") == fired, "每支命中苦力怕的箭都應有伺服器傷害證據：" + log);
+		var hitIds = Pattern.compile("hunt_shot_result[^\n]*result=hit shot=([0-9]+)").matcher(log).results()
+			.map(m -> m.group(1)).toList();
+		check(hitIds.size() == fired && hitIds.stream().distinct().count() == fired, "每支箭應只計一次命中：" + log);
 		System.out.println("[ok] R19 遠射苦力怕 " + summary);
 	}
 
@@ -583,6 +722,115 @@ public class CombatGameTest implements FabricClientGameTest {
 			"蓄力越過門檻後應真正耗用一支箭");
 		check(!since(k, mark).contains("hunt_attack"), "射擊前不應換成近戰：" + since(k, mark));
 		System.out.println("[ok] R16 目標跨進六格仍射完當前這箭");
+	}
+
+	private void logDrawCancelWhenTargetCloses(TestKit k, BlockPos c) throws Exception {
+		int mark = startDrawingAtZombie(k, c, false);
+		k.cmd("tp @e[type=minecraft:zombie] " + TestKit.pos(c.offset(2, 0, 0)));
+		check(waitLog(k, mark, "reason=target_too_close", 40), "目標貼近應留下收弓原因：" + since(k, mark));
+		check(!since(k, mark).contains("hunt_shoot"), "貼近而收弓時不應計一次射擊：" + since(k, mark));
+		k.ai.call(k.ctx, "stop");
+		System.out.println("[ok] 目標貼近時記錄 target_too_close");
+	}
+
+	private void logDrawCancelWhenTrajectoryCloses(TestKit k, BlockPos c) throws Exception {
+		int mark = startDrawingAtZombie(k, c, false);
+		BlockPos roof = c.offset(1, 1, 0);
+		try {
+			k.cmd("setblock " + TestKit.pos(roof) + " minecraft:stone_slab[type=bottom]");
+			check(waitLog(k, mark, "reason=trajectory_blocked", 40), "彈道受阻應留下收弓原因：" + since(k, mark));
+			k.ai.call(k.ctx, "stop");
+			System.out.println("[ok] 拉弓途中彈道受阻時記錄 trajectory_blocked");
+		} finally {
+			k.setBlock(roof, Blocks.AIR.defaultBlockState());
+		}
+	}
+
+	private void logDrawCancelForShield(TestKit k, BlockPos c) throws Exception {
+		int mark = startDrawingAtZombie(k, c, true);
+		k.cmd("execute at @p run summon minecraft:arrow ~5 ~1 ~ {Motion:[-1.5d,0.0d,0.0d]}");
+		check(waitLog(k, mark, "reason=shield", 40), "來箭時應記錄為舉盾而收弓：" + since(k, mark));
+		k.ai.call(k.ctx, "stop");
+		System.out.println("[ok] 擋來箭時記錄 shield");
+	}
+
+	private void logDrawCancelForRetarget(TestKit k, BlockPos c) throws Exception {
+		reset(k, c);
+		giveIronArmor(k);
+		k.give("minecraft:bow", 1);
+		k.give("minecraft:arrow", 16);
+		int mark = mark(k);
+		k.onServer(server -> {
+			spawnStationaryArcher(k.me(server), c.offset(12, 0, 0));
+		});
+		check(k.waitUntil(100, mc -> mc.player.getUseItem().is(Items.BOW) && mc.player.getTicksUsingItem() >= 5),
+			"應先對遠處的骷髏拉弓：" + since(k, mark));
+		k.onServer(server -> {
+			spawnStationaryArcher(k.me(server), c.offset(0, 0, 2));
+		});
+		check(waitLog(k, mark, "reason=target_changed", 30), "更危險的射手貼近時應留下換目標收弓紀錄：" + since(k, mark));
+		System.out.println("[ok] 更換敵人時記錄 target_changed");
+	}
+
+	private static void spawnStationaryArcher(ServerPlayer player, BlockPos pos) {
+		var level = player.level();
+		Skeleton archer = EntityTypes.SKELETON.create(level, EntitySpawnReason.COMMAND);
+		check(archer != null, "應能生成骷髏射手");
+		archer.setPos(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5);
+		archer.setNoAi(true);
+		archer.setItemSlot(EquipmentSlot.MAINHAND, new ItemStack(Items.BOW));
+		archer.setAggressive(true);
+		level.addFreshEntity(archer);
+	}
+
+	private int startDrawingAtZombie(TestKit k, BlockPos c, boolean shield) throws Exception {
+		reset(k, c);
+		if (shield) k.give("minecraft:shield", 1);
+		k.give("minecraft:bow", 1);
+		k.give("minecraft:arrow", 16);
+		int mark = mark(k);
+		k.cmd("summon minecraft:zombie " + TestKit.pos(c.offset(10, 0, 0)) + " {NoAI:1b,PersistenceRequired:1b}");
+		check(k.ai.call(k.ctx, "hunt", args("target", "zombie", "wait_sec", 0)).ok(), "應開始狩獵");
+		check(k.waitUntil(100, mc -> mc.player.getUseItem().is(Items.BOW) && mc.player.getTicksUsingItem() >= 5),
+			"應先拉弓：" + since(k, mark));
+		return mark;
+	}
+
+	private void logArrowAfterLaunch(TestKit k, BlockPos c, boolean discard) throws Exception {
+		reset(k, c);
+		k.give("minecraft:bow", 1);
+		k.give("minecraft:arrow", 1);
+		int mark = mark(k);
+		BlockPos wall = c.offset(23, 0, 0);
+		k.cmd("summon minecraft:zombie " + TestKit.pos(c.offset(29, 0, 0)) + " {NoAI:1b,PersistenceRequired:1b}");
+		check(k.ai.call(k.ctx, "hunt", args("target", "zombie", "wait_sec", 0)).ok(), "應開始狩獵");
+		try {
+			boolean placed = false;
+			for (int i = 0; i < 100 && !placed; i++) {
+				placed = k.server.computeOnServer(server -> {
+					var level = server.overworld();
+					var arrows = level.getEntities(EntityTypes.ARROW, a -> a.getOwner() == k.me(server) && a.getX() < wall.getX());
+					if (arrows.isEmpty()) return false;
+					if (discard) {
+						arrows.forEach(Entity::discard);
+					} else {
+						level.setBlockAndUpdate(wall, Blocks.STONE.defaultBlockState());
+						level.setBlockAndUpdate(wall.above(), Blocks.STONE.defaultBlockState());
+					}
+					return true;
+				});
+				if (!placed) k.ctx.waitTick();
+			}
+			check(placed, "應在箭命中前介入測試：" + since(k, mark));
+			String result = discard ? "unconfirmed" : "embedded";
+			check(waitLog(k, mark, "result=" + result, 80), "應關聯相符的射擊結果：" + since(k, mark));
+			check(!since(k, mark).contains("result=hit"), "沒有伺服器傷害證據時不能計作命中：" + since(k, mark));
+			k.ai.call(k.ctx, "stop");
+			System.out.println("[ok] 箭飛出後的結果 " + result);
+		} finally {
+			k.setBlock(wall, Blocks.AIR.defaultBlockState());
+			k.setBlock(wall.above(), Blocks.AIR.defaultBlockState());
+		}
 	}
 
 	private void turnToMeleeWhenShotIsBlocked(TestKit k, BlockPos c) throws Exception {
@@ -623,6 +871,8 @@ public class CombatGameTest implements FabricClientGameTest {
 
 	private void useLoadedCrossbow(TestKit k, BlockPos c) throws Exception {
 		reset(k, c);
+		k.cmd("tp @p " + TestKit.pos(c) + " 0 0");
+		k.ctx.waitTicks(4);
 		k.give("minecraft:crossbow[minecraft:charged_projectiles=[{id:\"minecraft:arrow\",count:1}]]", 1);
 		int mark = mark(k);
 		k.cmd("summon minecraft:zombie " + TestKit.pos(c.offset(10, 0, 0)) + " {NoAI:1b,PersistenceRequired:1b}");
@@ -632,6 +882,9 @@ public class CombatGameTest implements FabricClientGameTest {
 			k.me(s).getMainHandItem().is(Items.CROSSBOW)
 				&& k.me(s).getMainHandItem().get(DataComponents.CHARGED_PROJECTILES).isEmpty())),
 			"伺服器收到射擊後弩應變成空弩");
+		check(waitLog(k, mark, "result=hit", 40) && since(k, mark).contains("weapon=crossbow"),
+			"弩的命中也應連到實際射出的箭：" + since(k, mark));
+		check(since(k, mark).split("weapon=crossbow", -1).length == 2, "單支箭的弩只能記一次發射：" + since(k, mark));
 		System.out.println("[ok] R18 可射擊已裝單支箭的弩");
 	}
 
