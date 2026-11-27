@@ -12,6 +12,7 @@ import blockagent.game.Bari;
 import blockagent.game.Inv;
 import blockagent.game.RuleGuard;
 import blockagent.game.UseKey;
+import blockagent.game.WaterFloat;
 import blockagent.game.tasks.Moves;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -114,6 +115,9 @@ public final class Combat {
 	private boolean jumpedForCrit;
 	/** 打苦力怕前先按前進+衝刺一 tick，讓這一下帶衝刺擊退。 */
 	private boolean sprintWindup;
+	/** 在開放水域近戰或追擊水面目標時，由戰鬥邏輯按住空白鍵／前進鍵(與 sprintWindup 獨立清理)。 */
+	private boolean waterJumpHeld;
+	private boolean waterForwardHeld;
 	// ---- 戰鬥紀錄(fight_summary) ----
 	private long startTick = -1;
 	private float hpStart;
@@ -336,8 +340,14 @@ public final class Combat {
 			avoidExplosion(mc, swelling);
 			return Outcome.CONTINUE;
 		}
-		boolean deepTarget = k != Threats.Kind.AVOID && deepWaterTarget()
-			&& (p.isEyeInFluid(FluidTags.WATER) || !(los && inReach(mc)));
+		if (!WaterFloat.needsSurfaceFloat(mc)) releaseWaterKeys(mc);
+		BlockPos targetPos = target.blockPosition();
+		Level targetLevel = target.level();
+		boolean waterBelow = targetLevel.getFluidState(targetPos.below()).is(FluidTags.WATER);
+		boolean waterAbove = targetLevel.getFluidState(targetPos.above()).is(FluidTags.WATER);
+		boolean targetSurfaceOpen = target.isInWater() && WaterFloat.hasOpenSurfaceAbove(targetLevel, targetPos);
+		boolean deepTarget = CombatPolicy.isBlockedDeepWaterTarget(k == Threats.Kind.AVOID, target.isInWater(),
+			waterBelow, waterAbove, p.isEyeInFluid(FluidTags.WATER), los && inReach(mc), hunting, hostile, targetSurfaceOpen);
 		if (deepTarget && !outmatched && !(bow && los && !p.isInWater() && worthShooting(mc) && clearShot(p))) {
 			cancelDraw(mc, "deep_water");
 			if (hunting) return Outcome.SUBMERGED_TARGET;
@@ -399,15 +409,6 @@ public final class Combat {
 		// 這個 tick 換了別的戰術(或瞄不到)：拉到一半的弓收起來，不然會一直拉著、也舉不起盾(H8)
 		if (!shooting && drawingBow(p)) cancelDraw(mc, drawStopReason(p, k, d, los));
 		return blocked != null ? Outcome.BLOCKED : Outcome.CONTINUE;
-	}
-
-	/** 正在深水下或浮在深水面上，追過去會離開可站立的淺灘。 */
-	private boolean deepWaterTarget() {
-		if (!target.isInWater()) return false;
-		Level level = target.level();
-		BlockPos at = target.blockPosition();
-		return level.getFluidState(at.below()).is(FluidTags.WATER)
-			|| level.getFluidState(at.above()).is(FluidTags.WATER);
 	}
 
 	/** 舉盾擋：停下 Baritone(走路會轉視角，R1)、對準射手或箭的來向、舉盾。 */
@@ -520,9 +521,29 @@ public final class Combat {
 		startTick = -1;
 	}
 
-	private static void releaseMoveKeys(Minecraft mc) {
-		if (mc.options == null) return;
+	private void releaseMoveKeys(Minecraft mc) {
+		if (mc == null || mc.options == null) return;
 		mc.options.keyUp.setDown(false);
+		if (waterJumpHeld) mc.options.keyJump.setDown(false);
+		waterJumpHeld = false;
+		waterForwardHeld = false;
+	}
+
+	private void releaseWaterKeys(Minecraft mc) {
+		if (mc != null && mc.options != null) {
+			if (waterJumpHeld) mc.options.keyJump.setDown(false);
+			if (waterForwardHeld) mc.options.keyUp.setDown(false);
+		}
+		waterJumpHeld = false;
+		waterForwardHeld = false;
+	}
+
+	private void holdWaterKeys(Minecraft mc, boolean forward) {
+		if (mc == null || mc.options == null) return;
+		mc.options.keyJump.setDown(true);
+		waterJumpHeld = true;
+		mc.options.keyUp.setDown(forward);
+		waterForwardHeld = forward;
 	}
 
 	private static boolean drawingBow(LocalPlayer p) {
@@ -569,6 +590,35 @@ public final class Combat {
 			escape(mc);
 			return;
 		}
+		boolean inOpenWater = WaterFloat.needsSurfaceFloat(mc);
+		boolean directWaterChase = CombatPolicy.shouldDirectWaterChase(inOpenWater, los,
+			WaterFloat.isOnWaterSurface(mc.level, target));
+		if (directWaterChase || (inOpenWater && inReach(mc) && los)) {
+			// 在開放水域打水面／岸邊目標：直接邊按空白鍵保持漂浮邊游近揮劍，不交給 Baritone 算深水路徑
+			halt();
+			holdWaterKeys(mc, directWaterChase && !inReach(mc));
+			if (strike(mc)) {
+				tactic("melee");
+				return;
+			}
+			if (blocked != null) {
+				releaseWaterKeys(mc);
+				return;
+			}
+			if (CombatPolicy.shouldWaitInReach(inReach(mc), los)) {
+				Moves.lookAt(mc.player, target.getBoundingBox().getCenter());
+				holdWaterKeys(mc, false);
+				if (target instanceof Enemy && d < 4 && !jumpedForCrit) raiseShield(mc);
+				tactic("melee");
+				return;
+			}
+			if (d >= 4) lowerShield(mc);
+			Moves.lookAt(mc.player, target.getBoundingBox().getCenter());
+			holdWaterKeys(mc, true);
+			tactic("melee");
+			return;
+		}
+		releaseWaterKeys(mc);
 		if (strike(mc)) {
 			tactic("melee");
 			return;
@@ -827,6 +877,7 @@ public final class Combat {
 		lastFleeAllTick = now;
 		pathKey = from.getFirst();
 		lastPathTick = now;
+		releaseWaterKeys(mc);
 		mover.path(new GoalRunAway(distance, from.toArray(new BlockPos[0])));
 	}
 
@@ -1198,6 +1249,7 @@ public final class Combat {
 		if (now - lastPathTick < 5 || (key.equals(pathKey) && now - lastPathTick < 10)) return;
 		pathKey = key;
 		lastPathTick = now;
+		releaseWaterKeys(Minecraft.getInstance());
 		mover.path(goal);
 	}
 

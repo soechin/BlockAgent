@@ -10,6 +10,7 @@ import blockagent.game.Agent;
 import blockagent.game.Bari;
 import blockagent.game.Inv;
 import blockagent.game.UseKey;
+import blockagent.game.WaterFloat;
 import blockagent.game.combat.Combat;
 import blockagent.game.combat.CoverRoute;
 import blockagent.game.combat.ShieldGuard;
@@ -22,6 +23,7 @@ import blockagent.game.tasks.Task;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.InteractionHand;
@@ -422,8 +424,12 @@ public final class Reflexes {
 		agent.log.log(ActionLog.Source.reflex, k.id() + "_start", why);
 		switch (k) {
 			case DROWNING -> {
-				BlockPos air = findAirSpot(mc);
-				if (air != null) path(new GoalBlock(air));
+				// 上方直通開放水面就直接按住空白鍵上浮；被冰面或方塊封住才找最近可達的岸邊／破口(SPEC S9.1)
+				if (CombatPolicy.drowningAction(WaterFloat.hasOpenSurfaceAbove(mc.level, mc.player.blockPosition()))
+					== CombatPolicy.DrowningAction.PATH_TO_AIR) {
+					BlockPos air = findAirSpot(mc);
+					if (air != null) path(new GoalBlock(air));
+				}
 			}
 			case ON_FIRE -> {
 				List<BlockPos> water = Moves.scan(mc, List.of(Blocks.WATER), 8, 1, null);
@@ -500,21 +506,38 @@ public final class Reflexes {
 		Bari.b().getCustomGoalProcess().setGoalAndPath(g);
 	}
 
+	/**
+	 * 頭頂被冰面或洞頂封住時找可換氣處：只挑腳下有實心方塊的乾地氣穴，或冰面破口正下方的水格，
+	 * 絕不把浮在水面上方的懸空空氣格交給 Baritone(否則 Baritone 會試圖搭橋卡死 30 秒)。
+	 */
 	private BlockPos findAirSpot(Minecraft mc) {
 		BlockPos f = mc.player.blockPosition();
-		BlockPos best = null;
-		double bd = Double.MAX_VALUE;
-		for (BlockPos b : BlockPos.betweenClosed(f.offset(-6, -2, -6), f.offset(6, 8, 6))) {
+		BlockPos bestDry = null;
+		double bestDryDist = Double.MAX_VALUE;
+		BlockPos bestHole = null;
+		double bestHoleDist = Double.MAX_VALUE;
+		for (BlockPos b : BlockPos.betweenClosed(f.offset(-8, -2, -8), f.offset(8, 8, 8))) {
 			BlockState s = mc.level.getBlockState(b), head = mc.level.getBlockState(b.above());
-			if (s.isAir() && head.isAir() && mc.level.getFluidState(b).isEmpty()) {
-				double d = b.distSqr(f);
-				if (d < bd) {
-					bd = d;
-					best = b.immutable();
+			if (!s.getCollisionShape(mc.level, b).isEmpty() || !mc.level.getFluidState(b).isEmpty()) continue;
+			if (!head.getCollisionShape(mc.level, b.above()).isEmpty() || !mc.level.getFluidState(b.above()).isEmpty()) continue;
+			BlockPos below = b.below();
+			BlockState belowState = mc.level.getBlockState(below);
+			double d = b.distSqr(f);
+			if (mc.level.getFluidState(below).isEmpty() && belowState.isFaceSturdy(mc.level, below, Direction.UP)) {
+				if (d < bestDryDist) {
+					bestDryDist = d;
+					bestDry = b.immutable();
+				}
+			} else if (mc.level.getFluidState(below).is(FluidTags.WATER)
+				&& belowState.getCollisionShape(mc.level, below).isEmpty()) {
+				if (d < bestHoleDist) {
+					bestHoleDist = d;
+					bestHole = below.immutable();
 				}
 			}
 		}
-		return best;
+		if (bestHole != null && bestHoleDist <= bestDryDist) return bestHole;
+		return bestDry != null ? bestDry : bestHole;
 	}
 
 	/** 結束了沒；結束時回傳原因(一般是 done，撤退是 recovered 或 cannot_heal)，還沒結束回傳 null。 */
@@ -575,7 +598,21 @@ public final class Reflexes {
 		LocalPlayer p = mc.player;
 		switch (active) {
 			case DROWNING -> {
-				if (!Bari.busy()) mc.options.keyJump.setDown(true);
+				if (CombatPolicy.drowningAction(WaterFloat.hasOpenSurfaceAbove(mc.level, p.blockPosition()))
+					== CombatPolicy.DrowningAction.SWIM_UP) {
+					if (Bari.busy()) Bari.stopAll();
+					mc.options.keyJump.setDown(true);
+				} else if (!Bari.busy()) {
+					if (activeTicks % 20 == 0) {
+						BlockPos air = findAirSpot(mc);
+						if (air != null) {
+							mc.options.keyJump.setDown(false);
+							path(new GoalBlock(air));
+							return;
+						}
+					}
+					mc.options.keyJump.setDown(true);
+				}
 			}
 			case RETREAT -> retreat(mc);
 			case EAT -> UseKey.holdOff(mc);

@@ -317,6 +317,53 @@ public final class CombatPolicy {
 		return !"task_replaced".equals(how) && !"task_cancelled".equals(how) && !"turned_off".equals(how);
 	}
 
+	// ---- 水中漂浮、溺水與水面目標 ----
+
+	/**
+	 * 待機或沒有移動流程控制按鍵時，是否要在水中按住空白鍵保持浮在水面，避免思考空檔直接沉底溺水。
+	 * 踩在一格淺水底部且頭露在水面上({@code onGround && !eyeInWater})時不跳，免得原地一直上下跳。
+	 */
+	public static boolean shouldKeepAfloat(boolean inWater, boolean onGround, boolean eyeInWater, boolean passenger,
+		boolean flying, boolean openSurfaceAbove, boolean movementOwned) {
+		return inWater && (!onGround || eyeInWater) && !passenger && !flying && openSurfaceAbove && !movementOwned;
+	}
+
+	public enum DrowningAction {
+		/** 上方直通空氣水面：直接按住空白鍵垂直上浮換氣，不交給 Baritone 算懸空路徑。 */
+		SWIM_UP,
+		/** 上方被冰層或方塊擋住：用 Baritone 找最近可達的岸邊或水面破口。 */
+		PATH_TO_AIR
+	}
+
+	public static DrowningAction drowningAction(boolean openSurfaceAbove) {
+		return openSurfaceAbove ? DrowningAction.SWIM_UP : DrowningAction.PATH_TO_AIR;
+	}
+
+	/**
+	 * 目標在深水裡時，是否應當成不可近戰的深水目標擋下。
+	 * <ul>
+	 *   <li>敵對怪在深水，或目標已潛在水下(頭上也是水)：維持擋下(除非人沒潛水且已在攻擊距離內)。</li>
+	 *   <li>主動狩獵浮在開放水面的被動動物({@code hunting && !hostile && !waterAbove && targetSurfaceOpen})：
+	 *       允許在岸邊或邊按空白鍵浮在水面邊攻擊。</li>
+	 * </ul>
+	 */
+	public static boolean isBlockedDeepWaterTarget(boolean avoidKind, boolean targetInWater, boolean waterBelow,
+		boolean waterAbove, boolean playerEyeInWater, boolean inReachWithLos, boolean hunting, boolean hostile,
+		boolean targetSurfaceOpen) {
+		if (avoidKind || !targetInWater || (!waterBelow && !waterAbove)) return false;
+		if (!playerEyeInWater && inReachWithLos) return false;
+		if (hunting && !hostile && !waterAbove && targetSurfaceOpen) return false;
+		return true;
+	}
+
+	/**
+	 * 近戰在開放水域中是否直接由戰鬥邏輯按住空白鍵浮在水面(需要接近時同時按前進)，而不叫 Baritone 尋路。
+	 */
+	public static boolean shouldDirectWaterChase(boolean playerInOpenWater, boolean hasLineOfSight,
+		boolean targetOnWaterSurface) {
+		return playerInOpenWater && hasLineOfSight && targetOnWaterSurface;
+	}
+
 	/**
 	 * 自衛反射收手後的單隻生物冷卻表(H8、P3-M2)：
 	 * <ul>

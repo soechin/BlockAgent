@@ -90,6 +90,8 @@ public final class Agent {
 	private volatile long tick;
 	/** 斷線原因(由 Mixin 在伺服器斷線時設定)；null 表示使用者自己離開。 */
 	private volatile String disconnectReason;
+	/** 待機水中踩水漂浮是否由 Agent 按住空白鍵(切回任務／反射／暫停時只放開自己按的)。 */
+	private boolean idleFloating;
 
 	public static Agent get() {
 		return instance;
@@ -519,8 +521,12 @@ public final class Agent {
 				}
 				idle.touch();
 			}
-			case PAUSED -> control.restoreMouse();
+			case PAUSED -> {
+				idleFloating = false;
+				control.restoreMouse();
+			}
 			case ENDED -> {
+				idleFloating = false;
 				control.stopEverything("session ended");
 				String why = switch (session.endReason()) {
 					case LEFT_WORLD -> "reason=left_world";
@@ -547,13 +553,22 @@ public final class Agent {
 		if (tick % 200 == 0 && ledger.takeDirty()) saveLedger();
 		// ENDED 時的停止只在狀態改變那一刻做一次(onSessionChange)。之後角色交還給使用者，
 		// 不能每個 tick 都 stopEverything：裡面的 KeyMapping.releaseAll() 會一直放開使用者按住的移動鍵。
-		if (!session.isRunning()) return;
+		if (!session.isRunning()) {
+			releaseIdleFloat(mc);
+			return;
+		}
 		// 死掉時只負責重生(S8.8)，反射和任務都不跑
-		if (respawn.tick(mc)) return;
+		if (respawn.tick(mc)) {
+			releaseIdleFloat(mc);
+			return;
+		}
+		// 先放開上一 tick 的待機漂浮鍵，避免覆蓋本 tick 反射或任務自己設定的 keyJump
+		releaseIdleFloat(mc);
 		Bari.enforceSettings(tick);
 		reflexes.tick(mc);
 		tasks.tick(mc);
 		landIfFlying(mc);
+		keepAfloat(mc);
 		observation.tick(mc);
 		if (idle.poll(tasks.hasActiveTask())) {
 			String hint;
@@ -578,6 +593,28 @@ public final class Agent {
 		abilities.flying = false;
 		mc.player.onUpdateAbilities();
 		log.log(ActionLog.Source.system, "stop_flying", "要移動了，先關掉飛行");
+	}
+
+	private void releaseIdleFloat(Minecraft mc) {
+		if (!idleFloating) return;
+		if (mc != null && mc.options != null) mc.options.keyJump.setDown(false);
+		idleFloating = false;
+	}
+
+	/** 待機或在水中做非移動任務時，主動按住空白鍵保持浮在水面，避免思考空檔沉底溺水。 */
+	private void keepAfloat(Minecraft mc) {
+		var p = mc.player;
+		if (p == null || mc.level == null || mc.options == null) return;
+		var reflex = reflexes.active();
+		boolean movementOwned = (reflex != null && reflex != Reflexes.Kind.EAT)
+			|| Bari.busy() || tasks.hasRunningMovingTask();
+		boolean openSurface = p.isInWater() && WaterFloat.hasOpenSurfaceAbove(mc.level, p.blockPosition());
+		if (blockagent.core.CombatPolicy.shouldKeepAfloat(p.isInWater(), p.onGround(),
+			p.isEyeInFluid(net.minecraft.tags.FluidTags.WATER), p.isPassenger(), p.getAbilities().flying,
+			openSurface, movementOwned)) {
+			mc.options.keyJump.setDown(true);
+			idleFloating = true;
+		}
 	}
 
 	/** 每個工具回應最後附上的未讀事件摘要(S5.4)。 */

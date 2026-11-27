@@ -217,4 +217,54 @@ class CombatPolicyTest {
 		assertFalse(CombatPolicy.unstuckEscapeTimedOut(110, 50));
 		assertTrue(CombatPolicy.unstuckEscapeTimedOut(111, 50));
 	}
+
+	// ---- 水中漂浮、溺水與水面目標 ----
+
+	@Test
+	void keepAfloatFloatsInOpenWaterOnlyWhenIdleOrSubmerged() {
+		// 浮在深水裡且無移動任務：保持按住空白鍵漂浮
+		assertTrue(CombatPolicy.shouldKeepAfloat(true, false, false, false, false, true, false));
+		// 踩在 2 格深水底(頭已浸水)：即使 onGround=true 也要浮起來
+		assertTrue(CombatPolicy.shouldKeepAfloat(true, true, true, false, false, true, false));
+		// 站在 1 格淺水裡且頭在水上：不要原地亂跳
+		assertFalse(CombatPolicy.shouldKeepAfloat(true, true, false, false, false, true, false));
+		// 不在水裡、乘載具、創造飛行、頭頂有冰/洞頂、或有任務／反射控制移動時皆不插手
+		assertFalse(CombatPolicy.shouldKeepAfloat(false, false, false, false, false, true, false));
+		assertFalse(CombatPolicy.shouldKeepAfloat(true, false, false, true, false, true, false));
+		assertFalse(CombatPolicy.shouldKeepAfloat(true, false, false, false, true, true, false));
+		assertFalse(CombatPolicy.shouldKeepAfloat(true, false, false, false, false, false, false));
+		assertFalse(CombatPolicy.shouldKeepAfloat(true, false, false, false, false, true, true));
+	}
+
+	@Test
+	void drowningSwimsStraightUpInOpenWaterAndPathsUnderCeiling() {
+		assertEquals(CombatPolicy.DrowningAction.SWIM_UP, CombatPolicy.drowningAction(true));
+		assertEquals(CombatPolicy.DrowningAction.PATH_TO_AIR, CombatPolicy.drowningAction(false));
+	}
+
+	@Test
+	void deepWaterAllowsHuntingFloatingPassiveMobsButBlocksHostilesAndSubmerged() {
+		// 主動狩獵浮在開放深水面的羊(waterBelow=true, waterAbove=false, targetSurfaceOpen=true)：允許
+		assertFalse(CombatPolicy.isBlockedDeepWaterTarget(false, true, true, false, false, false, true, false, true));
+		// 即使玩家短暫浸水，狩獵浮水面被動動物仍不立即中止(改由漂浮鍵上浮)
+		assertFalse(CombatPolicy.isBlockedDeepWaterTarget(false, true, true, false, true, false, true, false, true));
+		// 冰面下的羊(targetSurfaceOpen=false)：擋下
+		assertTrue(CombatPolicy.isBlockedDeepWaterTarget(false, true, true, false, false, false, true, false, false));
+		// 潛在水底的魚(waterAbove=true)不在射程內：擋下；在岸邊射程內且人未潛水：允許
+		assertTrue(CombatPolicy.isBlockedDeepWaterTarget(false, true, true, true, false, false, true, false, true));
+		assertFalse(CombatPolicy.isBlockedDeepWaterTarget(false, true, true, true, false, true, true, false, true));
+		// 敵對怪在深水(不論狩獵或自衛)：維持擋下(不在射程內時)
+		assertTrue(CombatPolicy.isBlockedDeepWaterTarget(false, true, true, false, false, false, true, true, true));
+		assertTrue(CombatPolicy.isBlockedDeepWaterTarget(false, true, true, false, false, false, false, true, true));
+		// 淺灘(1 格水)：不擋
+		assertFalse(CombatPolicy.isBlockedDeepWaterTarget(false, true, false, false, false, false, false, true, true));
+	}
+
+	@Test
+	void directWaterChaseOnlyWhenBothInOpenWaterWithSight() {
+		assertTrue(CombatPolicy.shouldDirectWaterChase(true, true, true));
+		assertFalse(CombatPolicy.shouldDirectWaterChase(false, true, true));
+		assertFalse(CombatPolicy.shouldDirectWaterChase(true, false, true));
+		assertFalse(CombatPolicy.shouldDirectWaterChase(true, true, false));
+	}
 }

@@ -6,6 +6,7 @@ import blockagent.game.ActionLog;
 import blockagent.game.Agent;
 import blockagent.game.Bari;
 import blockagent.game.Inv;
+import blockagent.game.WaterFloat;
 import blockagent.game.combat.Combat;
 import blockagent.mcp.ErrorCode;
 import net.minecraft.client.Minecraft;
@@ -40,6 +41,8 @@ public final class HuntTask extends Task {
 	private boolean attacked;
 	private Combat combat;
 	private boolean moving;
+	private boolean swimJumpHeld;
+	private boolean swimForwardHeld;
 
 	public HuntTask(Agent agent, LivingEntity target) {
 		super(agent, "hunt");
@@ -152,7 +155,12 @@ public final class HuntTask extends Task {
 		long sinceDeath = agent.tick() - deathTick;
 		if (closest == null) {
 			stopMoving();
-			if (sinceDeath < DROP_SPAWN_TICKS) return;
+			if (sinceDeath < DROP_SPAWN_TICKS) {
+				if (WaterFloat.needsSurfaceFloat(mc)) holdSwimKeys(mc, false);
+				else releaseSwimKeys(mc);
+				return;
+			}
+			releaseSwimKeys(mc);
 			if (pickedUp.isEmpty() && !dropsSeen) {
 				// 小動物、沒有掉落物的生物：打倒了就算完成(L6)
 				done("drops=none");
@@ -164,10 +172,40 @@ public final class HuntTask extends Task {
 			return;
 		}
 		if (sinceDeath >= PICKUP_TIMEOUT_TICKS) {
+			releaseSwimKeys(mc);
 			fail(ErrorCode.PATH_BLOCKED, "killed the target but some drops could not be picked up");
 			return;
 		}
+		if (WaterFloat.needsSurfaceFloat(mc) && mc.player.hasLineOfSight(closest)
+			&& WaterFloat.isOnWaterSurface(mc.level, closest)) {
+			stopMoving();
+			if (agent.control.userLooking()) {
+				holdSwimKeys(mc, false);
+			} else {
+				Moves.lookAt(mc.player, closest.position());
+				holdSwimKeys(mc, true);
+			}
+			return;
+		}
+		releaseSwimKeys(mc);
 		moveTo(closest.blockPosition(), 0);
+	}
+
+	private void holdSwimKeys(Minecraft mc, boolean forward) {
+		if (mc == null || mc.options == null) return;
+		mc.options.keyJump.setDown(true);
+		swimJumpHeld = true;
+		mc.options.keyUp.setDown(forward);
+		swimForwardHeld = forward;
+	}
+
+	private void releaseSwimKeys(Minecraft mc) {
+		if (mc != null && mc.options != null) {
+			if (swimJumpHeld) mc.options.keyJump.setDown(false);
+			if (swimForwardHeld) mc.options.keyUp.setDown(false);
+		}
+		swimJumpHeld = false;
+		swimForwardHeld = false;
 	}
 
 	private void moveTo(BlockPos pos, int range) {
@@ -189,12 +227,14 @@ public final class HuntTask extends Task {
 	@Override
 	protected void onSuspend(Minecraft mc) {
 		if (combat != null) combat.suspend(mc);
+		releaseSwimKeys(mc);
 		stopMoving();
 	}
 
 	@Override
 	protected void onStop(Minecraft mc) {
 		if (combat != null) combat.release(mc);
+		releaseSwimKeys(mc);
 		stopMoving();
 	}
 

@@ -34,6 +34,12 @@ public final class TaskRunner {
 		return current != null;
 	}
 
+	/** 是否有正在執行(未被反射暫停)且會控制移動的任務。 */
+	public boolean hasRunningMovingTask() {
+		Task t = current;
+		return t != null && !t.suspended && t.moves();
+	}
+
 	public Task current() {
 		return current;
 	}

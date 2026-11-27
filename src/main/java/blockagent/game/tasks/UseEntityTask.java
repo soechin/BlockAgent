@@ -2,6 +2,7 @@ package blockagent.game.tasks;
 
 import blockagent.game.Agent;
 import blockagent.game.Inv;
+import blockagent.game.WaterFloat;
 import blockagent.mcp.ErrorCode;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
@@ -40,6 +41,8 @@ public final class UseEntityTask extends EntityTask {
 	}
 
 	private BlockPos collectKey;
+	private boolean swimJumpHeld;
+	private boolean swimForwardHeld;
 
 	@Override
 	protected void start(Minecraft mc) {
@@ -49,6 +52,7 @@ public final class UseEntityTask extends EntityTask {
 	@Override
 	protected void onStop(Minecraft mc) {
 		super.onStop(mc);
+		releaseSwimKeys(mc);
 		// 撿東西時的走路不在 EntityTask 的記錄裡，取消時也要停下(H12)
 		blockagent.game.Bari.stopAll();
 	}
@@ -106,6 +110,21 @@ public final class UseEntityTask extends EntityTask {
 			}
 		}
 		if (closest != null && since < COLLECT_TICKS) {
+			if (WaterFloat.needsSurfaceFloat(mc) && mc.player.hasLineOfSight(closest)
+				&& WaterFloat.isOnWaterSurface(mc.level, closest)) {
+				if (collectKey != null || blockagent.game.Bari.busy()) {
+					blockagent.game.Bari.stopAll();
+					collectKey = null;
+				}
+				if (agent.control.userLooking()) {
+					holdSwimKeys(mc, false);
+				} else {
+					Moves.lookAt(mc.player, closest.position());
+					holdSwimKeys(mc, true);
+				}
+				return;
+			}
+			releaseSwimKeys(mc);
 			// 掉落物換了位置才重新規劃，不要每 tick 都重新尋路(H12)
 			BlockPos at = closest.blockPosition();
 			if (!at.equals(collectKey)) {
@@ -114,9 +133,31 @@ public final class UseEntityTask extends EntityTask {
 			}
 			return;
 		}
-		if (since < 10) return; // 等掉落物生成
+		if (since < 10) {
+			if (WaterFloat.needsSurfaceFloat(mc)) holdSwimKeys(mc, false);
+			else releaseSwimKeys(mc);
+			return; // 等掉落物生成
+		}
+		releaseSwimKeys(mc);
 		blockagent.game.Bari.stopAll();
 		String change = Inv.diff(before, Inv.summary(mc.player));
 		done(change.isEmpty() ? "" : "inv_change=" + change);
+	}
+
+	private void holdSwimKeys(Minecraft mc, boolean forward) {
+		if (mc == null || mc.options == null) return;
+		mc.options.keyJump.setDown(true);
+		swimJumpHeld = true;
+		mc.options.keyUp.setDown(forward);
+		swimForwardHeld = forward;
+	}
+
+	private void releaseSwimKeys(Minecraft mc) {
+		if (mc != null && mc.options != null) {
+			if (swimJumpHeld) mc.options.keyJump.setDown(false);
+			if (swimForwardHeld) mc.options.keyUp.setDown(false);
+		}
+		swimJumpHeld = false;
+		swimForwardHeld = false;
 	}
 }
