@@ -245,8 +245,8 @@ public final class MineTask extends Task {
 			if (state.getCollisionShape(mc.level, side).isEmpty()) exposed = true;
 			else if (!agent.guard.canPathBreak(side.getX(), side.getY(), side.getZ(), state)) protectedSides++;
 		}
-		String hint = exposed ? "mine does not break non-target solid walls; use dig_tunnel or break_block to open a path, or goto a clearer approach"
-			: protectedSides == 0 ? "mine only breaks target blocks and soft plants/leaves; use dig_tunnel(stairs_down|stairs_up|flat) to expose buried veins, or break_block if 1 block away"
+		String hint = exposed ? "inspect the route, or goto a clearer approach and retry"
+			: protectedSides == 0 ? "use inspect_area and break_block to expose the vein through nearby natural blocks"
 			: protectedSides == Direction.values().length ? "the vein is surrounded by protected blocks; choose another deposit"
 			: "use inspect_area and approach the vein from a side without protected blocks";
 		fail(ErrorCode.PATH_BLOCKED, label + " is unreachable for Baritone; nearest=" + blockagent.game.Fmt.pos(target)

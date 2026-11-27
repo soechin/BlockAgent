@@ -630,7 +630,7 @@ public final class Tools {
 				a.setStatusText(hudText(new Args(args).str("text"), STATUS_TEXT_MAX));
 				return ToolResult.ok("OK status_set");
 			});
-		taskTool(t, a, "goto", "Walk to a position without breaking blocks (still jumps/places to climb). Omit y to match x,z only and follow the surface.",
+		taskTool(t, a, "goto", "Walk to a position. Omit y to match x,z only and follow the surface (good for rough terrain).",
 			Hints.ACTION, Schema.object().integer("x", null, true).integer("y", null, false).integer("z", null, true)
 				.integer("range", "Arrival distance", false).range(0, 32).def(1),
 			args -> {
@@ -652,7 +652,7 @@ public final class Tools {
 					return r;
 				});
 			});
-		taskTool(t, a, "goto_block", "Walk next to the nearest block of a type without breaking blocks.",
+		taskTool(t, a, "goto_block", "Walk next to the nearest block of a type.",
 			Hints.ACTION, Schema.object().string("type", "Block id or group", true).integer("radius", null, false).range(4, 96).def(48),
 			args -> {
 				Args g = new Args(args);
@@ -829,9 +829,8 @@ public final class Tools {
 				for (String type : parseTypeList(g.str("block"), "block")) blocks.addAll(parseBlockGroup(type));
 				return act(a, "clear_area", args, mc -> clearArea(a, mc, region, blocks, g.bool("replace", false)));
 			});
-		taskTool(t, a, "mine", "Find exposed/reachable blocks, walk there, mine and pick them up until count is reached. "
-				+ "Only breaks target blocks and soft plants/leaves (never tunnels through solid stone/dirt; use dig_tunnel to reach buried ores). "
-				+ "Checks tool and inventory space first. Optional tool_match enforces a matching tool on target blocks.",
+		taskTool(t, a, "mine", "Find blocks, walk there, mine and pick them up until count is reached. Checks tool and inventory "
+				+ "space first. Optional tool_match enforces a matching tool on target blocks only (normal tools for clearing stone).",
 			Hints.DESTRUCTIVE, Schema.object().string("block", "Block id or group: log, stone, coal_ore, iron_ore (incl. deepslate)...", true)
 				.integer("count", null, true).range(1, 640).integer("radius", null, false).range(8, 96).def(48)
 				.bool("search", "If not enough are loaded, explore outward (up to 5 min)", false).def(false)

@@ -312,13 +312,13 @@ public class SecondWaveGameTest implements FabricClientGameTest {
 			return false;
 		}), "T17(e) 應使用絲綢之觸鎬挖除冰磚");
 
-		// mine 指定 fortune 挖鑽石礦：前方放樹葉(軟障礙)，驗證時運鎬只消耗在目標鑽石礦上(最多 2 點耐久)
-		BlockPos leaf1 = c.west(2);
-		BlockPos leaf2 = c.west(2).above();
+		// mine 指定 fortune 挖鑽石礦：前方放石頭，驗證時運鎬只消耗在目標鑽石礦上(最多 2 點耐久)
+		BlockPos stone1 = c.west(2);
+		BlockPos stone2 = c.west(2).above();
 		BlockPos dia1 = c.west(3);
 		BlockPos dia2 = c.west(3).above();
-		k.setBlock(leaf1, Blocks.OAK_LEAVES.defaultBlockState());
-		k.setBlock(leaf2, Blocks.OAK_LEAVES.defaultBlockState());
+		k.setBlock(stone1, Blocks.STONE.defaultBlockState());
+		k.setBlock(stone2, Blocks.STONE.defaultBlockState());
 		k.setBlock(dia1, Blocks.DIAMOND_ORE.defaultBlockState());
 		k.setBlock(dia2, Blocks.DIAMOND_ORE.defaultBlockState());
 		k.ctx.waitTicks(4);
@@ -340,8 +340,8 @@ public class SecondWaveGameTest implements FabricClientGameTest {
 			return diamonds && fortuneDmg > 0 && fortuneDmg <= 2;
 		}), "T17(e) 時運鎬應只用在鑽石礦(耐久損耗 1–2)且取得鑽石");
 
-		k.setBlock(leaf1, Blocks.AIR.defaultBlockState());
-		k.setBlock(leaf2, Blocks.AIR.defaultBlockState());
+		k.setBlock(stone1, Blocks.AIR.defaultBlockState());
+		k.setBlock(stone2, Blocks.AIR.defaultBlockState());
 		k.setBlock(dia1, Blocks.AIR.defaultBlockState());
 		k.setBlock(dia2, Blocks.AIR.defaultBlockState());
 		System.out.println("[ok] T17(e) break_block 與 mine 的 tool_match(silk_touch / fortune)");

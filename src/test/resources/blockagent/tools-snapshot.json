@@ -415,7 +415,7 @@
   },
   {
     "name": "goto",
-    "description": "Walk to a position without breaking blocks (still jumps/places to climb). Omit y to match x,z only and follow the surface.",
+    "description": "Walk to a position. Omit y to match x,z only and follow the surface (good for rough terrain).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -461,7 +461,7 @@
   },
   {
     "name": "goto_block",
-    "description": "Walk next to the nearest block of a type without breaking blocks.",
+    "description": "Walk next to the nearest block of a type.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -915,7 +915,7 @@
   },
   {
     "name": "mine",
-    "description": "Find exposed/reachable blocks, walk there, mine and pick them up until count is reached. Only breaks target blocks and soft plants/leaves (never tunnels through solid stone/dirt; use dig_tunnel to reach buried ores). Checks tool and inventory space first. Optional tool_match enforces a matching tool on target blocks.",
+    "description": "Find blocks, walk there, mine and pick them up until count is reached. Checks tool and inventory space first. Optional tool_match enforces a matching tool on target blocks only (normal tools for clearing stone).",
     "inputSchema": {
       "type": "object",
       "properties": {

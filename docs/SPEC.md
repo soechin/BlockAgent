@@ -64,7 +64,7 @@
   | `freeLook` | 平常 `false`；使用者 3 秒內用滑鼠轉過視角時 `true` | 平常鏡頭跟著 AI 的前進方向；使用者在看別的地方時，Baritone 只改移動方向、不轉鏡頭(S8.2a)。這個值每個 tick 由 `Control` 同步，不在 20 tick 的檢查裡 |
   | `chatDebug`, `desktopNotifications` | `false` | 不在聊天框或系統通知顯示除錯訊息 |
   | `useSwordToMine` | `false` | 不拿劍挖方塊，白白耗損耐久 |
-  | `allowBreak`, `allowPlace` | 平常 `true`；純移動(`goto`/`goto_block`)期間 `allowBreak=false`；清空區域(S4.8c)、建造時拆鷹架的期間兩者皆 `false` | 由目前任務決定(`Task.adjustBaritone`)，20 tick 的檢查重設時也照任務的需要，不會在拆鷹架或走路途中被改回 `true`；任務被反射暫停時照平常的設定 |
+  | `allowBreak`, `allowPlace` | 平常 `true`；清空區域(S4.8c)、建造時拆鷹架的期間 `false` | 由目前任務決定(`Task.adjustBaritone`)，20 tick 的檢查重設時也照任務的需要，不會在拆鷹架途中被改回 `true`；任務被反射暫停時照平常的設定 |
 
   - 啟動時確認 Baritone 的內部類別存在(`CalculationContext`、`BuilderProcess`、`ToolSet`)。找不到表示裝的是混淆版(`baritone-standalone-fabric`)，S1.5 的 Mixin 會靜默失效：記錄錯誤，並在進入世界時於聊天欄(只顯示在自己的畫面)用紅字提醒改裝 unoptimized 版(docs/REVIEW.md H10)。
   - 任務改了的 Baritone 設定(`exploreForBlocks`、`buildInLayers`、`layerOrder`、`maxFallHeightNoWater`、`allowBreak`、`allowPlace`)在任務結束時用 `try/finally` 還原，被反射暫停後恢復時重新套用。
@@ -292,7 +292,7 @@ flowchart TD
 
 | 工具 | 一件事 | 開始前檢查 | 需求 |
 |---|---|---|---|
-| `mine(block, count, radius=48, search=false, tool_match?)` | 找到露出或可到達的指定方塊，走過去、挖、撿起來，直到數量達到。僅破目標方塊本身與天然軟障礙(樹葉、草花、薄雪、蜘蛛網等)，不穿透非目標實心石牆／泥土亂鑽；埋藏礦脈改由 `dig_tunnel` 開道接近。`block` 可以是方塊 id 或群組(`log`、`stone`、`coal_ore`、`iron_ore`…)；選填 `tool_match` 只對目標方塊強制使用符合條件的工具(S4.2i) | 有沒有挖得動的工具(含 `tool_match`)；背包空間；已載入範圍內有沒有足夠的目標(沒有就 `NOT_FOUND`，加 `search=true` 才會往外找，最多 5 分鐘) | M2.1, M2.8, M2.9 |
+| `mine(block, count, radius=48, search=false, tool_match?)` | 找到指定方塊，走過去、挖、撿起來，直到數量達到。`block` 可以是方塊 id 或群組(`log`、`stone`、`coal_ore`、`iron_ore`…)；選填 `tool_match` 只對目標方塊強制使用符合條件的工具(S4.2i) | 有沒有挖得動的工具(含 `tool_match`)；背包空間；已載入範圍內有沒有足夠的目標(沒有就 `NOT_FOUND`，加 `search=true` 才會往外找，最多 5 分鐘) | M2.1, M2.8, M2.9 |
 | `dig_tunnel(mode, direction, length=16, target_y?, torch_every=8, stop_on?, tool_match?)` | 系統性地下挖礦(S4.2j)：以逐格步進方式開 `stairs_down`(1×3 階梯下挖)、`stairs_up`(1×3 階梯上挖)或 `flat`(1×2 水平礦道)，每步動鎬前檢查岩漿、水流、深坑與受保護方塊，依 `torch_every` 自動插火把、遇 `stop_on` 礦脈即停，並一律回報沿途露出的礦脈清單 | 方向/長度上限(`torch_every=0` 限最多 12 格)；`torch_every > 0` 須有火把；挖掘工具與背包空間 | M2.1, M2.8, M2.9, M5.2 |
 | `hunt(target)` | 追蹤指定 entity id 或生物種類(48 格內最近)的生物並打倒，擊殺後走近並撿取掉落物。敵對生物照 S9.1b 的戰術打(苦力怕打了就退、遠程怪舉盾衝過去、有弓就射)，其他生物走近用劍或斧頭打 | 目標消失、攻擊被守衛擋下，或擊殺後未能撿取時回報原因 |
 | `craft(item, count=1)` | 合成。優先使用伸手可及的工作台，其次從 16 格內選自有或其他工作台。高危險時使用手邊工作台，或從背包就近放置。每一批最多做到材料的堆疊上限那麼多次(弓 1、雪球 16)；放進合成格的數量、拿出來的數量都照格子實際的變化算，背包滿了拿不出來就照實回報 | 用配方資料計算所需材料(包括做工作台的木板)；不夠就回報缺什麼 | M2.1, M2.8, M2.9 |

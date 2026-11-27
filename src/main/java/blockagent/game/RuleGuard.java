@@ -138,8 +138,6 @@ public final class RuleGuard {
 	/**
 	 * Baritone 尋路時這格能不能順手拆掉(R5)：canBreak 必須放行，而且非天然的自有建築方塊
 	 * (木板、圓石、門、床、箱子、熔爐等)一律不准尋路拆毀，除非是進行中 BuildTask 正要清除的格子。
-	 * 進行中 MineTask 僅允許破壞目標方塊本身與天然軟障礙(樹葉、草花、薄雪、蜘蛛網等)，
-	 * 避免 Baritone 在地下穿透實心石牆亂鑽暗坑破壞礦道。
 	 * 主動拆除(break_block、demolish、clear_area)不走尋路，不受影響。Baritone 尋路執行緒會呼叫，只讀執行緒安全的資料。
 	 */
 	public boolean canPathBreak(int x, int y, int z, BlockState state) {
@@ -147,20 +145,8 @@ public final class RuleGuard {
 		if (!canBreak(x, y, z, state).allowed()) return false;
 		var t = agent.tasks.current();
 		if (t instanceof BuildTask build && build.isClearing(x, y, z)) return true;
-		if (t instanceof blockagent.game.tasks.MineTask mine) {
-			if (mine.isMineTarget(state)) return true;
-			return isNatural(state) && isSoftPathObstacle(state);
-		}
+		if (t instanceof blockagent.game.tasks.MineTask mine && mine.isMineTarget(state)) return true;
 		return isNatural(state);
-	}
-
-	/** 採礦尋路可順手清開的天然軟障礙：樹葉、可替換植披/薄雪、一碰即碎的天然植物、蜘蛛網。 */
-	public static boolean isSoftPathObstacle(BlockState state) {
-		return state.canBeReplaced()
-			|| state.getBlock() instanceof net.minecraft.world.level.block.LeavesBlock
-			|| state.is(net.minecraft.world.level.block.Blocks.SNOW)
-			|| state.is(net.minecraft.world.level.block.Blocks.COBWEB)
-			|| state.getBlock().defaultDestroyTime() == 0.0f;
 	}
 
 	/** S7.3b：放置的目標格是空氣或可替換方塊才行；會覆蓋其他方塊的，比照破壞判斷。 */

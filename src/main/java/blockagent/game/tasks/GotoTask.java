@@ -1,6 +1,5 @@
 package blockagent.game.tasks;
 
-import baritone.api.BaritoneAPI;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalXZ;
 import blockagent.game.ActionLog;
@@ -49,7 +48,6 @@ public final class GotoTask extends Task {
 	private final Integer targetY;
 	private int idleTicks;
 	private double bestHeuristic = Double.POSITIVE_INFINITY;
-	private boolean oldAllowBreak = true;
 	private final ShoreExit shore = new ShoreExit();
 	private int shoreAttempts;
 	private long escapeWatchArmedAt = Long.MIN_VALUE / 2;
@@ -101,18 +99,8 @@ public final class GotoTask extends Task {
 
 	@Override
 	protected void start(Minecraft mc) {
-		var settings = BaritoneAPI.getSettings();
-		oldAllowBreak = settings.allowBreak.value;
-		settings.allowBreak.value = false;
 		bestHeuristic = goal.heuristic(mc.player.blockPosition());
 		Bari.b().getCustomGoalProcess().setGoalAndPath(goal);
-	}
-
-	/** 純移動期間不破壞方塊(避免毀壞礦道或地形)；被反射暫停時不套用(S1.4)。 */
-	@Override
-	public void adjustBaritone(baritone.api.Settings s) {
-		if (suspended) return;
-		s.allowBreak.value = false;
 	}
 
 	@Override
@@ -134,8 +122,7 @@ public final class GotoTask extends Task {
 		var b = Bari.b();
 		if (!b.getCustomGoalProcess().isActive() && !b.getPathingBehavior().isPathing()) {
 			if (++idleTicks > 20 && !startShoreExit(mc)) {
-				fail(ErrorCode.PATH_BLOCKED, "no path to " + where + " (blocked, too far, or chunks not loaded)",
-					"goto does not break blocks; inspect the route, clear a single obstacle with break_block, or use dig_tunnel(stairs_down|stairs_up|flat)");
+				fail(ErrorCode.PATH_BLOCKED, "no path to " + where + " (blocked, too far, or chunks not loaded)");
 			}
 		} else {
 			idleTicks = 0;
@@ -224,20 +211,9 @@ public final class GotoTask extends Task {
 	}
 
 	@Override
-	protected void onSuspend(Minecraft mc) {
+	protected void onStop(Minecraft mc) {
 		shore.stop(mc);
 		Bari.stopAll();
-		BaritoneAPI.getSettings().allowBreak.value = oldAllowBreak;
-	}
-
-	@Override
-	protected void onStop(Minecraft mc) {
-		try {
-			shore.stop(mc);
-			Bari.stopAll();
-		} finally {
-			BaritoneAPI.getSettings().allowBreak.value = oldAllowBreak;
-		}
 	}
 
 	static boolean shouldShiftEscapeWatch(long watchUntil, long armedAt, long suspendedAt) {
@@ -256,7 +232,6 @@ public final class GotoTask extends Task {
 
 	@Override
 	protected void onResume(Minecraft mc) {
-		adjustBaritone(BaritoneAPI.getSettings());
 		if (agent.tick() < escapeWatchUntil) routeThreats = agent.danger.snapshot();
 		Bari.b().getCustomGoalProcess().setGoalAndPath(goal);
 	}
