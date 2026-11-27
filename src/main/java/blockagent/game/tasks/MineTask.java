@@ -24,6 +24,8 @@ public final class MineTask extends Task {
 	private final int count;
 	private final int radius;
 	private final boolean search;
+	/** Baritone 尋路執行緒會讀：指定附魔或耐久篩選工具(不可變物件，執行緒安全，S4.2i)。 */
+	private final blockagent.core.ItemMatcher toolMatcher;
 	/** Baritone 尋路執行緒會讀：開工時的起點座標(不變物件)，用來在 search=false 時把開採目標限制在 radius 內。 */
 	private volatile BlockPos origin;
 	private int mined;
@@ -66,6 +68,11 @@ public final class MineTask extends Task {
 	}
 
 	public MineTask(Agent agent, List<Block> blocks, String label, int count, int radius, boolean search) {
+		this(agent, blocks, label, count, radius, search, blockagent.core.ItemMatcher.ANY);
+	}
+
+	public MineTask(Agent agent, List<Block> blocks, String label, int count, int radius, boolean search,
+					blockagent.core.ItemMatcher toolMatcher) {
 		super(agent, "mine");
 		this.blocks = blocks;
 		this.blockSet = Set.copyOf(blocks);
@@ -73,7 +80,13 @@ public final class MineTask extends Task {
 		this.count = count;
 		this.radius = radius;
 		this.search = search;
+		this.toolMatcher = toolMatcher == null ? blockagent.core.ItemMatcher.ANY : toolMatcher;
 		if (search) this.timeoutTicks = Math.min(timeoutTicks, 5 * 60 * 20L + count * 60 * 20L);
+	}
+
+	/** Baritone 尋路執行緒會讀：本次採礦指定的工具條件(S4.2i)。 */
+	public blockagent.core.ItemMatcher toolMatcher() {
+		return toolMatcher;
 	}
 
 	/** 目標座標是否在起點半徑內(純邏輯，供單元測試直接驗證)。 */
@@ -128,6 +141,20 @@ public final class MineTask extends Task {
 	private boolean ensureTool(Minecraft mc) {
 		if (blockagent.game.Creative.isCreative(mc)) return true;
 		BlockState st = blocks.getFirst().defaultBlockState();
+		if (!toolMatcher.isAny()) {
+			if (blockagent.game.Inv.findBestMiningTool(mc.player, st, toolMatcher, false) < 0
+				&& blockagent.game.Inv.canMineWithTool(mc.player.getOffhandItem(), st, toolMatcher)) {
+				if (mc.player.containerMenu != mc.player.inventoryMenu) mc.player.closeContainer();
+				blockagent.game.Inv.pullOffhandToMain(mc, s -> blockagent.game.Inv.canMineWithTool(s, st, toolMatcher));
+			}
+			int slot = blockagent.game.Inv.ensureHotbarTool(mc, st, toolMatcher);
+			if (slot < 0) {
+				fail(ErrorCode.MISSING_TOOL, "no suitable tool matching " + toolMatcher.raw() + " left for " + label,
+					"craft or equip a matching tool first");
+				return false;
+			}
+			return true;
+		}
 		int slot = blockagent.game.Inv.ensureHotbarTool(mc, st);
 		if (st.requiresCorrectToolForDrops() && slot < 0
 			&& blockagent.game.Inv.find(mc.player, s -> s.isCorrectToolForDrops(st)) < 0) {

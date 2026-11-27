@@ -23,6 +23,17 @@ public abstract class ToolSetMixin {
 		if (agent == null || !agent.session.isRunning()) return;
 		var p = Minecraft.getInstance().player;
 		if (p == null) return;
+		// S4.2i：mine 指定 tool_match 時，僅對目標方塊強制選符合條件的快捷列工具；開路石材仍沿用一般最快鎬
+		if (agent.tasks.current() instanceof blockagent.game.tasks.MineTask mineTask) {
+			var matcher = mineTask.toolMatcher();
+			if (matcher != null && !matcher.isAny() && mineTask.isMineTarget(block.defaultBlockState())) {
+				int matched = Inv.findHotbarMiningTool(p, block.defaultBlockState(), matcher);
+				if (matched >= 0) {
+					cir.setReturnValue(matched);
+					return;
+				}
+			}
+		}
 		int slot = cir.getReturnValueI();
 		if (slot < 0 || slot > 8 || Inv.worthDigging(p.getInventory().getItem(slot), block.defaultBlockState())) return;
 		int spare = Inv.spareHotbarSlot(p);

@@ -6,19 +6,25 @@ import blockagent.core.ChatPolicy;
 import blockagent.core.EventQueue;
 import blockagent.core.ItemMatcher;
 import blockagent.core.Recipes;
+import blockagent.core.TunnelPlanner;
+import blockagent.core.WorkstationPolicy;
 import blockagent.game.reflex.Reflexes;
+import blockagent.game.tasks.AnvilTask;
 import blockagent.game.tasks.BreakTask;
 import blockagent.game.tasks.BuildTask;
 import blockagent.game.tasks.ClearAreaTask;
 import blockagent.game.tasks.CommandBlockTask;
 import blockagent.game.tasks.CommandBuildTask;
 import blockagent.game.tasks.CraftTask;
+import blockagent.game.tasks.DigTunnelTask;
 import blockagent.game.tasks.DismountTask;
 import blockagent.game.tasks.EatTask;
+import blockagent.game.tasks.EnchantTask;
 import blockagent.game.tasks.FarmTask;
 import blockagent.game.tasks.FishTask;
 import blockagent.game.tasks.FollowTask;
 import blockagent.game.tasks.GotoTask;
+import blockagent.game.tasks.GrindstoneTask;
 import blockagent.game.tasks.HuntTask;
 import blockagent.game.tasks.LecternReadTask;
 import blockagent.game.tasks.MineTask;
@@ -259,6 +265,9 @@ public final class Tools {
 			}
 			case "stone" -> {
 				return List.of(Blocks.STONE);
+			}
+			case "any_ore", "ores" -> {
+				return TaggedBlocks.allOres();
 			}
 			default -> {
 			}
@@ -656,11 +665,15 @@ public final class Tools {
 					return ToolResult.ok(Kv.of("OK looking").put("pos", Fmt.pos(p)).put("face", Fmt.facing(mc.player.getYRot())));
 				});
 			});
-		taskTool(t, a, "break_block", "Break one block within reach (usually a few seconds).", Hints.DESTRUCTIVE, xyz(Schema.object()),
+		taskTool(t, a, "break_block", "Break one block within reach (usually a few seconds). Optional tool_match selects a specific "
+				+ "tool by enchantment/durability (e.g. silk_touch, fortune).",
+			Hints.DESTRUCTIVE, xyz(Schema.object())
+				.string("tool_match", "Optional tool filter: silk_touch, fortune, efficiency:3, best_dur...", false),
 			args -> {
 				Args g = new Args(args);
 				BlockPos p = pos(g, "");
 				boolean replace = g.bool("replace", false);
+				ItemMatcher toolMatcher = parseNamedMatch(g, "tool_match");
 				return act(a, "break_block", args, mc -> {
 					boolean direct = BuildCommands.available(mc);
 					if (!BuildCommands.validTarget(mc.level, p)) return invalidBlockTarget(p);
@@ -672,7 +685,14 @@ public final class Tools {
 						return a.tasks.start(new CommandBlockTask(a, mc.level, p, before, Blocks.AIR.defaultBlockState()), replace, null);
 					}
 					if (!Moves.canReach(mc.player, p)) return tooFar(p);
-					return a.tasks.start(new BreakTask(a, p), replace, null);
+					if (!toolMatcher.isAny() && !Creative.isCreative(mc)
+						&& Inv.findBestMiningTool(mc.player, before, toolMatcher, true) < 0) {
+						return ToolResult.error(ErrorCode.MISSING_TOOL,
+							Kv.of().put("block", RuleGuard.shortId(before)).put("tool_match", toolMatcher.raw()),
+							"no suitable tool matching " + toolMatcher.raw() + " in inventory",
+							"equip or craft a matching tool, or omit tool_match");
+					}
+					return a.tasks.start(new BreakTask(a, p, toolMatcher), replace, null);
 				});
 			});
 		taskTool(t, a, "place_block", "Place a block item at a position within reach, next to a solid face; waits for server "
@@ -801,10 +821,11 @@ public final class Tools {
 				return act(a, "clear_area", args, mc -> clearArea(a, mc, region, blocks, g.bool("replace", false)));
 			});
 		taskTool(t, a, "mine", "Find blocks, walk there, mine and pick them up until count is reached. Checks tool and inventory "
-				+ "space first.",
+				+ "space first. Optional tool_match enforces a matching tool on target blocks only (normal tools for clearing stone).",
 			Hints.DESTRUCTIVE, Schema.object().string("block", "Block id or group: log, stone, coal_ore, iron_ore (incl. deepslate)...", true)
 				.integer("count", null, true).range(1, 640).integer("radius", null, false).range(8, 96).def(48)
-				.bool("search", "If not enough are loaded, explore outward (up to 5 min)", false).def(false),
+				.bool("search", "If not enough are loaded, explore outward (up to 5 min)", false).def(false)
+				.string("tool_match", "Optional tool filter for target blocks: fortune, silk_touch, best_dur...", false),
 			args -> {
 				Args g = new Args(args);
 				List<Block> blocks = parseBlockGroup(g.str("block"));
@@ -812,10 +833,18 @@ public final class Tools {
 				int r = g.integer("radius", 48, 8, 96);
 				boolean search = g.bool("search", false);
 				String label = g.str("block");
+				ItemMatcher toolMatcher = parseNamedMatch(g, "tool_match");
 				return act(a, "mine", args, mc -> {
 					BlockState st = blocks.getFirst().defaultBlockState();
 					boolean creative = Creative.isCreative(mc);
-					if (st.requiresCorrectToolForDrops() && !creative) {
+					if (!toolMatcher.isAny() && !creative) {
+						if (Inv.findBestMiningTool(mc.player, st, toolMatcher, true) < 0) {
+							return ToolResult.error(ErrorCode.MISSING_TOOL,
+								Kv.of().put("block", label).put("tool_match", toolMatcher.raw()),
+								"no suitable tool matching " + toolMatcher.raw() + " in inventory",
+								"craft or enchant a matching tool, or omit tool_match");
+						}
+					} else if (st.requiresCorrectToolForDrops() && !creative) {
 						boolean ok = Inv.find(mc.player, s -> s.isCorrectToolForDrops(st)) >= 0;
 						if (!ok) {
 							String need = toolHint(st);
@@ -831,15 +860,44 @@ public final class Tools {
 					if (found.isEmpty() && !search) return notFoundBlocks(label, r);
 					List<String> warnings = new ArrayList<>();
 					if (found.size() < count) warnings.add(search ? "not enough loaded; will search outward" : "not enough loaded; may stop early");
-					if (!creative && !st.requiresCorrectToolForDrops()) {
+					if (!creative && toolMatcher.isAny() && !st.requiresCorrectToolForDrops()) {
 						var tag = st.is(BlockTags.MINEABLE_WITH_AXE) ? ItemTags.AXES
 							: st.is(BlockTags.MINEABLE_WITH_SHOVEL) ? ItemTags.SHOVELS : null;
 						if (tag != null && Inv.find(mc.player, stack -> stack.is(tag)) < 0) warnings.add("no " + toolHint(st) + " in inventory");
 					}
 					Kv pre = Kv.of().put("found", found.size() + (found.size() >= count ? "+" : ""))
 						.putIf(!warnings.isEmpty(), "warn", String.join("; ", warnings)).raw(Creative.noDropsNote(mc));
-					return a.tasks.start(new MineTask(a, blocks, label, count, r, search), g.bool("replace", false), pre.toString());
+					return a.tasks.start(new MineTask(a, blocks, label, count, r, search, toolMatcher), g.bool("replace", false), pre.toString());
 				});
+			});
+		taskTool(t, a, "dig_tunnel", "Dig a stepped 1x3 staircase (stairs) or 1x2 horizontal tunnel (straight) step by step. Checks "
+				+ "ahead for lava, water, drops, protected blocks and optional stop_on ores before swinging, places torches every "
+				+ "torch_every steps (torch_every=0 is limited to 12 steps), and reports all ores exposed along the tunnel.",
+			Hints.DESTRUCTIVE, Schema.object()
+				.enumString("mode", "stairs (descend 1x3) or straight (level 1x2)", true, "stairs", "straight")
+				.enumString("direction", null, true, "north", "south", "east", "west")
+				.integer("length", "Max steps (1-64; max 12 when torch_every=0)", false).range(1, TunnelPlanner.MAX_LENGTH).def(TunnelPlanner.DEFAULT_LENGTH)
+				.integer("target_y", "Stop at this y (stairs only)", false).range(-64, 320)
+				.integer("torch_every", "Auto-place torch every N steps in darkness (0=unlit, max 12 steps)", false).range(0, TunnelPlanner.MAX_TORCH_EVERY).def(TunnelPlanner.DEFAULT_TORCH_EVERY)
+				.string("stop_on", "Comma-separated ore ids/groups to stop before breaking (e.g. diamond_ore, any_ore)", false)
+				.string("tool_match", "Optional tool filter for digging the tunnel", false),
+			args -> {
+				Args g = new Args(args);
+				TunnelPlanner.Mode mode = "stairs".equals(g.str("mode")) ? TunnelPlanner.Mode.STAIRS
+					: "straight".equals(g.str("mode")) ? TunnelPlanner.Mode.STRAIGHT : null;
+				TunnelPlanner.Dir dir = TunnelPlanner.Dir.parse(g.str("direction"));
+				if (mode == null) throw new Args.BadArgument("mode must be stairs or straight");
+				if (dir == null) throw new Args.BadArgument("direction must be north, south, east or west");
+				int length = g.integer("length", TunnelPlanner.DEFAULT_LENGTH, 1, TunnelPlanner.MAX_LENGTH);
+				Integer targetY = g.has("target_y") ? g.integer("target_y", 0, -64, 320) : null;
+				int torchEvery = g.integer("torch_every", TunnelPlanner.DEFAULT_TORCH_EVERY, 0, TunnelPlanner.MAX_TORCH_EVERY);
+				Set<Block> stopOn = new java.util.LinkedHashSet<>();
+				if (g.has("stop_on")) {
+					for (String type : parseTypeList(g.str("stop_on"), "stop_on")) stopOn.addAll(parseBlockGroup(type));
+				}
+				ItemMatcher toolMatcher = parseNamedMatch(g, "tool_match");
+				boolean replace = g.bool("replace", false);
+				return act(a, "dig_tunnel", args, mc -> digTunnel(a, mc, mode, dir, length, targetY, torchEvery, stopOn, toolMatcher, replace));
 			});
 		taskTool(t, a, "craft", "Craft items. Prefers a reachable or owned crafting table; can place one nearby from inventory "
 				+ "materials. Missing materials are reported up front; it never gathers.",
@@ -1166,6 +1224,87 @@ public final class Tools {
 					}
 					return a.tasks.start(new StationTask(a, mode, p, entries, pullOffhandKeep), g.bool("replace", false), null);
 				});
+			});
+		taskTool(t, a, "enchant", "Use an enchanting table within 32 blocks (prefers own; omit x,y,z to auto-find). action=preview "
+				+ "reads the 3 offers, clues and max_level (to verify 15 bookshelves = 30) and returns the item to inventory; "
+				+ "action=apply spends lapis_lazuli and levels on option 1, 2 or 3.",
+			Hints.ACTION, Schema.object()
+				.enumString("action", "preview or apply", true, "preview", "apply")
+				.string("item", "Item id to enchant (incl. offhand)", true)
+				.string("match", "Optional attribute filter", false)
+				.integer("option", "Enchant slot 1-3 (required for apply)", false).range(1, 3)
+				.integer("x", "Optional table x", false).integer("y", "Optional table y", false).integer("z", "Optional table z", false),
+			args -> {
+				Args g = new Args(args);
+				String action = g.str("action");
+				EnchantTask.Mode mode = switch (action) {
+					case "preview" -> EnchantTask.Mode.PREVIEW;
+					case "apply" -> EnchantTask.Mode.APPLY;
+					default -> throw new Args.BadArgument("action must be preview or apply");
+				};
+				Item item = parseItem(g.str("item"));
+				ItemMatcher matcher = parseMatch(g);
+				int option = 0;
+				if (mode == EnchantTask.Mode.APPLY) {
+					if (!g.has("option")) throw new Args.BadArgument("action=apply requires option (1-3)");
+					option = g.integer("option", 1, 1, 3);
+				}
+				BlockPos target = optionalPos(g);
+				boolean replace = g.bool("replace", false);
+				int finalOption = option;
+				return act(a, "enchant", args, mc -> enchant(a, mc, mode, item, matcher, finalOption, target, replace));
+			});
+		taskTool(t, a, "anvil", "Use an anvil within 32 blocks (prefers own; anyone's anvil allowed; omit x,y,z to auto-find). "
+				+ "action=preview reports result, level cost and too_expensive; action=apply combines items/books, repairs or renames "
+				+ "(incl. name_tag).",
+			Hints.ACTION, Schema.object()
+				.enumString("action", "preview or apply", true, "preview", "apply")
+				.string("item", "Left slot item id (incl. offhand)", true)
+				.string("match", "Optional filter for item", false)
+				.string("second_item", "Optional right slot item id (book, tool, repair material)", false)
+				.string("second_match", "Optional filter for second_item", false)
+				.string("rename", "Optional new name (max 50 chars); at least second_item or rename is required", false)
+				.integer("x", "Optional anvil x", false).integer("y", "Optional anvil y", false).integer("z", "Optional anvil z", false),
+			args -> {
+				Args g = new Args(args);
+				String action = g.str("action");
+				AnvilTask.Mode mode = switch (action) {
+					case "preview" -> AnvilTask.Mode.PREVIEW;
+					case "apply" -> AnvilTask.Mode.APPLY;
+					default -> throw new Args.BadArgument("action must be preview or apply");
+				};
+				Item item = parseItem(g.str("item"));
+				ItemMatcher matcher = parseMatch(g);
+				Item secondItem = g.has("second_item") ? parseItem(g.str("second_item")) : null;
+				ItemMatcher secondMatcher = secondItem != null ? parseNamedMatch(g, "second_match") : ItemMatcher.ANY;
+				String rename = g.has("rename") ? g.str("rename") : null;
+				if (secondItem == null && rename == null) {
+					throw new Args.BadArgument("anvil requires at least second_item or rename");
+				}
+				if (rename != null && rename.length() > net.minecraft.world.inventory.AnvilMenu.MAX_NAME_LENGTH) {
+					throw new Args.BadArgument("rename must be at most " + net.minecraft.world.inventory.AnvilMenu.MAX_NAME_LENGTH + " characters");
+				}
+				BlockPos target = optionalPos(g);
+				boolean replace = g.bool("replace", false);
+				return act(a, "anvil", args, mc -> anvil(a, mc, mode, item, matcher, secondItem, secondMatcher, rename, target, replace));
+			});
+		taskTool(t, a, "grindstone", "Use a grindstone within 32 blocks (prefers own; omit x,y,z to auto-find) to disenchant an item "
+				+ "for XP or combine-repair two identical items while removing non-curse enchantments.",
+			Hints.ACTION, Schema.object()
+				.string("item", "Item id (incl. offhand)", true)
+				.string("match", "Optional filter for item", false)
+				.string("second_item", "Optional second identical item id to combine-repair", false)
+				.string("second_match", "Optional filter for second_item", false)
+				.integer("x", "Optional grindstone x", false).integer("y", "Optional grindstone y", false).integer("z", "Optional grindstone z", false),
+			args -> {
+				Args g = new Args(args);
+				Item item = parseItem(g.str("item"));
+				ItemMatcher matcher = parseMatch(g);
+				Item secondItem = g.has("second_item") ? parseItem(g.str("second_item")) : null;
+				ItemMatcher secondMatcher = secondItem != null ? parseNamedMatch(g, "second_match") : ItemMatcher.ANY;
+				BlockPos target = optionalPos(g);
+				boolean replace = g.bool("replace", false);
+				return act(a, "grindstone", args, mc -> grindstone(a, mc, item, matcher, secondItem, secondMatcher, target, replace));
 			});
 	}
 
@@ -1698,6 +1837,13 @@ public final class Tools {
 					fuel = s.getItem();
 				}
 			}
+			// 沒有其他燃料時，若原料本身可燃且扣掉要燒的數量後仍有餘量(例如只帶原木燒木炭)，允許用剩餘原料當燃料(S4.2e)
+			if (fuel == null && input.getDefaultInstance().has(DataComponents.COOKING_FUEL)) {
+				int fallbackNeed = SmeltTask.fuelNeeded(input, count);
+				if (WorkstationPolicy.canUseInputAsFallbackFuel(true, haveInput, count, fallbackNeed)) {
+					fuel = input;
+				}
+			}
 			if (fuel == null) return ToolResult.error(ErrorCode.MISSING_MATERIALS, "no fuel in inventory", "get coal, charcoal, logs or planks");
 		}
 		int need = SmeltTask.fuelNeeded(fuel, count);
@@ -1826,5 +1972,199 @@ public final class Tools {
 		Kv pre = Kv.of().put("plant", ground.size()).putIf(skipped > 0, "skipped", skipped).putIf(others > 0, "others", others)
 			.putIf(!water, "note", "no water within 4 blocks; farmland will dry out");
 		return a.tasks.start(new FarmTask(a, FarmTask.Mode.TILL_AND_PLANT, ground, seed, false), replace, pre.toString());
+	}
+
+	private static ItemMatcher parseNamedMatch(Args g, String key) {
+		if (!g.has(key)) return ItemMatcher.ANY;
+		try {
+			return ItemMatcher.parse(g.str(key));
+		} catch (IllegalArgumentException e) {
+			throw new Args.BadArgument(e.getMessage());
+		}
+	}
+
+	private static BlockPos optionalPos(Args g) {
+		boolean hx = g.has("x"), hy = g.has("y"), hz = g.has("z");
+		if (!hx && !hy && !hz) return null;
+		if (!hx || !hy || !hz) throw new Args.BadArgument("x, y and z must all be provided together");
+		return pos(g, "");
+	}
+
+	private static BlockPos findWorkstation(Agent a, Minecraft mc, List<Block> blocks, int radius) {
+		List<BlockPos> own = Moves.scan(mc, blocks, radius, 1, a.guard::isOwned);
+		if (!own.isEmpty()) return own.getFirst();
+		List<BlockPos> any = Moves.scan(mc, blocks, radius, 1, null);
+		return any.isEmpty() ? null : any.getFirst();
+	}
+
+	private static ToolResult enchant(Agent a, Minecraft mc, EnchantTask.Mode mode, Item item, ItemMatcher matcher,
+									  int option, BlockPos target, boolean replace) {
+		BlockPos station = target;
+		if (station != null) {
+			BlockState st = mc.level.getBlockState(station);
+			if (!st.is(Blocks.ENCHANTING_TABLE)) {
+				return ToolResult.error(ErrorCode.NOT_FOUND, Kv.of().put("pos", Fmt.pos(station)).put("block", RuleGuard.shortId(st)),
+					"not an enchanting_table", "find_blocks type=enchanting_table");
+			}
+		} else {
+			station = findWorkstation(a, mc, List.of(Blocks.ENCHANTING_TABLE), 32);
+			if (station == null) {
+				return ToolResult.error(ErrorCode.NO_STATION, Kv.of().put("radius", 32),
+					"no enchanting_table within 32 blocks", "place an enchanting_table nearby");
+			}
+		}
+		int haveItem = Inv.countWithOffhand(mc.player, item, matcher);
+		if (haveItem < 1) return missingItem(item, 0, 1, matcher);
+		boolean creative = Creative.isCreative(mc);
+		if (mode == EnchantTask.Mode.APPLY && !creative) {
+			int haveLapis = Inv.countWithOffhand(mc.player, Items.LAPIS_LAZULI);
+			if (haveLapis < option) return missingItem(Items.LAPIS_LAZULI, haveLapis, option);
+		}
+		boolean needsOffhand = Inv.count(mc.player, item, matcher) < 1
+			|| (mode == EnchantTask.Mode.APPLY && !creative && Inv.count(mc.player, Items.LAPIS_LAZULI) < option);
+		java.util.function.Predicate<ItemStack> pullOffhandKeep = null;
+		if (needsOffhand) {
+			java.util.function.Predicate<ItemStack> keep = s -> Inv.matches(s, item, matcher)
+				|| (mode == EnchantTask.Mode.APPLY && s.is(Items.LAPIS_LAZULI));
+			if (Inv.findOffhandPullSlot(mc.player, keep) < 0) {
+				return ToolResult.error(ErrorCode.MISSING_MATERIALS, Kv.of().put("free_slots", 0),
+					"a needed item is in the offhand and the main inventory is full", "drop or store one item, then enchant again");
+			}
+			pullOffhandKeep = keep;
+		}
+		Kv pre = Kv.of().put("table", Fmt.pos(station)).put("owner", Fmt.owner(a, station, mc.level.getBlockState(station)));
+		return a.tasks.start(new EnchantTask(a, mode, station, item, matcher, option, pullOffhandKeep), replace, pre.toString());
+	}
+
+	private static ToolResult anvil(Agent a, Minecraft mc, AnvilTask.Mode mode, Item item, ItemMatcher matcher,
+									Item secondItem, ItemMatcher secondMatcher, String rename, BlockPos target, boolean replace) {
+		List<Block> anvils = List.of(Blocks.ANVIL, Blocks.CHIPPED_ANVIL, Blocks.DAMAGED_ANVIL);
+		BlockPos station = target;
+		if (station != null) {
+			BlockState st = mc.level.getBlockState(station);
+			if (!st.is(BlockTags.ANVIL)) {
+				return ToolResult.error(ErrorCode.NOT_FOUND, Kv.of().put("pos", Fmt.pos(station)).put("block", RuleGuard.shortId(st)),
+					"not an anvil", "find_blocks type=anvil");
+			}
+		} else {
+			station = findWorkstation(a, mc, anvils, 32);
+			if (station == null) {
+				return ToolResult.error(ErrorCode.NO_STATION, Kv.of().put("radius", 32),
+					"no anvil within 32 blocks", "craft and place an anvil nearby");
+			}
+		}
+		ToolResult inputErr = checkTwoInputs(mc, item, matcher, secondItem, secondMatcher);
+		if (inputErr != null) return inputErr;
+		java.util.function.Predicate<ItemStack> pullOffhandKeep = checkOffhandPullForTwo(mc, item, matcher, secondItem, secondMatcher);
+		if (pullOffhandKeep == OFFHAND_FULL_SENTINEL) {
+			return ToolResult.error(ErrorCode.MISSING_MATERIALS, Kv.of().put("free_slots", 0),
+				"a needed item is in the offhand and the main inventory is full", "drop or store one item, then retry anvil");
+		}
+		Kv pre = Kv.of().put("anvil", Fmt.pos(station)).put("owner", Fmt.owner(a, station, mc.level.getBlockState(station)));
+		return a.tasks.start(new AnvilTask(a, mode, station, item, matcher, secondItem, secondMatcher, rename, pullOffhandKeep), replace, pre.toString());
+	}
+
+	private static ToolResult grindstone(Agent a, Minecraft mc, Item item, ItemMatcher matcher,
+										 Item secondItem, ItemMatcher secondMatcher, BlockPos target, boolean replace) {
+		BlockPos station = target;
+		if (station != null) {
+			BlockState st = mc.level.getBlockState(station);
+			if (!st.is(Blocks.GRINDSTONE)) {
+				return ToolResult.error(ErrorCode.NOT_FOUND, Kv.of().put("pos", Fmt.pos(station)).put("block", RuleGuard.shortId(st)),
+					"not a grindstone", "find_blocks type=grindstone");
+			}
+		} else {
+			station = findWorkstation(a, mc, List.of(Blocks.GRINDSTONE), 32);
+			if (station == null) {
+				return ToolResult.error(ErrorCode.NO_STATION, Kv.of().put("radius", 32),
+					"no grindstone within 32 blocks", "craft and place a grindstone nearby");
+			}
+		}
+		ToolResult inputErr = checkTwoInputs(mc, item, matcher, secondItem, secondMatcher);
+		if (inputErr != null) return inputErr;
+		java.util.function.Predicate<ItemStack> pullOffhandKeep = checkOffhandPullForTwo(mc, item, matcher, secondItem, secondMatcher);
+		if (pullOffhandKeep == OFFHAND_FULL_SENTINEL) {
+			return ToolResult.error(ErrorCode.MISSING_MATERIALS, Kv.of().put("free_slots", 0),
+				"a needed item is in the offhand and the main inventory is full", "drop or store one item, then retry grindstone");
+		}
+		Kv pre = Kv.of().put("grindstone", Fmt.pos(station)).put("owner", Fmt.owner(a, station, mc.level.getBlockState(station)));
+		return a.tasks.start(new GrindstoneTask(a, station, item, matcher, secondItem, secondMatcher, pullOffhandKeep), replace, pre.toString());
+	}
+
+	private static final java.util.function.Predicate<ItemStack> OFFHAND_FULL_SENTINEL = _ -> false;
+
+	private static ToolResult checkTwoInputs(Minecraft mc, Item item, ItemMatcher matcher, Item secondItem, ItemMatcher secondMatcher) {
+		int c1 = Inv.countWithOffhand(mc.player, item, matcher);
+		if (c1 < 1) return missingItem(item, 0, 1, matcher);
+		if (secondItem == null) return null;
+		int c2 = Inv.countWithOffhand(mc.player, secondItem, secondMatcher);
+		if (c2 < 1) return missingItem(secondItem, 0, 1, secondMatcher);
+		int union = Inv.countWithOffhand(mc.player, s -> Inv.matches(s, item, matcher) || Inv.matches(s, secondItem, secondMatcher));
+		if (!WorkstationPolicy.hasDistinctInputs(c1, c2, union)) {
+			return ToolResult.error(ErrorCode.MISSING_MATERIALS, Kv.of().put("item", Inv.id(item)).put("second_item", Inv.id(secondItem)),
+				"need two distinct matching items in inventory");
+		}
+		return null;
+	}
+
+	private static java.util.function.Predicate<ItemStack> checkOffhandPullForTwo(Minecraft mc, Item item, ItemMatcher matcher,
+																				   Item secondItem, ItemMatcher secondMatcher) {
+		int main1 = Inv.count(mc.player, item, matcher);
+		boolean needPull = main1 < 1;
+		if (!needPull && secondItem != null) {
+			int main2 = Inv.count(mc.player, secondItem, secondMatcher);
+			int mainUnion = Inv.count(mc.player, s -> Inv.matches(s, item, matcher) || Inv.matches(s, secondItem, secondMatcher));
+			needPull = !WorkstationPolicy.hasDistinctInputs(main1, main2, mainUnion);
+		}
+		if (!needPull) return null;
+		java.util.function.Predicate<ItemStack> keep = s -> Inv.matches(s, item, matcher)
+			|| (secondItem != null && Inv.matches(s, secondItem, secondMatcher));
+		if (Inv.findOffhandPullSlot(mc.player, keep) < 0) return OFFHAND_FULL_SENTINEL;
+		return keep;
+	}
+
+	private static ToolResult digTunnel(Agent a, Minecraft mc, TunnelPlanner.Mode mode, TunnelPlanner.Dir dir,
+										int length, Integer targetY, int torchEvery, Set<Block> stopOn,
+										ItemMatcher toolMatcher, boolean replace) {
+		int startY = mc.player.blockPosition().getY();
+		String err = TunnelPlanner.validate(mode, length, targetY, startY, torchEvery);
+		if (err != null) {
+			return ToolResult.error(ErrorCode.INVALID_ARGUMENT,
+				Kv.of().put("mode", mode == TunnelPlanner.Mode.STAIRS ? "stairs" : "straight").put("length", length).put("torch_every", torchEvery),
+				err, torchEvery == 0 ? "pass length<=12 or bring torches with torch_every=8" : null);
+		}
+		int steps = TunnelPlanner.targetSteps(mode, length, targetY, startY);
+		if (steps <= 0) {
+			return ToolResult.error(ErrorCode.INVALID_ARGUMENT, Kv.of().put("y", startY), "nothing to dig");
+		}
+		boolean creative = Creative.isCreative(mc);
+		if (!creative) {
+			if (torchEvery > 0 && Inv.countWithOffhand(mc.player, Items.TORCH) == 0) {
+				return ToolResult.error(ErrorCode.MISSING_MATERIALS, Kv.of().put("missing", "torch:1"),
+					"no torches in inventory",
+					"craft torches (coal or charcoal from smelting logs), or pass torch_every=0 for a short tunnel (max 12)");
+			}
+			if (Inv.freeSlots(mc.player) == 0) {
+				return ToolResult.error(ErrorCode.MISSING_MATERIALS, Kv.of().put("free_slots", 0), "inventory is full",
+					"store items with chest action=put, or drop junk");
+			}
+			BlockState stone = Blocks.STONE.defaultBlockState();
+			if (!toolMatcher.isAny()) {
+				if (Inv.findBestMiningTool(mc.player, stone, toolMatcher, true) < 0) {
+					return ToolResult.error(ErrorCode.MISSING_TOOL, Kv.of().put("tool_match", toolMatcher.raw()),
+						"no suitable tool matching " + toolMatcher.raw() + " in inventory",
+						"craft or equip a matching pickaxe, or omit tool_match");
+				}
+			} else if (Inv.findBestMiningTool(mc.player, stone, ItemMatcher.ANY, true) < 0) {
+				return ToolResult.error(ErrorCode.MISSING_TOOL, Kv.of().put("need", "wooden_pickaxe+"),
+					"no pickaxe in inventory", "craft a pickaxe first");
+			}
+		}
+		Kv pre = Kv.of()
+			.put("mode", mode == TunnelPlanner.Mode.STAIRS ? "stairs" : "straight")
+			.put("direction", dir.name().toLowerCase(java.util.Locale.ROOT))
+			.put("steps", steps)
+			.put("torch_every", torchEvery);
+		return a.tasks.start(new DigTunnelTask(a, mode, dir, steps, torchEvery, stopOn, toolMatcher), replace, pre.toString());
 	}
 }

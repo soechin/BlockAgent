@@ -94,6 +94,7 @@ public abstract class MultiPlayerGameModeMixin {
 			if (a.guard.active() && !before.isAir() && !a.guard.isNatural(before)
 				&& !(t instanceof blockagent.game.tasks.BreakTask) && !(t instanceof blockagent.game.tasks.BuildTask)
 				&& !(t instanceof ClearAreaTask) && !(t instanceof blockagent.game.tasks.FarmTask)
+				&& !(t instanceof blockagent.game.tasks.DigTunnelTask)
 				&& !(t instanceof blockagent.game.tasks.MineTask mine && mine.isMineTarget(before))) {
 				a.log.log(blockagent.game.ActionLog.Source.system, "path_break", blockagent.game.Fmt.pos(pos) + " " + RuleGuard.shortId(before));
 			}

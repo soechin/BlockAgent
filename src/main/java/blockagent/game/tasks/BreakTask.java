@@ -15,14 +15,20 @@ import net.minecraft.world.level.block.state.BlockState;
 /** 挖一格(需要在觸及範圍內)。守門員在 MultiPlayerGameMode 層擋下不能挖的方塊。 */
 public final class BreakTask extends Task {
 	private final BlockPos pos;
+	private final blockagent.core.ItemMatcher toolMatcher;
 	private Block original;
 	private Direction face;
 	private boolean started;
 	private boolean broken;
 
 	public BreakTask(Agent agent, BlockPos pos) {
+		this(agent, pos, blockagent.core.ItemMatcher.ANY);
+	}
+
+	public BreakTask(Agent agent, BlockPos pos, blockagent.core.ItemMatcher toolMatcher) {
 		super(agent, "break_block");
 		this.pos = pos.immutable();
+		this.toolMatcher = toolMatcher == null ? blockagent.core.ItemMatcher.ANY : toolMatcher;
 		this.timeoutTicks = 20 * 30;
 	}
 
@@ -81,7 +87,7 @@ public final class BreakTask extends Task {
 			return;
 		}
 		original = st.getBlock();
-		equipBestTool(mc, st);
+		if (!selectBreakingTool(mc, st)) return;
 		face = Moves.faceToward(mc.player, pos);
 		Moves.lookAt(mc.player, Moves.hit(pos, face).getLocation());
 		started = mc.gameMode.startDestroyBlock(pos, face);
@@ -128,11 +134,29 @@ public final class BreakTask extends Task {
 			fail(ErrorCode.PATH_BLOCKED, "out of reach after a reflex moved the player; goto closer first");
 			return;
 		}
-		equipBestTool(mc, st);
+		if (!selectBreakingTool(mc, st)) return;
 		face = Moves.faceToward(mc.player, pos);
 		Moves.lookAt(mc.player, Moves.hit(pos, face).getLocation());
 		if (!mc.gameMode.startDestroyBlock(pos, face)) {
 			fail(ErrorCode.RULE_PROTECTED_BLOCK, "this block may not be broken (likely someone else's; see the rule_blocked event)");
 		}
+	}
+
+	private boolean selectBreakingTool(Minecraft mc, BlockState st) {
+		if (toolMatcher.isAny() || blockagent.game.Creative.isCreative(mc)) {
+			equipBestTool(mc, st);
+			return true;
+		}
+		int idx = Inv.findBestMiningTool(mc.player, st, toolMatcher, true);
+		if (idx < 0) {
+			fail(ErrorCode.MISSING_TOOL, "no suitable tool matching " + toolMatcher.raw(), "equip or craft a matching tool");
+			return false;
+		}
+		if (idx == Inv.OFFHAND_SLOT) {
+			if (mc.player.containerMenu != mc.player.inventoryMenu) mc.player.closeContainer();
+			Inv.swapToOffhand(mc, mc.player.getInventory().getSelectedSlot());
+			return true;
+		}
+		return Inv.selectSlotInHand(mc, idx);
 	}
 }

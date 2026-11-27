@@ -275,7 +275,7 @@ flowchart TD
 | `goto(x,y?,z, range=1)` | 走到某處(背景任務)；省略 `y` 時只比對水平位置、沿地表走。室外淺水中無法起步時，若 8 步內有可踩地的上岸路線，先上岸再繼續 | M2.1, M2.7 |
 | `goto_block(type, radius=48)` | 走到最近的某種方塊旁(背景任務) | M2.1, M2.7 |
 | `look_at(x,y,z)` | 轉頭 | M2.1 |
-| `break_block(x,y,z)` | 挖一格。一般操作需在觸及範圍內(S4.6f) | M2.1 |
+| `break_block(x,y,z, tool_match?)` | 挖一格。一般操作需在觸及範圍內(S4.6f)；選填 `tool_match` 指定附魔或耐久篩選工具(S4.2i) | M2.1 |
 | `place_block(x,y,z, item, facing?, half?, sneak?)` | 放一格，等伺服器確認再回傳。一般操作需在觸及範圍內、有支撐面和背包(含副手)材料(S4.6f)；被規矩擋下時回報那個錯誤碼和原因。不帶 `facing`/`half`/`sneak` 的生存模式放置雖然不是背景任務，也照樣尊重進行中的任務(`replace=false` 回 `BUSY`，`replace=true` 先取消舊任務)。`facing`/`half`/`sneak` 見 S4.2b | M2.2 |
 | `use_block(x,y,z)` | 對方塊按右鍵：開門、按鈕、拉桿、開容器、讀書台上的書(S3.2a)。適用時回報操作後的 `open`、`powered`、`lit`。被規矩擋下時照實回報那個錯誤碼和原因，不包成「沒有反應」 | M2.2, M5.3 |
 | `equip(item, slot="mainhand", match?)` | 換手上或身上的裝備；`item="none"` 搭配 `slot=offhand\|head\|chest\|legs\|feet` 可純卸下裝備回主背包；`match` 依屬性挑選同 id 物品(S4.2d) | M2.1 |
@@ -292,7 +292,8 @@ flowchart TD
 
 | 工具 | 一件事 | 開始前檢查 | 需求 |
 |---|---|---|---|
-| `mine(block, count, radius=48)` | 找到指定方塊，走過去、挖、撿起來，直到數量達到。`block` 可以是方塊 id 或群組(`log`、`stone`、`coal_ore`、`iron_ore`…)| 有沒有挖得動的工具；背包空間；已載入範圍內有沒有足夠的目標(沒有就 `NOT_FOUND`，加 `search=true` 才會往外找，最多 5 分鐘) | M2.1, M2.8, M2.9 |
+| `mine(block, count, radius=48, search=false, tool_match?)` | 找到指定方塊，走過去、挖、撿起來，直到數量達到。`block` 可以是方塊 id 或群組(`log`、`stone`、`coal_ore`、`iron_ore`…)；選填 `tool_match` 只對目標方塊強制使用符合條件的工具(S4.2i) | 有沒有挖得動的工具(含 `tool_match`)；背包空間；已載入範圍內有沒有足夠的目標(沒有就 `NOT_FOUND`，加 `search=true` 才會往外找，最多 5 分鐘) | M2.1, M2.8, M2.9 |
+| `dig_tunnel(mode, direction, length=16, target_y?, torch_every=8, stop_on?, tool_match?)` | 系統性地下挖礦(S4.2j)：以逐格步進方式開 `stairs`(1×3 階梯下挖)或 `straight`(1×2 水平礦道)，每步動鎬前檢查岩漿、水流、深坑與受保護方塊，依 `torch_every` 自動插火把、遇 `stop_on` 礦脈即停，並一律回報沿途露出的礦脈清單 | 方向/長度上限(`torch_every=0` 限最多 12 格)；`torch_every > 0` 須有火把；挖掘工具與背包空間 | M2.1, M2.8, M2.9, M5.2 |
 | `hunt(target)` | 追蹤指定 entity id 或生物種類(48 格內最近)的生物並打倒，擊殺後走近並撿取掉落物。敵對生物照 S9.1b 的戰術打(苦力怕打了就退、遠程怪舉盾衝過去、有弓就射)，其他生物走近用劍或斧頭打 | 目標消失、攻擊被守衛擋下，或擊殺後未能撿取時回報原因 |
 | `craft(item, count=1)` | 合成。優先使用伸手可及的工作台，其次從 16 格內選自有或其他工作台。高危險時使用手邊工作台，或從背包就近放置。每一批最多做到材料的堆疊上限那麼多次(弓 1、雪球 16)；放進合成格的數量、拿出來的數量都照格子實際的變化算，背包滿了拿不出來就照實回報 | 用配方資料計算所需材料(包括做工作台的木板)；不夠就回報缺什麼 | M2.1, M2.8, M2.9 |
 | `smelt(item?, count?, fuel?, action="smelt", x?,y?,z?)` | 熔煉與爐子存取(S4.2e)：`action="smelt"`(預設)支援普通熔爐、高爐(`blast_furnace`)與煙燻爐(`smoker`)，依配方優先使用加速爐，再其次自有普通熔爐與其他熔爐，沒有才從背包放普通熔爐；放入原料(含副手)和燃料，等燒好，拿出產物。`action="list"` 查看指定座標爐子的原料/燃料/產物與燃燒狀態；`action="take"` 取出指定座標爐子的產物格 | `smelt`：原料、燃料是否夠、爐子是否可用；`list`/`take`：目標座標是否為熔爐/高爐/煙燻爐 | M2.2, M2.8, M2.9, M5.3 |
@@ -308,6 +309,9 @@ flowchart TD
 | `mount(target)` | 走過去坐上船、礦車等載具。不會自己開船；乘坐中不能開始走路的任務，要先 `dismount` | 目標是否受保護(馴服的馬算寵物，不分主人，自己的也擋；村民和流浪商人一律擋下) | M2.1 |
 | `fish(count=1, max_sec=120)` | 走到 16 格內的水邊拋竿，浮標被咬住就收竿，釣到 count 次或時間到 | 背包有釣竿；附近有沒有上方是空氣的水源 | M2.1, M2.8 |
 | `chest(action, x,y,z, items?)` | 走到箱子、木桶、界伏盒或終界箱前：`list` 看內容，`put` 放東西(含副手)，`take` 拿東西(別人的和自然生成的也可以)。`items` 鍵支援純 id 或 `id[屬性]` 篩選語法(S4.2d)。結果都附上關上前的內容(`contents=id:數量,... free=空格數`，附魔書等另外列在 `special=`) | `put` 時背包(含副手)有符合條件的東西；目標是不是箱子 | M2.2, M5.3 |
+| `enchant(action, item, match?, option?, x?,y?,z?)` | 使用附魔台(S4.2f)：`preview` 放入物品讀取 3 格附魔提示、最低等級與青金石需求後收包關閉；`apply` 放青金石並點選 `option=1\|2\|3` 執行附魔。省略座標時找 32 格內最近附魔台(優先自有) | 附近有附魔台；背包(含副手)有目標物品；`apply` 時有足夠青金石(非創造)與主背包空格 | M2.2, M2.8, M2.9, M5.3 |
+| `anvil(action, item, match?, second_item?, second_match?, rename?, x?,y?,z?)` | 使用鐵砧(S4.2g)：`preview` 檢視合併/修補/改名結果與經驗花費(`cost`、`too_expensive`)後收包關閉；`apply` 執行並取出產物(含命名牌改名)。省略座標時找 32 格內最近鐵砧(優先自有，允許使用他人鐵砧) | 附近有鐵砧；`second_item` 與 `rename` 至少提供一項；背包(含副手)有足夠輸入物與空格 | M2.2, M2.8, M2.9, M5.3 |
+| `grindstone(item, match?, second_item?, second_match?, x?,y?,z?)` | 使用砂輪(S4.2h)：拆除非詛咒附魔換取經驗，或將兩件同種裝備合修並清除非詛咒附魔。省略座標時找 32 格內最近砂輪(優先自有) | 附近有砂輪；背包(含副手)有目標物品(合修時兩件)與空格 | M2.2, M2.8, M2.9, M5.3 |
 
 **記憶**(S4.8)：`memory_read()`、`memory_write(key, value)`、`memory_delete(key)`。
 
@@ -345,9 +349,55 @@ flowchart TD
   - **副手一致化**：`eat`、`smelt`、`drop`、`use_item`、`place_block`、`chest(put)` 的事前數量檢查納入副手(`countWithOffhand` / `summaryWithOffhand`)。實際執行時若目標物品只在副手：不需開容器的動作直接切或透過 `pullOffhandToMain` 換回主背包；需開容器的任務(`smelt`、`chest(put)`)比照 `craft`(R12)在開工前先檢核並於 `start()` 換回主背包，主背包滿無法換回時於事前檢查回 `MISSING_MATERIALS` 並附提示。
 - **S4.2e** `smelt` 擴充高爐、煙燻爐、`list`/`take` 與共用 `ContainerTask` 基底(2026-11-27)：[M2.2, M2.8, M2.9, M5.3]
   - **配方擴充**：`Recipes` 除 `minecraft:smelting` 外，一併解析 `minecraft:blasting`(25 條)與 `minecraft:smoking`(9 條)，區分每個原料/產物支援的爐種(`FURNACE`、`BLAST_FURNACE`、`SMOKER`)。高爐與煙燻爐燒煉速度為 2 倍、單個燃料燃燒時間折半，因此燒 `count` 個所需燃料總數與普通熔爐相同，僅任務逾時改依每格 100 tick 估算。
-  - **`action="smelt"`(預設)**：尋找 32 格內可用爐子時，只考慮支援該配方的爐種，優先順序為：自有加速爐(高爐/煙燻爐) → 其他加速爐 → 自有普通熔爐 → 其他普通熔爐；全部不可用且背包有普通熔爐時，放下普通熔爐使用。開啟後接受 `AbstractFurnaceMenu`(涵蓋 `FurnaceMenu`、`BlastFurnaceMenu`、`SmokerMenu`，槽位皆為 `0`=原料、`1`=燃料、`2`=產物)。
+  - **`action="smelt"`(預設)**：尋找 32 格內可用爐子時，只考慮支援該配方的爐種，優先順序為：自有加速爐(高爐/煙燻爐) → 其他加速爐 → 自有普通熔爐 → 其他普通熔爐；全部不可用且背包有普通熔爐時，放下普通熔爐使用。省略 `fuel` 自動挑燃料時，優先選與 `input` 不同的燃料，若背包沒有其他燃料但 `input` 本身可燃且扣除要燒的 `count` 後剩餘量足以當燃料(例如只帶原木燒木炭 `charcoal`)，則允許以剩餘 `input` 當燃料。開啟後接受 `AbstractFurnaceMenu`(涵蓋 `FurnaceMenu`、`BlastFurnaceMenu`、`SmokerMenu`，槽位皆為 `0`=原料、`1`=燃料、`2`=產物)。
   - **`action="list"` 與 `action="take"`**(須指定 `x,y,z`，省略或目標不是三種爐子之一時回 `INVALID_ARGUMENT`/`NOT_FOUND`)：走到指定爐子、開啟並同步後，`list` 回報 `in=`、`fuel=`、`out=`、`lit=`、`progress=` 後關閉；`take` 將產物格(槽位 2)移入背包(若背包滿則回報實際取出數量與剩餘內容)，回報 `took=` 與爐內剩餘內容後關閉。
   - **共用容器任務基底 `ContainerTask`**：抽取 `WALK` → `OPEN` → `SYNC`(等 `stateId != 0` 或 3 tick，且每階段驗證 `containerMenu` 仍為預期畫面)→ 子類 `work()` → `CLOSE` 與反射暫停/恢復(`onSuspend`/`onResume`)的共用生命週期，供 `SmeltTask`、`StationTask` 及後續工作站任務(附魔台、鐵砧、砂輪等)共用。
+- **S4.2f 附魔台(`enchant`)**(2026-11-27，第二棒 2A)：[M2.2, M2.8, M2.9, M5.3]
+  - 繼承 `ContainerTask`，接受 `EnchantmentMenu`(槽位 `0`=目標物品、`1`=青金石；已用 `javap` 確認 `costs`、`enchantClue`、`levelClue`、`getGoldCount()` 與 `clickMenuButton`)。
+  - 選填 `x,y,z`：指定時驗證為 `enchanting_table`；省略時掃描 32 格內最近附魔台(優先自有再他人)，找不到回 `NO_STATION`。不自動從背包放置附魔台(需配合書架配置)。
+  - 支援 `match`(S4.2d)指定目標物品；目標物品或青金石在副手時於開工前換回主背包，主背包滿無法換回或無空格容納收回物品時回 `MISSING_MATERIALS`。
+  - **`action="preview"`**：開啟並同步後將物品放入槽位 0，等待伺服器透過容器資料更新同步 `costs[0..2]`(最多 20 tick)。若三格 `costs` 全為 0，將物品收進背包、關閉介面並回 `INVALID_ARGUMENT`(不可附魔或已附魔)；否則以 `Registries.ENCHANTMENT` 解碼 `enchantClue`/`levelClue`，先把槽位 0 物品收進背包再關閉介面，回傳 3 個選項的 `option`、`level`(最低需求等級)、`lapis`(1/2/3)與 `clue`(附魔提示)，以及 `max_level=`(便於驗證 15 書架陣達 30 級)與玩家目前 `have_level=`。
+  - **`action="apply"`**：必填 `option=1|2|3`；非創造模式下事前檢查背包(含副手)至少有 `option` 個 `lapis_lazuli`。放入物品與青金石並等待 `costs[option-1] > 0` 後，非創造模式檢查 `experienceLevel >= costs[option-1]`(不足則收包關閉並回 `MISSING_MATERIALS` 附 `need_level=`、`have_level=`)；條件滿足後呼叫 `MultiPlayerGameMode.handleInventoryButtonClick(containerId, option - 1)` 執行附魔。等待伺服器同步附魔結果(槽位 0 物品已有附魔或等級/青金石變動，最多 20 tick)後，將成品與剩餘青金石收進背包再關閉介面，回報 `result=`(含新附魔)、`level=` 與 `lapis_left=`。
+- **S4.2g 鐵砧(`anvil`)**(2026-11-27，第二棒 2A)：[M2.2, M2.8, M2.9, M5.3]
+  - 繼承 `ContainerTask`，接受 `AnvilMenu`(槽位 `0`=`INPUT_SLOT`、`1`=`ADDITIONAL_SLOT`、`2`=`RESULT_SLOT`；已用 `javap` 確認 `setItemName(String)`、`getCost()`、`MAX_NAME_LENGTH` 與 `ServerboundRenameItemPacket`)。
+  - 選填 `x,y,z`：指定時驗證為鐵砧類(`anvil`、`chipped_anvil`、`damaged_anvil`)；省略時掃描 32 格內最近鐵砧(優先自有再他人，允許使用他人鐵砧，S7.5)，找不到回 `NO_STATION`。不自動放置。
+  - 參數：`action="preview"|"apply"`、`item`(搭 `match?`)、選填 `second_item`(搭 `second_match?`)與選填 `rename`(最多 50 字元)；`second_item` 與 `rename` 不可同時省略，否則事前回 `INVALID_ARGUMENT`。兩件輸入物皆納入副手檢查並於開工前換回主背包；若 `item` 與 `second_item` 指向同一格物品(背包僅 1 件滿足條件)回 `MISSING_MATERIALS`。
+  - 放入輸入物後，若有 `rename` 則呼叫 `menu.setItemName(rename)` 並送出 `ServerboundRenameItemPacket(rename)`；等待結果格(槽位 2)與 `menu.getCost()` 同步(最多 20 tick)。
+  - **`action="preview"`**：結果格為空時收包關閉並回 `INVALID_ARGUMENT`(無法合併、無法修補或新名稱與原名相同)；否則先收回輸入格物品再關閉介面，回報 `result=`、`cost=`、`have_level=` 與 `too_expensive=`(`cost >= 40` 且非創造模式)。
+  - **`action="apply"`**：結果格為空回 `INVALID_ARGUMENT`；非創造模式下若 `cost >= 40` 收包關閉回 `INVALID_ARGUMENT`(`too expensive`)，若 `experienceLevel < cost` 收包關閉回 `MISSING_MATERIALS`(附 `need_level=`、`have_level=`)。條件滿足後取出槽位 2 產物，並將輸入格剩餘材料(例如修補未耗盡的鐵錠)收進背包再關閉介面。因原版鐵砧完成時有 12% 機率降級或碎裂，完成判定以產物入包／輸入消耗為準，結果回報 `result=`、`cost=`、`level=`，若原位置鐵砧已消失另附 `anvil_broken=true`。
+- **S4.2h 砂輪(`grindstone`)**(2026-11-27，第二棒 2A)：[M2.2, M2.8, M2.9, M5.3]
+  - 繼承 `ContainerTask`，接受 `GrindstoneMenu`(槽位 `0`=`INPUT_SLOT`、`1`=`ADDITIONAL_SLOT`、`2`=`RESULT_SLOT`，已用 `javap` 確認)。
+  - 選填 `x,y,z`：指定時驗證為 `grindstone`；省略時掃描 32 格內最近砂輪(優先自有再他人)，找不到回 `NO_STATION`。不自動放置。
+  - 支援單件拆除非詛咒附魔(`item`、`match?`)與兩件同種裝備合修(`second_item`、`second_match?`)；含副手檢查與換回主背包。兩件輸入物指向同一格時回 `MISSING_MATERIALS`。
+  - 放入輸入物並等待槽位 2 同步(最多 20 tick)：若結果格為空(例如物品無非詛咒附魔或兩件無法合修)，收包關閉並回 `INVALID_ARGUMENT`；否則取出產物並關閉介面，接著原地停留最多 15 tick 讓掉出的經驗球吸收(偵測到附近經驗球清空或經驗值上升即結束)，回報 `result=`、`level=`、`xp_gained=`。
+- **S4.2i 指定挖掘工具(`tool_match`)**(2026-11-27，第二棒 2B)：[M2.1, M2.8, M2.9]
+  - `break_block`、`mine`、`dig_tunnel` 新增選填參數 `tool_match`，語法沿用 `ItemMatcher`(S4.2d，如 `fortune`、`silk_touch`、`efficiency:3;best_dur`)。
+  - 事前檢查(非創造模式)：驗證背包(含副手)存在符合 `tool_match` 且能正確開採目標方塊(`isCorrectToolForDrops` 或不需特定工具)的物品；找不到時回 `ERR MISSING_TOOL` 並附 `tool_match=`；僅在副手時於開工前換回主背包。
+  - `BreakTask` 與 `dig_tunnel` 在指定 `tool_match` 時直接裝備符合條件的最佳工具，不退回未符合條件的普通工具。
+  - `MineTask` 將編譯後的 `ItemMatcher` 存於 `volatile` 不可變欄位(供 Baritone 背景執行緒安全讀取，DEV_RULES §3)，開工與恢復時確保該工具位於快捷列；`ToolSetMixin` **僅當該方塊符合 `MineTask.isMineTarget(state)` 時**才強制選取符合 `tool_match` 的快捷列槽位，開路途中挖掘其他石頭或泥土仍沿用一般最快工具，避免將時運或絲綢鑽石鎬耗損在開路上。
+- **S4.2j 系統性地下挖礦(`dig_tunnel`)**(2026-11-27，第二棒 2B)：[M2.1, M2.8, M2.9, M5.2]
+  - 參數：
+    - `mode`：必填，`stairs`(1×3 階梯下挖)或 `straight`(1×2 水平礦道)。
+    - `direction`：必填，`north`、`south`、`east`、`west`。
+    - `length`：選填 1–64，預設 16(總推進步數上限)。
+    - `target_y`：選填，僅 `mode="stairs"` 可用；下挖到腳下高度 ≤ `target_y` 即完成(與 `length` 先達者為準；若目前高度已 ≤ `target_y` 或用於 `straight` 回 `INVALID_ARGUMENT`)。
+    - `torch_every`：選填 0–16，預設 8。
+    - `stop_on`：選填，逗號分隔最多 8 個方塊 ID 或群組(支援 `any_ore` 代表所有 `#*_ores`，如 `diamond_ore`、`coal_ore,iron_ore`)。
+    - `tool_match`：選填(S4.2i)。
+  - **火把硬護欄**：
+    - `torch_every > 0` 時，非創造模式下事前檢查須持有至少 1 根 `torch`(含副手)；缺少時回 `ERR MISSING_MATERIALS` 並附 `hint="craft torches (coal or charcoal from smelting logs), or pass torch_every=0 for a short tunnel (max 12)"`。執行中火把耗盡且該步需要插火把時，立即以已完成步數結束並附同一提示，不默默摸黑繼續挖。
+    - `torch_every == 0` 時允許無火把開挖，但**強制限制 `length <= 12`**(超過回 `INVALID_ARGUMENT`)，防止無火把一次直通深層地底；結束時若本次有未照明推進，回報 `unlit=<起點>..<終點>` 供 AI 自行決定是否補插火把。
+  - **逐格步進狀態機與純邏輯模組 `blockagent.core.TunnelPlanner`**：
+    - 不將整條路線交給 Baritone `MineProcess`/`BuilderProcess`，改以逐格步進推進：`straight` 每步挖前方 1×2(腳部與頭部)；`stairs` 每步往前 1 格且往下降 1 格，挖新位置上方 1×3(高度 3 格避免撞頭並維持可原路返回的階梯)。
+    - **每步動鎬前的安全前瞻檢查**：掃描該步待挖格與其相鄰 1 格(上、前、左、右、下)：
+      1. 出現岩漿(`lava`)，或頭頂／正前方出現水源／水流(`water`) → 安全停下(`stopped=hazard`)並回報種類與座標。
+      2. 推進後目標落腳處下方無支撐且落差超過 2 格(空洞／深坑) → 安全停下(`stopped=drop`)並回報座標。
+      3. 待挖格不可破壞(基岩、硬度 < 0)或被守門員保護(`!RuleGuard.canBreak`) → 停下並回報 `RULE_PROTECTED_BLOCK` 或 `PATH_BLOCKED` 與座標。
+      4. 待挖格或相鄰 1 格出現 `stop_on` 指定的礦石 → **動鎬前立即停下**(`stopped=ore`)並回報礦脈座標，避免先用普通鎬挖爆稀有礦。
+      5. 主背包空格為 0 或沒有可挖動待挖格的工具(含 `tool_match`) → 停下並回報進度與原因。
+    - 通過檢查後，以原版挖掘操作(同 `BreakTask`，走守門員最後防線)逐格挖除並走進新節點(短距離移動／對齊)，順手撿起掉落物；若 `torch_every > 0` 且距上次插火把已達 `torch_every` 格、且該格方塊光照(`LightLayer.BLOCK`)≤ 7，在腳下或側牆自動放置 1 根 `torch`(經守門員與所有權記帳)。
+    - **沿途礦脈回報**：不論是否指定 `stop_on`，每步皆記錄隧道周圍 1 格露出的所有礦石(`#*_ores`)，任務結束時於結果附上 `ores=<種類>:<數量>@<最近座標>;...`(無則省略)，搭配 `dug=<步數>/<目標>`、`pos=`、`torches_placed=` 與 `stopped=` 原因。
+    - 反射暫停後恢復：回到最後完成的節點座標重檢並續挖；計時器照 S4.3 扣除暫停期間。
 - **S4.2a** 工具整併(使用者決定，2026-11-23，`docs/REVIEW.md` A7)：`preview_build` 併入 `build_wall`/`build_house`/`build_blueprint` 的 `dry_run`(唯讀、暫停時也能用，阻擋明細用 `offset` 分頁)；`chest_put`、`chest_take` 併成 `chest(action=list|put|take)`。`memory_*` 和 `list_reflexes`/`set_reflex` 保持獨立：依 `action` 改變必填參數的工具容易讓模型填錯，這兩組又不是重複的 schema。區域工具的兩個端點一律叫 `from`/`to`(`"x,y,z"`)；舊藍圖記下的 `corner1`/`corner2` 照樣讀得懂。
 - **S4.2** 工具清單裡**沒有**：自動跟隨、自動幫忙、連線伺服器、切換世界、離開世界、執行指令、Baritone 指令轉送。`follow` 只在 AI 自己呼叫時才跟，不會因為看到朋友就自己開始。[M2.5, M2.6]
 - 尋路避開怪物：Baritone `avoidance=true`，8 格內有敵對生物的路線成本較高(Baritone 內建排除沒生氣的終界使者、殭屍化豬布林和亮處的蜘蛛)。
@@ -565,7 +615,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 
 ### 7.5 容器與熔爐
 
-- **S7.5** 所有容器都可以拿也可以放，不分是誰的：箱子、木桶、界伏盒、漏斗、熔爐類，包括朋友的和世界自然生成的(使用者決定，2026-11-22：伺服器裡只有朋友)。[M5.3]
+- **S7.5** 所有容器與工作站都可以正常使用，不分是誰的：箱子、木桶、界伏盒、漏斗、熔爐類、工作台、附魔台、鐵砧(含受損鐵砧，優先自有亦允許使用他人鐵砧，使用者決定 2026-11-27)、砂輪，包括朋友的和世界自然生成的(使用者決定，2026-11-22：伺服器裡只有朋友)。[M5.3]
   - `handleContainerInput` 只擋創造模式的複製(`ContainerInput.CLONE`，錯誤碼 `INVALID_ARGUMENT`)，其他操作照原版。
   - `smelt` 優先用空的熔爐；原料格或產物格被別的東西佔住時，改找別的熔爐。不再區分東西是誰的。
 
@@ -985,6 +1035,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 | M6.7 | `SessionGameTest.t5` 用 `TestInput.moveCursor` 轉動視角後，檢查工作階段仍在進行。接手測試情境：任務進行中按 W 鍵觸發 `user_took_over`，打開聊天框打字則不觸發。 |
 | M7.8、M7.9 | 單元測試+遊戲測試：紀錄的 `source` 欄位；關掉 `eat` 後肚子餓不會吃；被鎖定的反射關不掉 |
 | M1.2、M2.1、M2.2(底層體檢與日常擴充，S3.2a、S4.2b–S4.2e) | T16(單元測試 + 遊戲測試)：(a) 單元測試：`ItemMatcher` 解析/比對/耐久排序、`Recipes` 載入 `blasting`/`smoking` 與爐種優先順序、`inventory_full` 觸發去重、`ToolsSnapshotTest` 同步更新 `tools-snapshot.json`；(b) `eat` 喝抗火藥水(`match=fire_resistance`)與牛奶桶(清除中毒效果)，確認 `effects=` 回報與不影響食物自動選擇；(c) `equip(item="none", slot=head/offhand)` 純卸裝、`chest` 用 `id[屬性]` 精準取放附魔書/藥水/高耐久工具、副手持有材料時的 `smelt`/`drop`/`chest(put)`/`place_block`；(d) `inspect_area` 與 `get_surroundings` 讀出雙面告示牌文字與非空物品展示框，`use_block` 讀書台並確認自動關閉介面，`use_item` 讀背包成書分頁且不開書本 GUI；(e) `smelt` 優先用高爐燒鐵礦、煙燻爐烤肉，以及 `action=list`/`take` 查看與取出既有成品；(f) `place_block` 設 `half=top` 放上半磚/倒置樓梯，設 `sneak=true` 貼著箱子放漏斗與火把，並驗證放完後放開 `keyShift` 且無法蹲下覆蓋或疊合他人半磚(S7.3b) |
+| M2.1、M2.2、M2.8、M2.9、M5.2、M5.3(中盤挖礦與附魔修裝，S4.2f–S4.2j) | T17 `SecondWaveGameTest`(單元測試 + 遊戲測試)：(a) 單元測試：`TunnelPlanner` 階梯/水平切片座標、安全前瞻(岩漿/水流/深坑/受保護方塊/`stop_on`)、`torch_every=0` 限 12 格規則、附魔預覽格式化、鐵砧輸入預檢、`smelt` 同料剩餘自動選燃料與 `ToolsSnapshotTest` 同步更新 `tools-snapshot.json`；(b) `enchant`：無書架與 15 書架附魔台 `preview` 驗證 `max_level=30` 且收包不掉物，`apply` 消耗等級與青金石成功附魔，等級或青金石不足回 `MISSING_MATERIALS`；(c) `anvil`：`preview` 與 `apply` 合併附魔書到鑽石鎬、用鐵錠修補裝備、幫 `name_tag` 改名、經驗不足回 `MISSING_MATERIALS` 與 `Too Expensive` 回 `INVALID_ARGUMENT`，並驗證允許使用他人鐵砧(優先自有)；(d) `grindstone`：單件拆附魔回經驗與兩件同種裝備合修；(e) `tool_match`：`break_block` 與 `mine` 指定 `silk_touch` 挖玻璃/礦石保留原塊、`fortune` 挖鑽石礦且開路普通石頭不誤用時運鎬，缺少指定附魔工具回 `MISSING_TOOL`；(f) `dig_tunnel`：`stairs` 下挖 1×3 階梯與 `straight` 1×2 水平礦道自動插火把並回報沿途 `ores=`；遇岩漿、深坑、他人方塊(`RULE_PROTECTED_BLOCK`)與 `stop_on=diamond_ore` 在動鎬前安全停下；`torch_every=8` 缺火把擋下並提示燒木炭，`torch_every=0` 超過 12 格拒跑、12 格內完成並回報 `unlit=` |
 
 ---
 
@@ -1023,15 +1074,15 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 | M1.5 | S3.5、S3.5a | T3 |
 | M1.6 | S3.6、S4.5 | T1、T11 |
 | M1.7 | S3.1、S3.2、S3.2a | 12.3 ObservationTest、T16 |
-| M2.1 | S4.2、S4.2c、S4.2d | T11、T2、T16 |
-| M2.2 | S4.2、S4.2b、S4.2d、S4.2e、S4.8b、S4.8c | T2、T15、T16 |
+| M2.1 | S4.2、S4.2c、S4.2d、S4.2i、S4.2j | T11、T2、T16、T17 |
+| M2.2 | S4.2、S4.2b、S4.2d、S4.2e、S4.2f–S4.2h、S4.8b、S4.8c | T2、T15、T16、T17 |
 | M2.3 | S4.8、S4.8c | 12.3 MemoryTest、T15 |
 | M2.4 | S4.6a–S4.6e、S4.5a、S6.3、S7.2、S9.1a | T1、T4、T12、T14 |
 | M2.5 | S3.5a、S4.2、S4.7、S9.1 | T3 |
 | M2.6 | S4.2、S8.1、S8.7 | T7 |
 | M2.7 | S4.3 | T11、T5 |
-| M2.8 | S4.1、S4.2、S4.4b、S4.5a、S4.8b、S4.8c | T11、T13、T14、T15 |
-| M2.9 | S4.4、S4.4c、S4.8b、S4.8c | T11、T14、T15 |
+| M2.8 | S4.1、S4.2、S4.2f–S4.2j、S4.4b、S4.5a、S4.8b、S4.8c | T11、T13、T14、T15、T17 |
+| M2.9 | S4.4、S4.2f–S4.2j、S4.4c、S4.8b、S4.8c | T11、T14、T15、T17 |
 | M2.10 | S4.3、S4.5 | T11 |
 | M3.1 | S3.3、S5.1、S5.2、S5.4 | T3、T7、T10 |
 | M3.2 | S5.1、S5.3 | 12.3 單元測試 |
@@ -1042,8 +1093,8 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 | M4.4 | S6.4 | T4 |
 | M4.5 | S6.5 | T4 |
 | M5.1 | S7.2、S7.7 | T1 |
-| M5.2 | S7.3、S7.3a、S7.3b、S7.3c、S7.4、S1.5 | T1 |
-| M5.3 | S7.3c、S7.5、S7.6 | T2 |
+| M5.2 | S7.3、S7.3a、S7.3b、S7.3c、S7.4、S1.5、S4.2j | T1、T17 |
+| M5.3 | S7.3c、S7.5、S7.6、S4.2f–S4.2h | T2、T17 |
 | M5.4 | S7.1、S7.2 | T1、T1b |
 | M6.1 | S8.2、S2.2 | T5、T11(d) |
 | M6.2 | S8.3 | 12.3 截圖比對 |

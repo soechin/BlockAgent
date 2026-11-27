@@ -268,6 +268,116 @@ public final class Inv {
 		return matcher == null || matcher.isAny() || matcher.matches(infoOf(s));
 	}
 
+	/** 依 {@link ItemMatcher} 的耐久偏好建立比較器(無偏好回傳 null)。 */
+	public static java.util.Comparator<ItemStack> comparator(ItemMatcher matcher) {
+		if (matcher == null || matcher.durPref() == ItemMatcher.DurPref.NONE) return null;
+		return (a, b) -> matcher.comparePreference(infoOf(a), infoOf(b));
+	}
+
+	/** 該物品是否符合 {@code matcher} 且可正確開採 {@code state}(S4.2i)。 */
+	public static boolean canMineWithTool(ItemStack s, BlockState state, ItemMatcher matcher) {
+		if (s == null || s.isEmpty()) return false;
+		if (matcher != null && !matcher.isAny() && !matcher.matches(infoOf(s))) return false;
+		return !state.requiresCorrectToolForDrops() || s.isCorrectToolForDrops(state);
+	}
+
+	/**
+	 * 在背包(可選含副手)找符合 {@code matcher} 且可開採 {@code state} 的最佳工具索引(0–35 或 {@link #OFFHAND_SLOT})；找不到回傳 -1。
+	 * 指定耐久偏好時先比耐久偏好再比挖掘速度，否則先比正確工具與挖掘速度。
+	 */
+	public static int findBestMiningTool(Player p, BlockState state, ItemMatcher matcher, boolean includeOffhand) {
+		int bestIdx = -1;
+		ItemStack bestStack = ItemStack.EMPTY;
+		ItemMatcher.ItemInfo bestInfo = null;
+		boolean hasPref = matcher != null && matcher.durPref() != ItemMatcher.DurPref.NONE;
+		int limit = includeOffhand ? MAIN_SIZE + 1 : MAIN_SIZE;
+		for (int i = 0; i < limit; i++) {
+			int idx = i == MAIN_SIZE ? OFFHAND_SLOT : i;
+			ItemStack s = stackAt(p, idx);
+			if (!canMineWithTool(s, state, matcher)) continue;
+			if (bestIdx < 0) {
+				bestIdx = idx;
+				bestStack = s;
+				if (hasPref) bestInfo = infoOf(s);
+				continue;
+			}
+			boolean better;
+			if (hasPref) {
+				ItemMatcher.ItemInfo info = infoOf(s);
+				int cmp = matcher.comparePreference(info, bestInfo);
+				better = cmp < 0 || (cmp == 0 && s.getDestroySpeed(state) > bestStack.getDestroySpeed(state) + 0.01f);
+				if (better) bestInfo = info;
+			} else {
+				boolean curCorrect = s.isCorrectToolForDrops(state);
+				boolean bestCorrect = bestStack.isCorrectToolForDrops(state);
+				better = (curCorrect && !bestCorrect)
+					|| (curCorrect == bestCorrect && s.getDestroySpeed(state) > bestStack.getDestroySpeed(state) + 0.01f);
+			}
+			if (better) {
+				bestIdx = idx;
+				bestStack = s;
+			}
+		}
+		return bestIdx;
+	}
+
+	/** 僅掃描快捷列(0–8)找符合 {@code matcher} 且可開採 {@code state} 的最佳工具格(供 ToolSetMixin 使用)。 */
+	public static int findHotbarMiningTool(Player p, BlockState state, ItemMatcher matcher) {
+		int bestIdx = -1;
+		ItemStack bestStack = ItemStack.EMPTY;
+		ItemMatcher.ItemInfo bestInfo = null;
+		boolean hasPref = matcher != null && matcher.durPref() != ItemMatcher.DurPref.NONE;
+		Inventory inv = p.getInventory();
+		for (int i = 0; i < 9; i++) {
+			ItemStack s = inv.getItem(i);
+			if (!canMineWithTool(s, state, matcher)) continue;
+			if (bestIdx < 0) {
+				bestIdx = i;
+				bestStack = s;
+				if (hasPref) bestInfo = infoOf(s);
+				continue;
+			}
+			boolean better;
+			if (hasPref) {
+				ItemMatcher.ItemInfo info = infoOf(s);
+				int cmp = matcher.comparePreference(info, bestInfo);
+				better = cmp < 0 || (cmp == 0 && s.getDestroySpeed(state) > bestStack.getDestroySpeed(state) + 0.01f);
+				if (better) bestInfo = info;
+			} else {
+				boolean curCorrect = s.isCorrectToolForDrops(state);
+				boolean bestCorrect = bestStack.isCorrectToolForDrops(state);
+				better = (curCorrect && !bestCorrect)
+					|| (curCorrect == bestCorrect && s.getDestroySpeed(state) > bestStack.getDestroySpeed(state) + 0.01f);
+			}
+			if (better) {
+				bestIdx = i;
+				bestStack = s;
+			}
+		}
+		return bestIdx;
+	}
+
+	/** 確保符合 {@code matcher} 的最佳開採工具位於快捷列(0–8)；若無 {@code matcher} 則沿用 {@link #ensureHotbarTool(Minecraft, BlockState)}。 */
+	public static int ensureHotbarTool(Minecraft mc, BlockState state, ItemMatcher matcher) {
+		if (matcher == null || matcher.isAny()) return ensureHotbarTool(mc, state);
+		Player p = mc.player;
+		int bestIdx = findBestMiningTool(p, state, matcher, false);
+		if (bestIdx < 0) return -1;
+		if (bestIdx < 9) return bestIdx;
+		if (p.containerMenu != p.inventoryMenu) return -1;
+		Inventory inv = p.getInventory();
+		boolean[] occupied = new boolean[9];
+		boolean[] damageable = new boolean[9];
+		for (int i = 0; i < 9; i++) {
+			ItemStack s = inv.getItem(i);
+			occupied[i] = !s.isEmpty();
+			damageable[i] = occupied[i] && s.isDamageableItem();
+		}
+		int targetSlot = chooseHotbarSwapSlot(occupied, damageable, null, inv.getSelectedSlot());
+		click(mc, p.inventoryMenu, menuSlot(bestIdx), targetSlot, ContainerInput.SWAP);
+		return targetSlot;
+	}
+
 	/** 取得統一槽位索引(0–35 主背包、{@link #OFFHAND_SLOT} 副手)的物品。 */
 	public static ItemStack stackAt(Player p, int idx) {
 		if (idx == OFFHAND_SLOT) return p.getOffhandItem();

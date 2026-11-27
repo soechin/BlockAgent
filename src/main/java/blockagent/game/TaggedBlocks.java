@@ -44,6 +44,37 @@ public final class TaggedBlocks {
 		return !path.startsWith("stripped_") && !path.endsWith("_wood") && !path.endsWith("_hyphae");
 	}
 
+	private static final List<TagKey<Block>> ORE_TAGS = List.of(
+		oreTag("coal_ores"),
+		oreTag("iron_ores"),
+		oreTag("copper_ores"),
+		oreTag("gold_ores"),
+		oreTag("redstone_ores"),
+		oreTag("emerald_ores"),
+		oreTag("lapis_ores"),
+		oreTag("diamond_ores")
+	);
+
+	private static TagKey<Block> oreTag(String path) {
+		return TagKey.create(net.minecraft.core.registries.Registries.BLOCK,
+			net.minecraft.resources.Identifier.withDefaultNamespace(path));
+	}
+
+	/** 所有原版礦石方塊(含深板岩變體、地獄石英與遠古遺骸)。 */
+	public static List<Block> allOres() {
+		java.util.LinkedHashSet<Block> set = new java.util.LinkedHashSet<>();
+		for (TagKey<Block> tag : ORE_TAGS) set.addAll(of(tag));
+		set.add(net.minecraft.world.level.block.Blocks.NETHER_QUARTZ_ORE);
+		set.add(net.minecraft.world.level.block.Blocks.ANCIENT_DEBRIS);
+		return List.copyOf(set);
+	}
+
+	public static boolean isOre(net.minecraft.world.level.block.state.BlockState st) {
+		for (TagKey<Block> tag : ORE_TAGS) if (st.is(tag)) return true;
+		return st.is(net.minecraft.world.level.block.Blocks.NETHER_QUARTZ_ORE)
+			|| st.is(net.minecraft.world.level.block.Blocks.ANCIENT_DEBRIS);
+	}
+
 	static void clear() {
 		GENERATION.incrementAndGet();
 		CACHE.clear();

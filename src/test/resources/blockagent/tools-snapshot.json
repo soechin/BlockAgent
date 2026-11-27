@@ -530,7 +530,7 @@
   },
   {
     "name": "break_block",
-    "description": "Break one block within reach (usually a few seconds).",
+    "description": "Break one block within reach (usually a few seconds). Optional tool_match selects a specific tool by enchantment/durability (e.g. silk_touch, fortune).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -542,6 +542,10 @@
         },
         "z": {
           "type": "integer"
+        },
+        "tool_match": {
+          "type": "string",
+          "description": "Optional tool filter: silk_touch, fortune, efficiency:3, best_dur..."
         },
         "replace": {
           "type": "boolean",
@@ -911,7 +915,7 @@
   },
   {
     "name": "mine",
-    "description": "Find blocks, walk there, mine and pick them up until count is reached. Checks tool and inventory space first.",
+    "description": "Find blocks, walk there, mine and pick them up until count is reached. Checks tool and inventory space first. Optional tool_match enforces a matching tool on target blocks only (normal tools for clearing stone).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -935,6 +939,10 @@
           "description": "If not enough are loaded, explore outward (up to 5 min)",
           "default": false
         },
+        "tool_match": {
+          "type": "string",
+          "description": "Optional tool filter for target blocks: fortune, silk_touch, best_dur..."
+        },
         "replace": {
           "type": "boolean",
           "default": false
@@ -950,6 +958,81 @@
       "required": [
         "block",
         "count"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "dig_tunnel",
+    "description": "Dig a stepped 1x3 staircase (stairs) or 1x2 horizontal tunnel (straight) step by step. Checks ahead for lava, water, drops, protected blocks and optional stop_on ores before swinging, places torches every torch_every steps (torch_every\u003d0 is limited to 12 steps), and reports all ores exposed along the tunnel.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "description": "stairs (descend 1x3) or straight (level 1x2)",
+          "enum": [
+            "stairs",
+            "straight"
+          ]
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "north",
+            "south",
+            "east",
+            "west"
+          ]
+        },
+        "length": {
+          "type": "integer",
+          "description": "Max steps (1-64; max 12 when torch_every\u003d0)",
+          "minimum": 1,
+          "maximum": 64,
+          "default": 16
+        },
+        "target_y": {
+          "type": "integer",
+          "description": "Stop at this y (stairs only)",
+          "minimum": -64,
+          "maximum": 320
+        },
+        "torch_every": {
+          "type": "integer",
+          "description": "Auto-place torch every N steps in darkness (0\u003dunlit, max 12 steps)",
+          "minimum": 0,
+          "maximum": 16,
+          "default": 8
+        },
+        "stop_on": {
+          "type": "string",
+          "description": "Comma-separated ore ids/groups to stop before breaking (e.g. diamond_ore, any_ore)"
+        },
+        "tool_match": {
+          "type": "string",
+          "description": "Optional tool filter for digging the tunnel"
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "direction"
       ]
     },
     "annotations": {
@@ -1728,6 +1811,197 @@
         "x",
         "y",
         "z"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "enchant",
+    "description": "Use an enchanting table within 32 blocks (prefers own; omit x,y,z to auto-find). action\u003dpreview reads the 3 offers, clues and max_level (to verify 15 bookshelves \u003d 30) and returns the item to inventory; action\u003dapply spends lapis_lazuli and levels on option 1, 2 or 3.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "preview or apply",
+          "enum": [
+            "preview",
+            "apply"
+          ]
+        },
+        "item": {
+          "type": "string",
+          "description": "Item id to enchant (incl. offhand)"
+        },
+        "match": {
+          "type": "string",
+          "description": "Optional attribute filter"
+        },
+        "option": {
+          "type": "integer",
+          "description": "Enchant slot 1-3 (required for apply)",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "x": {
+          "type": "integer",
+          "description": "Optional table x"
+        },
+        "y": {
+          "type": "integer",
+          "description": "Optional table y"
+        },
+        "z": {
+          "type": "integer",
+          "description": "Optional table z"
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "item"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "anvil",
+    "description": "Use an anvil within 32 blocks (prefers own; anyone\u0027s anvil allowed; omit x,y,z to auto-find). action\u003dpreview reports result, level cost and too_expensive; action\u003dapply combines items/books, repairs or renames (incl. name_tag).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "preview or apply",
+          "enum": [
+            "preview",
+            "apply"
+          ]
+        },
+        "item": {
+          "type": "string",
+          "description": "Left slot item id (incl. offhand)"
+        },
+        "match": {
+          "type": "string",
+          "description": "Optional filter for item"
+        },
+        "second_item": {
+          "type": "string",
+          "description": "Optional right slot item id (book, tool, repair material)"
+        },
+        "second_match": {
+          "type": "string",
+          "description": "Optional filter for second_item"
+        },
+        "rename": {
+          "type": "string",
+          "description": "Optional new name (max 50 chars); at least second_item or rename is required"
+        },
+        "x": {
+          "type": "integer",
+          "description": "Optional anvil x"
+        },
+        "y": {
+          "type": "integer",
+          "description": "Optional anvil y"
+        },
+        "z": {
+          "type": "integer",
+          "description": "Optional anvil z"
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "item"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "grindstone",
+    "description": "Use a grindstone within 32 blocks (prefers own; omit x,y,z to auto-find) to disenchant an item for XP or combine-repair two identical items while removing non-curse enchantments.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "string",
+          "description": "Item id (incl. offhand)"
+        },
+        "match": {
+          "type": "string",
+          "description": "Optional filter for item"
+        },
+        "second_item": {
+          "type": "string",
+          "description": "Optional second identical item id to combine-repair"
+        },
+        "second_match": {
+          "type": "string",
+          "description": "Optional filter for second_item"
+        },
+        "x": {
+          "type": "integer",
+          "description": "Optional grindstone x"
+        },
+        "y": {
+          "type": "integer",
+          "description": "Optional grindstone y"
+        },
+        "z": {
+          "type": "integer",
+          "description": "Optional grindstone z"
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item"
       ]
     },
     "annotations": {

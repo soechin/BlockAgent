@@ -14,7 +14,8 @@
       "blockagent.testkit.CombatGameTest",
       "blockagent.testkit.NaturalCombatGameTest",
       "blockagent.testkit.ReviewToolsGameTest",
-      "blockagent.testkit.FirstWaveGameTest"
+      "blockagent.testkit.FirstWaveGameTest",
+      "blockagent.testkit.SecondWaveGameTest"
     ]
   },
   "depends": {
