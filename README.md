@@ -1,6 +1,6 @@
 # BlockAgent
 
-讓 AI(Claude Code 或 Codex)以一般玩家的身分玩 Minecraft Java 26.3。需求見 [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)，技術規格見 [docs/SPEC.md](docs/SPEC.md)。
+讓 AI(Claude Code 或 Codex)以一般玩家的身分玩 Minecraft Java 26.3。需求見 [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)，遊玩能力全圖鑑與完整度見 [docs/GAMEPLAY.md](docs/GAMEPLAY.md)，技術規格見 [docs/SPEC.md](docs/SPEC.md)。
 
 ```mermaid
 flowchart LR
