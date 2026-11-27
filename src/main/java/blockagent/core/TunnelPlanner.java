@@ -18,7 +18,29 @@ public final class TunnelPlanner {
 	public static final int MAX_SAFE_DROP = 2;
 	public static final int TORCH_LIGHT_THRESHOLD = 7;
 
-	public enum Mode {STRAIGHT, STAIRS}
+	public enum Mode {
+		FLAT("flat"), STAIRS_DOWN("stairs_down"), STAIRS_UP("stairs_up");
+
+		private final String wire;
+
+		Mode(String wire) {
+			this.wire = wire;
+		}
+
+		public String wireName() {
+			return wire;
+		}
+
+		public static Mode parse(String raw) {
+			if (raw == null) return null;
+			return switch (raw.trim().toLowerCase(Locale.ROOT)) {
+				case "flat" -> FLAT;
+				case "stairs_down" -> STAIRS_DOWN;
+				case "stairs_up" -> STAIRS_UP;
+				default -> null;
+			};
+		}
+	}
 
 	public enum Dir {
 		NORTH(0, -1), SOUTH(0, 1), EAST(1, 0), WEST(-1, 0);
@@ -54,7 +76,7 @@ public final class TunnelPlanner {
 
 	/** 驗證參數合法性(含無火把模式限 12 格與 target_y 邊界)；合法回傳 null，否則回傳錯誤說明。 */
 	public static String validate(Mode mode, int length, Integer targetY, int startY, int torchEvery) {
-		if (mode == null) return "mode must be stairs or straight";
+		if (mode == null) return "mode must be stairs_down, stairs_up or flat";
 		if (length < 1 || length > MAX_LENGTH) return "length must be between 1 and " + MAX_LENGTH;
 		if (torchEvery < 0 || torchEvery > MAX_TORCH_EVERY) {
 			return "torch_every must be between 0 and " + MAX_TORCH_EVERY;
@@ -63,41 +85,63 @@ public final class TunnelPlanner {
 			return "torch_every=0 is limited to at most " + MAX_UNLIT_LENGTH + " steps (bring torches for deeper tunnels)";
 		}
 		if (targetY != null) {
-			if (mode != Mode.STAIRS) return "target_y is only valid for mode=stairs";
-			if (startY <= targetY) return "already at or below target_y=" + targetY + " (current y=" + startY + ")";
+			if (mode == Mode.FLAT) return "target_y is only valid for mode=stairs_down or mode=stairs_up";
+			if (mode == Mode.STAIRS_DOWN && startY <= targetY) {
+				return "already at or below target_y=" + targetY + " (current y=" + startY + ")";
+			}
+			if (mode == Mode.STAIRS_UP && startY >= targetY) {
+				return "already at or above target_y=" + targetY + " (current y=" + startY + ")";
+			}
 		}
 		return null;
 	}
 
-	/** 實際目標步數：stairs 同時給 length 與 target_y 時取先到者。 */
+	/** 實際目標步數：stairs_down / stairs_up 同時給 length 與 target_y 時取先到者。 */
 	public static int targetSteps(Mode mode, int length, Integer targetY, int startY) {
-		if (mode == Mode.STAIRS && targetY != null) {
-			return Math.min(length, Math.max(0, startY - targetY));
+		if (targetY != null) {
+			if (mode == Mode.STAIRS_DOWN) return Math.min(length, Math.max(0, startY - targetY));
+			if (mode == Mode.STAIRS_UP) return Math.min(length, Math.max(0, targetY - startY));
 		}
 		return length;
 	}
 
 	/** 下一步的立足點座標。 */
 	public static Pos nextStand(Pos current, Mode mode, Dir dir) {
-		return new Pos(current.x() + dir.dx, current.y() + (mode == Mode.STAIRS ? -1 : 0), current.z() + dir.dz);
+		int dy = switch (mode) {
+			case FLAT -> 0;
+			case STAIRS_DOWN -> -1;
+			case STAIRS_UP -> 1;
+		};
+		return new Pos(current.x() + dir.dx, current.y() + dy, current.z() + dir.dz);
 	}
 
 	/**
 	 * 本步需要清出的方塊(由上往下排，確保視線通暢並妥善處理上方落沙)：
-	 * straight 挖 1×2(頭、腳)；stairs 挖 1×3(高 3 格避免撞頭並保留階梯)。
+	 * flat 挖 1×2(頭、腳)；stairs_down 挖 1×3(高 3 格避免撞頭並保留階梯)；
+	 * stairs_up 先清目前站立處上方 1 格(跳躍不撞頭)，再清上一階的頭、腳兩格，走完後同樣形成雙向可走的 1×3 階梯。
 	 */
-	public static List<Pos> mineSlice(Pos nextStand, Mode mode) {
-		if (mode == Mode.STAIRS) {
-			return List.of(
+	public static List<Pos> mineSlice(Pos current, Pos nextStand, Mode mode) {
+		return switch (mode) {
+			case STAIRS_DOWN -> List.of(
 				nextStand.offset(0, 2, 0),
 				nextStand.offset(0, 1, 0),
 				nextStand
 			);
-		}
-		return List.of(
-			nextStand.offset(0, 1, 0),
-			nextStand
-		);
+			case STAIRS_UP -> List.of(
+				current.offset(0, 2, 0),
+				nextStand.offset(0, 1, 0),
+				nextStand
+			);
+			case FLAT -> List.of(
+				nextStand.offset(0, 1, 0),
+				nextStand
+			);
+		};
+	}
+
+	/** 供既有測試與非向上模式的簡寫。 */
+	public static List<Pos> mineSlice(Pos nextStand, Mode mode) {
+		return mineSlice(nextStand, nextStand, mode);
 	}
 
 	/**

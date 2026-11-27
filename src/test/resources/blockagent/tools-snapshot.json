@@ -415,7 +415,7 @@
   },
   {
     "name": "goto",
-    "description": "Walk to a position. Omit y to match x,z only and follow the surface (good for rough terrain).",
+    "description": "Walk to a position without breaking blocks (still jumps/places to climb). Omit y to match x,z only and follow the surface.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -461,7 +461,7 @@
   },
   {
     "name": "goto_block",
-    "description": "Walk next to the nearest block of a type.",
+    "description": "Walk next to the nearest block of a type without breaking blocks.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -915,7 +915,7 @@
   },
   {
     "name": "mine",
-    "description": "Find blocks, walk there, mine and pick them up until count is reached. Checks tool and inventory space first. Optional tool_match enforces a matching tool on target blocks only (normal tools for clearing stone).",
+    "description": "Find exposed/reachable blocks, walk there, mine and pick them up until count is reached. Only breaks target blocks and soft plants/leaves (never tunnels through solid stone/dirt; use dig_tunnel to reach buried ores). Checks tool and inventory space first. Optional tool_match enforces a matching tool on target blocks.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -969,16 +969,17 @@
   },
   {
     "name": "dig_tunnel",
-    "description": "Dig a stepped 1x3 staircase (stairs) or 1x2 horizontal tunnel (straight) step by step. Checks ahead for lava, water, drops, protected blocks and optional stop_on ores before swinging, places torches every torch_every steps (torch_every\u003d0 is limited to 12 steps), and reports all ores exposed along the tunnel.",
+    "description": "Dig a stepped 1x3 downward staircase (stairs_down), 1x3 upward staircase (stairs_up), or 1x2 flat tunnel (flat) step by step. Checks ahead for lava, water, drops, protected blocks and optional stop_on ores before swinging, places torches every torch_every steps (torch_every\u003d0 is limited to 12 steps), and reports all ores exposed along the tunnel.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "mode": {
           "type": "string",
-          "description": "stairs (descend 1x3) or straight (level 1x2)",
+          "description": "stairs_down (descend 1x3), stairs_up (ascend 1x3), or flat (level 1x2)",
           "enum": [
-            "stairs",
-            "straight"
+            "stairs_down",
+            "stairs_up",
+            "flat"
           ]
         },
         "direction": {
@@ -999,7 +1000,7 @@
         },
         "target_y": {
           "type": "integer",
-          "description": "Stop at this y (stairs only)",
+          "description": "Stop at this y (stairs_down or stairs_up only)",
           "minimum": -64,
           "maximum": 320
         },

@@ -36,7 +36,7 @@ import java.util.Set;
 
 /**
  * 系統性地下挖礦任務(docs/SPEC.md S4.2j)：
- * 以逐格步進方式開 {@code stairs}(1×3 階梯下挖)或 {@code straight}(1×2 水平礦道)，
+ * 以逐格步進方式開 {@code stairs_down}(1×3 階梯下挖)、{@code stairs_up}(1×3 階梯上挖)或 {@code flat}(1×2 水平礦道)，
  * 每步動鎬前檢查岩漿、水流、深坑、受保護方塊與 {@code stop_on} 礦脈，依 {@code torch_every} 自動插火把，
  * 並一律記錄沿途露出的礦脈清單。
  */
@@ -85,7 +85,11 @@ public final class DigTunnelTask extends Task {
 
 	@Override
 	public String describe() {
-		return mode == Mode.STAIRS ? "階梯下挖" : "水平挖礦道";
+		return switch (mode) {
+			case STAIRS_DOWN -> "階梯下挖";
+			case STAIRS_UP -> "階梯上挖";
+			case FLAT -> "水平挖礦道";
+		};
 	}
 
 	@Override
@@ -96,7 +100,7 @@ public final class DigTunnelTask extends Task {
 	@Override
 	public String progress() {
 		Kv kv = Kv.of()
-			.put("mode", mode == Mode.STAIRS ? "stairs" : "straight")
+			.put("mode", mode.wireName())
 			.put("dug", dugSteps + "/" + targetSteps)
 			.put("torches_placed", torchesPlaced);
 		if (anchor != null) kv.put("pos", Fmt.pos(anchor));
@@ -158,7 +162,7 @@ public final class DigTunnelTask extends Task {
 		TunnelPlanner.Pos curP = new TunnelPlanner.Pos(anchor.getX(), anchor.getY(), anchor.getZ());
 		TunnelPlanner.Pos nextP = TunnelPlanner.nextStand(curP, mode, dir);
 		nextStand = toBlockPos(nextP);
-		List<TunnelPlanner.Pos> slice = TunnelPlanner.mineSlice(nextP, mode);
+		List<TunnelPlanner.Pos> slice = TunnelPlanner.mineSlice(curP, nextP, mode);
 		List<TunnelPlanner.Pos> adj = TunnelPlanner.adjacentCells(slice, curP);
 		List<TunnelPlanner.Pos> waterCells = TunnelPlanner.waterWatchCells(slice, curP);
 
@@ -323,6 +327,7 @@ public final class DigTunnelTask extends Task {
 		double horiz = Math.hypot(dx, dz);
 		if (mc.player.blockPosition().equals(nextStand) && horiz <= 0.38) {
 			mc.options.keyUp.setDown(false);
+			mc.options.keyJump.setDown(false);
 			if (moveFallbackBari) Bari.stopAll();
 			anchor = nextStand;
 			dugSteps++;
@@ -349,8 +354,11 @@ public final class DigTunnelTask extends Task {
 			Moves.lookAt(mc.player, new Vec3(center.x, mc.player.getEyeY(), center.z));
 			mc.options.keySprint.setDown(false);
 			mc.options.keyUp.setDown(true);
+			boolean needJump = mode == Mode.STAIRS_UP && nextStand.getY() > mc.player.blockPosition().getY();
+			mc.options.keyJump.setDown(needJump && mc.player.onGround());
 			if (moveTicks > 40) {
 				mc.options.keyUp.setDown(false);
+				mc.options.keyJump.setDown(false);
 				moveFallbackBari = true;
 				path(new GoalBlock(nextStand));
 			}
@@ -466,7 +474,10 @@ public final class DigTunnelTask extends Task {
 
 	@Override
 	protected void onStop(Minecraft mc) {
-		if (mc.options != null) mc.options.keyUp.setDown(false);
+		if (mc.options != null) {
+			mc.options.keyUp.setDown(false);
+			mc.options.keyJump.setDown(false);
+		}
 		if (mc.gameMode != null) mc.gameMode.stopDestroyBlock();
 		Bari.stopAll();
 	}

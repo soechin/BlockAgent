@@ -64,7 +64,7 @@
   | `freeLook` | 平常 `false`；使用者 3 秒內用滑鼠轉過視角時 `true` | 平常鏡頭跟著 AI 的前進方向；使用者在看別的地方時，Baritone 只改移動方向、不轉鏡頭(S8.2a)。這個值每個 tick 由 `Control` 同步，不在 20 tick 的檢查裡 |
   | `chatDebug`, `desktopNotifications` | `false` | 不在聊天框或系統通知顯示除錯訊息 |
   | `useSwordToMine` | `false` | 不拿劍挖方塊，白白耗損耐久 |
-  | `allowBreak`, `allowPlace` | 平常 `true`；清空區域(S4.8c)、建造時拆鷹架的期間 `false` | 由目前任務決定(`Task.adjustBaritone`)，20 tick 的檢查重設時也照任務的需要，不會在拆鷹架途中被改回 `true`；任務被反射暫停時照平常的設定 |
+  | `allowBreak`, `allowPlace` | 平常 `true`；純移動(`goto`/`goto_block`)期間 `allowBreak=false`；清空區域(S4.8c)、建造時拆鷹架的期間兩者皆 `false` | 由目前任務決定(`Task.adjustBaritone`)，20 tick 的檢查重設時也照任務的需要，不會在拆鷹架或走路途中被改回 `true`；任務被反射暫停時照平常的設定 |
 
   - 啟動時確認 Baritone 的內部類別存在(`CalculationContext`、`BuilderProcess`、`ToolSet`)。找不到表示裝的是混淆版(`baritone-standalone-fabric`)，S1.5 的 Mixin 會靜默失效：記錄錯誤，並在進入世界時於聊天欄(只顯示在自己的畫面)用紅字提醒改裝 unoptimized 版(docs/REVIEW.md H10)。
   - 任務改了的 Baritone 設定(`exploreForBlocks`、`buildInLayers`、`layerOrder`、`maxFallHeightNoWater`、`allowBreak`、`allowPlace`)在任務結束時用 `try/finally` 還原，被反射暫停後恢復時重新套用。
@@ -292,8 +292,8 @@ flowchart TD
 
 | 工具 | 一件事 | 開始前檢查 | 需求 |
 |---|---|---|---|
-| `mine(block, count, radius=48, search=false, tool_match?)` | 找到指定方塊，走過去、挖、撿起來，直到數量達到。`block` 可以是方塊 id 或群組(`log`、`stone`、`coal_ore`、`iron_ore`…)；選填 `tool_match` 只對目標方塊強制使用符合條件的工具(S4.2i) | 有沒有挖得動的工具(含 `tool_match`)；背包空間；已載入範圍內有沒有足夠的目標(沒有就 `NOT_FOUND`，加 `search=true` 才會往外找，最多 5 分鐘) | M2.1, M2.8, M2.9 |
-| `dig_tunnel(mode, direction, length=16, target_y?, torch_every=8, stop_on?, tool_match?)` | 系統性地下挖礦(S4.2j)：以逐格步進方式開 `stairs`(1×3 階梯下挖)或 `straight`(1×2 水平礦道)，每步動鎬前檢查岩漿、水流、深坑與受保護方塊，依 `torch_every` 自動插火把、遇 `stop_on` 礦脈即停，並一律回報沿途露出的礦脈清單 | 方向/長度上限(`torch_every=0` 限最多 12 格)；`torch_every > 0` 須有火把；挖掘工具與背包空間 | M2.1, M2.8, M2.9, M5.2 |
+| `mine(block, count, radius=48, search=false, tool_match?)` | 找到露出或可到達的指定方塊，走過去、挖、撿起來，直到數量達到。僅破目標方塊本身與天然軟障礙(樹葉、草花、薄雪、蜘蛛網等)，不穿透非目標實心石牆／泥土亂鑽；埋藏礦脈改由 `dig_tunnel` 開道接近。`block` 可以是方塊 id 或群組(`log`、`stone`、`coal_ore`、`iron_ore`…)；選填 `tool_match` 只對目標方塊強制使用符合條件的工具(S4.2i) | 有沒有挖得動的工具(含 `tool_match`)；背包空間；已載入範圍內有沒有足夠的目標(沒有就 `NOT_FOUND`，加 `search=true` 才會往外找，最多 5 分鐘) | M2.1, M2.8, M2.9 |
+| `dig_tunnel(mode, direction, length=16, target_y?, torch_every=8, stop_on?, tool_match?)` | 系統性地下挖礦(S4.2j)：以逐格步進方式開 `stairs_down`(1×3 階梯下挖)、`stairs_up`(1×3 階梯上挖)或 `flat`(1×2 水平礦道)，每步動鎬前檢查岩漿、水流、深坑與受保護方塊，依 `torch_every` 自動插火把、遇 `stop_on` 礦脈即停，並一律回報沿途露出的礦脈清單 | 方向/長度上限(`torch_every=0` 限最多 12 格)；`torch_every > 0` 須有火把；挖掘工具與背包空間 | M2.1, M2.8, M2.9, M5.2 |
 | `hunt(target)` | 追蹤指定 entity id 或生物種類(48 格內最近)的生物並打倒，擊殺後走近並撿取掉落物。敵對生物照 S9.1b 的戰術打(苦力怕打了就退、遠程怪舉盾衝過去、有弓就射)，其他生物走近用劍或斧頭打 | 目標消失、攻擊被守衛擋下，或擊殺後未能撿取時回報原因 |
 | `craft(item, count=1)` | 合成。優先使用伸手可及的工作台，其次從 16 格內選自有或其他工作台。高危險時使用手邊工作台，或從背包就近放置。每一批最多做到材料的堆疊上限那麼多次(弓 1、雪球 16)；放進合成格的數量、拿出來的數量都照格子實際的變化算，背包滿了拿不出來就照實回報 | 用配方資料計算所需材料(包括做工作台的木板)；不夠就回報缺什麼 | M2.1, M2.8, M2.9 |
 | `smelt(item?, count?, fuel?, action="smelt", x?,y?,z?)` | 熔煉與爐子存取(S4.2e)：`action="smelt"`(預設)支援普通熔爐、高爐(`blast_furnace`)與煙燻爐(`smoker`)，依配方優先使用加速爐，再其次自有普通熔爐與其他熔爐，沒有才從背包放普通熔爐；放入原料(含副手)和燃料，等燒好，拿出產物。`action="list"` 查看指定座標爐子的原料/燃料/產物與燃燒狀態；`action="take"` 取出指定座標爐子的產物格 | `smelt`：原料、燃料是否夠、爐子是否可用；`list`/`take`：目標座標是否為熔爐/高爐/煙燻爐 | M2.2, M2.8, M2.9, M5.3 |
@@ -377,10 +377,10 @@ flowchart TD
   - `MineTask` 將編譯後的 `ItemMatcher` 存於 `volatile` 不可變欄位(供 Baritone 背景執行緒安全讀取，DEV_RULES §3)，開工與恢復時確保該工具位於快捷列；`ToolSetMixin` **僅當該方塊符合 `MineTask.isMineTarget(state)` 時**才強制選取符合 `tool_match` 的快捷列槽位，開路途中挖掘其他石頭或泥土仍沿用一般最快工具，避免將時運或絲綢鑽石鎬耗損在開路上。
 - **S4.2j 系統性地下挖礦(`dig_tunnel`)**(2026-11-27，第二棒 2B)：[M2.1, M2.8, M2.9, M5.2]
   - 參數：
-    - `mode`：必填，`stairs`(1×3 階梯下挖)或 `straight`(1×2 水平礦道)。
+    - `mode`：必填，`stairs_down`(1×3 階梯下挖)、`stairs_up`(1×3 階梯上挖)或 `flat`(1×2 水平礦道)。
     - `direction`：必填，`north`、`south`、`east`、`west`。
     - `length`：選填 1–64，預設 16(總推進步數上限)。
-    - `target_y`：選填，僅 `mode="stairs"` 可用；下挖到腳下高度 ≤ `target_y` 即完成(與 `length` 先達者為準；若目前高度已 ≤ `target_y` 或用於 `straight` 回 `INVALID_ARGUMENT`)。
+    - `target_y`：選填，僅 `mode="stairs_down"` 或 `mode="stairs_up"` 可用；下挖到腳下高度 ≤ `target_y` 或上挖到 ≥ `target_y` 即完成(與 `length` 先達者為準；方向不符或用於 `flat` 回 `INVALID_ARGUMENT`)。
     - `torch_every`：選填 0–16，預設 8。
     - `stop_on`：選填，逗號分隔最多 8 個方塊 ID 或群組(支援 `any_ore` 代表所有 `#*_ores`，如 `diamond_ore`、`coal_ore,iron_ore`)。
     - `tool_match`：選填(S4.2i)。
@@ -388,7 +388,7 @@ flowchart TD
     - `torch_every > 0` 時，非創造模式下事前檢查須持有至少 1 根 `torch`(含副手)；缺少時回 `ERR MISSING_MATERIALS` 並附 `hint="craft torches (coal or charcoal from smelting logs), or pass torch_every=0 for a short tunnel (max 12)"`。執行中火把耗盡且該步需要插火把時，立即以已完成步數結束並附同一提示，不默默摸黑繼續挖。
     - `torch_every == 0` 時允許無火把開挖，但**強制限制 `length <= 12`**(超過回 `INVALID_ARGUMENT`)，防止無火把一次直通深層地底；結束時若本次有未照明推進，回報 `unlit=<起點>..<終點>` 供 AI 自行決定是否補插火把。
   - **逐格步進狀態機與純邏輯模組 `blockagent.core.TunnelPlanner`**：
-    - 不將整條路線交給 Baritone `MineProcess`/`BuilderProcess`，改以逐格步進推進：`straight` 每步挖前方 1×2(腳部與頭部)；`stairs` 每步往前 1 格且往下降 1 格，挖新位置上方 1×3(高度 3 格避免撞頭並維持可原路返回的階梯)。
+    - 不將整條路線交給 Baritone `MineProcess`/`BuilderProcess`，改以逐格步進推進：`flat` 每步挖前方 1×2(腳部與頭部)；`stairs_down` 每步往前 1 格且往下降 1 格，挖新位置上方 1×3(高度 3 格避免撞頭並維持可原路返回的階梯)；`stairs_up` 每步往前 1 格且往上升 1 格，先清目前站立處上方第 3 格(跳躍不撞頭)，再清上一階 1×2，同樣形成雙向可走的 1×3 階梯。
     - **每步動鎬前的安全前瞻檢查**：掃描該步待挖格與其相鄰 1 格(上、前、左、右、下)：
       1. 出現岩漿(`lava`)，或頭頂／正前方出現水源／水流(`water`) → 安全停下(`stopped=hazard`)並回報種類與座標。
       2. 推進後目標落腳處下方無支撐且落差超過 2 格(空洞／深坑) → 安全停下(`stopped=drop`)並回報座標。
@@ -1034,7 +1034,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 | M6.7 | `SessionGameTest.t5` 用 `TestInput.moveCursor` 轉動視角後，檢查工作階段仍在進行。接手測試情境：任務進行中按 W 鍵觸發 `user_took_over`，打開聊天框打字則不觸發。 |
 | M7.8、M7.9 | 單元測試+遊戲測試：紀錄的 `source` 欄位；關掉 `eat` 後肚子餓不會吃；被鎖定的反射關不掉 |
 | M1.2、M2.1、M2.2(底層體檢與日常擴充，S3.2a、S4.2b–S4.2e) | T16(單元測試 + 遊戲測試)：(a) 單元測試：`ItemMatcher` 解析/比對/耐久排序、`Recipes` 載入 `blasting`/`smoking` 與爐種優先順序、`inventory_full` 觸發去重、`ToolsSnapshotTest` 同步更新 `tools-snapshot.json`；(b) `eat` 喝抗火藥水(`match=fire_resistance`)與牛奶桶(清除中毒效果)，確認 `effects=` 回報與不影響食物自動選擇；(c) `equip(item="none", slot=head/offhand)` 純卸裝、`chest` 用 `id[屬性]` 精準取放附魔書/藥水/高耐久工具、副手持有材料時的 `smelt`/`drop`/`chest(put)`/`place_block`；(d) `inspect_area` 與 `get_surroundings` 讀出雙面告示牌文字與非空物品展示框，`use_block` 讀書台並確認自動關閉介面，`use_item` 讀背包成書分頁且不開書本 GUI；(e) `smelt` 優先用高爐燒鐵礦、煙燻爐烤肉，以及 `action=list`/`take` 查看與取出既有成品；(f) `place_block` 設 `half=top` 放上半磚/倒置樓梯，設 `sneak=true` 貼著箱子放漏斗與火把，並驗證放完後放開 `keyShift` 且無法蹲下覆蓋或疊合他人半磚(S7.3b) |
-| M2.1、M2.2、M2.8、M2.9、M5.2、M5.3(中盤挖礦與附魔修裝，S4.2f–S4.2j) | T17 `SecondWaveGameTest`(單元測試 + 遊戲測試)：(a) 單元測試：`TunnelPlanner` 階梯/水平切片座標、安全前瞻(岩漿/水流/深坑/受保護方塊/`stop_on`)、`torch_every=0` 限 12 格規則、附魔預覽格式化、鐵砧輸入預檢、`smelt` 同料剩餘自動選燃料與 `ToolsSnapshotTest` 同步更新 `tools-snapshot.json`；(b) `enchant`：無書架與 15 書架附魔台 `preview` 驗證 `max_level=30` 且收包不掉物，`apply` 消耗等級與青金石成功附魔，等級或青金石不足回 `MISSING_MATERIALS`；(c) `anvil`：`preview` 與 `apply` 合併附魔書到鑽石鎬、用鐵錠修補裝備、幫 `name_tag` 改名、經驗不足回 `MISSING_MATERIALS` 與 `Too Expensive` 回 `INVALID_ARGUMENT`，並驗證允許使用他人鐵砧(優先自有)；(d) `grindstone`：單件拆附魔回經驗與兩件同種裝備合修；(e) `tool_match`：`break_block` 與 `mine` 指定 `silk_touch` 挖玻璃/礦石保留原塊、`fortune` 挖鑽石礦且開路普通石頭不誤用時運鎬，缺少指定附魔工具回 `MISSING_TOOL`；(f) `dig_tunnel`：`stairs` 下挖 1×3 階梯與 `straight` 1×2 水平礦道自動插火把並回報沿途 `ores=`；遇岩漿、深坑、他人方塊(`RULE_PROTECTED_BLOCK`)與 `stop_on=diamond_ore` 在動鎬前安全停下；`torch_every=8` 缺火把擋下並提示燒木炭，`torch_every=0` 超過 12 格拒跑、12 格內完成並回報 `unlit=` |
+| M2.1、M2.2、M2.8、M2.9、M5.2、M5.3(中盤挖礦與附魔修裝，S4.2f–S4.2j) | T17 `SecondWaveGameTest`(單元測試 + 遊戲測試)：(a) 單元測試：`TunnelPlanner` 階梯/水平切片座標、安全前瞻(岩漿/水流/深坑/受保護方塊/`stop_on`)、`torch_every=0` 限 12 格規則、附魔預覽格式化、鐵砧輸入預檢、`smelt` 同料剩餘自動選燃料與 `ToolsSnapshotTest` 同步更新 `tools-snapshot.json`；(b) `enchant`：無書架與 15 書架附魔台 `preview` 驗證 `max_level=30` 且收包不掉物，`apply` 消耗等級與青金石成功附魔，等級或青金石不足回 `MISSING_MATERIALS`；(c) `anvil`：`preview` 與 `apply` 合併附魔書到鑽石鎬、用鐵錠修補裝備、幫 `name_tag` 改名、經驗不足回 `MISSING_MATERIALS` 與 `Too Expensive` 回 `INVALID_ARGUMENT`，並驗證允許使用他人鐵砧(優先自有)；(d) `grindstone`：單件拆附魔回經驗與兩件同種裝備合修；(e) `tool_match`：`break_block` 與 `mine` 指定 `silk_touch` 挖玻璃/礦石保留原塊、`fortune` 挖鑽石礦且開路普通石頭不誤用時運鎬，缺少指定附魔工具回 `MISSING_TOOL`；(f) `dig_tunnel`：`stairs_down` 下挖 1×3 階梯、`stairs_up` 上挖 1×3 階梯與 `flat` 1×2 水平礦道自動插火把並回報沿途 `ores=`；遇岩漿、深坑、他人方塊(`RULE_PROTECTED_BLOCK`)與 `stop_on=diamond_ore` 在動鎬前安全停下；`torch_every=8` 缺火把擋下並提示燒木炭，`torch_every=0` 超過 12 格拒跑、12 格內完成並回報 `unlit=` |
 
 ---
 

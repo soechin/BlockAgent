@@ -312,13 +312,13 @@ public class SecondWaveGameTest implements FabricClientGameTest {
 			return false;
 		}), "T17(e) 應使用絲綢之觸鎬挖除冰磚");
 
-		// mine 指定 fortune 挖鑽石礦：前方放石頭，驗證時運鎬只消耗在目標鑽石礦上(最多 2 點耐久)
-		BlockPos stone1 = c.west(2);
-		BlockPos stone2 = c.west(2).above();
+		// mine 指定 fortune 挖鑽石礦：前方放樹葉(軟障礙)，驗證時運鎬只消耗在目標鑽石礦上(最多 2 點耐久)
+		BlockPos leaf1 = c.west(2);
+		BlockPos leaf2 = c.west(2).above();
 		BlockPos dia1 = c.west(3);
 		BlockPos dia2 = c.west(3).above();
-		k.setBlock(stone1, Blocks.STONE.defaultBlockState());
-		k.setBlock(stone2, Blocks.STONE.defaultBlockState());
+		k.setBlock(leaf1, Blocks.OAK_LEAVES.defaultBlockState());
+		k.setBlock(leaf2, Blocks.OAK_LEAVES.defaultBlockState());
 		k.setBlock(dia1, Blocks.DIAMOND_ORE.defaultBlockState());
 		k.setBlock(dia2, Blocks.DIAMOND_ORE.defaultBlockState());
 		k.ctx.waitTicks(4);
@@ -340,8 +340,8 @@ public class SecondWaveGameTest implements FabricClientGameTest {
 			return diamonds && fortuneDmg > 0 && fortuneDmg <= 2;
 		}), "T17(e) 時運鎬應只用在鑽石礦(耐久損耗 1–2)且取得鑽石");
 
-		k.setBlock(stone1, Blocks.AIR.defaultBlockState());
-		k.setBlock(stone2, Blocks.AIR.defaultBlockState());
+		k.setBlock(leaf1, Blocks.AIR.defaultBlockState());
+		k.setBlock(leaf2, Blocks.AIR.defaultBlockState());
 		k.setBlock(dia1, Blocks.AIR.defaultBlockState());
 		k.setBlock(dia2, Blocks.AIR.defaultBlockState());
 		System.out.println("[ok] T17(e) break_block 與 mine 的 tool_match(silk_touch / fortune)");
@@ -366,11 +366,11 @@ public class SecondWaveGameTest implements FabricClientGameTest {
 		// 2. dig_tunnel 火把護欄測試
 		k.clearInventory();
 		k.give("minecraft:diamond_pickaxe", 1);
-		var noTorch = k.ai.call(k.ctx, "dig_tunnel", args("mode", "straight", "direction", "east", "length", 4, "torch_every", 8));
+		var noTorch = k.ai.call(k.ctx, "dig_tunnel", args("mode", "flat", "direction", "east", "length", 4, "torch_every", 8));
 		k.expectError(noTorch, "MISSING_MATERIALS", "T17(f) torch_every=8 無火把應回 MISSING_MATERIALS");
 		check(noTorch.text().contains("charcoal"), "T17(f) 缺火把提示應提及木炭：" + noTorch.text());
 
-		var tooLongUnlit = k.ai.call(k.ctx, "dig_tunnel", args("mode", "straight", "direction", "east", "length", 13, "torch_every", 0));
+		var tooLongUnlit = k.ai.call(k.ctx, "dig_tunnel", args("mode", "flat", "direction", "east", "length", 13, "torch_every", 0));
 		k.expectError(tooLongUnlit, "INVALID_ARGUMENT", "T17(f) torch_every=0 超過 12 格應回 INVALID_ARGUMENT");
 
 		// 3. 在平坦場地上方建造封閉石頭山體(超平坦地面為 y=-60，往上抬高避免撞到基岩 y=-64)
@@ -399,7 +399,7 @@ public class SecondWaveGameTest implements FabricClientGameTest {
 
 		// 3a. 無火把短距 3 格：應挖完 3 格並回報 unlit= 與沿途 ores=iron_ore
 		String unlit = finishTask(k, k.ai.call(k.ctx, "dig_tunnel",
-			args("mode", "straight", "direction", "east", "length", 3, "torch_every", 0)));
+			args("mode", "flat", "direction", "east", "length", 3, "torch_every", 0)));
 		check(unlit.contains("dug=3/3") && unlit.contains("unlit=") && unlit.contains("iron_ore"),
 			"T17(f) 無火把短距 3 格應回報 dug=3/3、unlit= 與 iron_ore：" + unlit);
 
@@ -407,7 +407,7 @@ public class SecondWaveGameTest implements FabricClientGameTest {
 		k.give("minecraft:torch", 8);
 		k.ctx.waitTicks(4);
 		String stopOre = finishTask(k, k.ai.call(k.ctx, "dig_tunnel",
-			args("mode", "straight", "direction", "east", "length", 6, "torch_every", 1, "stop_on", "diamond_ore")));
+			args("mode", "flat", "direction", "east", "length", 6, "torch_every", 1, "stop_on", "diamond_ore")));
 		check(stopOre.contains("stopped=ore") && stopOre.contains("diamond_ore"),
 			"T17(f) stop_on=diamond_ore 應在動鎬前停下：" + stopOre);
 		check(k.server.computeOnServer(s -> s.overworld().getBlockState(base.offset(6, 0, 0)).is(Blocks.DIAMOND_ORE)),
@@ -419,7 +419,7 @@ public class SecondWaveGameTest implements FabricClientGameTest {
 		k.setBlock(base.offset(6, 0, 0), Blocks.STONE.defaultBlockState());
 		k.ctx.waitTicks(4);
 		String stopLava = finishTask(k, k.ai.call(k.ctx, "dig_tunnel",
-			args("mode", "straight", "direction", "east", "length", 6, "torch_every", 4)));
+			args("mode", "flat", "direction", "east", "length", 6, "torch_every", 4)));
 		check(stopLava.contains("stopped=hazard") && stopLava.contains("hazard=lava"),
 			"T17(f) 遇岩漿應事前安全停下：" + stopLava);
 
@@ -427,14 +427,14 @@ public class SecondWaveGameTest implements FabricClientGameTest {
 		k.setBlock(base.offset(8, 0, 0), Blocks.STONE.defaultBlockState());
 		k.ctx.waitTicks(4);
 		var hitPlanks = k.ai.call(k.ctx, "dig_tunnel",
-			args("mode", "straight", "direction", "east", "length", 6, "torch_every", 4));
+			args("mode", "flat", "direction", "east", "length", 6, "torch_every", 4));
 		String plankText = hitPlanks.text().contains("WAIT task_running") ? k.eventsUntil("task_failed:", 20) : hitPlanks.text();
 		check(plankText.contains("RULE_PROTECTED_BLOCK"),
 			"T17(f) 遇他人方塊應以 RULE_PROTECTED_BLOCK 停下：" + plankText);
 		check(k.server.computeOnServer(s -> s.overworld().getBlockState(base.offset(10, 0, 0)).is(Blocks.OAK_PLANKS)),
 			"T17(f) 他人橡木板應保持完整");
 
-		// 4. stairs 階梯下挖 3 格(從高處乾淨起點下挖至 y-3，保留離基岩的安全距離)
+		// 4. stairs_down 階梯下挖 3 格(從高處乾淨起點下挖至 y-3，保留離基岩的安全距離)
 		BlockPos stairStart = c.offset(-10, 6, -10);
 		k.onServer(s -> {
 			var lvl = s.overworld();
@@ -453,7 +453,7 @@ public class SecondWaveGameTest implements FabricClientGameTest {
 
 		int targetY = stairStart.getY() - 3;
 		String stairs = finishTask(k, k.ai.call(k.ctx, "dig_tunnel",
-			args("mode", "stairs", "direction", "east", "length", 10, "target_y", targetY, "torch_every", 2)));
+			args("mode", "stairs_down", "direction", "east", "length", 10, "target_y", targetY, "torch_every", 2)));
 		check(stairs.contains("dug=3/3") && stairs.contains("stopped=completed"),
 			"T17(f) 階梯下挖應精準挖 3 步到達 target_y：" + stairs);
 		check(k.server.computeOnServer(s -> k.me(s).blockPosition().equals(stairStart.offset(3, -3, 0))),

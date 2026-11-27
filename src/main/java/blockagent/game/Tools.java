@@ -630,7 +630,7 @@ public final class Tools {
 				a.setStatusText(hudText(new Args(args).str("text"), STATUS_TEXT_MAX));
 				return ToolResult.ok("OK status_set");
 			});
-		taskTool(t, a, "goto", "Walk to a position. Omit y to match x,z only and follow the surface (good for rough terrain).",
+		taskTool(t, a, "goto", "Walk to a position without breaking blocks (still jumps/places to climb). Omit y to match x,z only and follow the surface.",
 			Hints.ACTION, Schema.object().integer("x", null, true).integer("y", null, false).integer("z", null, true)
 				.integer("range", "Arrival distance", false).range(0, 32).def(1),
 			args -> {
@@ -652,7 +652,7 @@ public final class Tools {
 					return r;
 				});
 			});
-		taskTool(t, a, "goto_block", "Walk next to the nearest block of a type.",
+		taskTool(t, a, "goto_block", "Walk next to the nearest block of a type without breaking blocks.",
 			Hints.ACTION, Schema.object().string("type", "Block id or group", true).integer("radius", null, false).range(4, 96).def(48),
 			args -> {
 				Args g = new Args(args);
@@ -829,8 +829,9 @@ public final class Tools {
 				for (String type : parseTypeList(g.str("block"), "block")) blocks.addAll(parseBlockGroup(type));
 				return act(a, "clear_area", args, mc -> clearArea(a, mc, region, blocks, g.bool("replace", false)));
 			});
-		taskTool(t, a, "mine", "Find blocks, walk there, mine and pick them up until count is reached. Checks tool and inventory "
-				+ "space first. Optional tool_match enforces a matching tool on target blocks only (normal tools for clearing stone).",
+		taskTool(t, a, "mine", "Find exposed/reachable blocks, walk there, mine and pick them up until count is reached. "
+				+ "Only breaks target blocks and soft plants/leaves (never tunnels through solid stone/dirt; use dig_tunnel to reach buried ores). "
+				+ "Checks tool and inventory space first. Optional tool_match enforces a matching tool on target blocks.",
 			Hints.DESTRUCTIVE, Schema.object().string("block", "Block id or group: log, stone, coal_ore, iron_ore (incl. deepslate)...", true)
 				.integer("count", null, true).range(1, 640).integer("radius", null, false).range(8, 96).def(48)
 				.bool("search", "If not enough are loaded, explore outward (up to 5 min)", false).def(false)
@@ -879,23 +880,22 @@ public final class Tools {
 					return a.tasks.start(new MineTask(a, blocks, label, count, r, search, toolMatcher), g.bool("replace", false), pre.toString());
 				});
 			});
-		taskTool(t, a, "dig_tunnel", "Dig a stepped 1x3 staircase (stairs) or 1x2 horizontal tunnel (straight) step by step. Checks "
-				+ "ahead for lava, water, drops, protected blocks and optional stop_on ores before swinging, places torches every "
-				+ "torch_every steps (torch_every=0 is limited to 12 steps), and reports all ores exposed along the tunnel.",
+		taskTool(t, a, "dig_tunnel", "Dig a stepped 1x3 downward staircase (stairs_down), 1x3 upward staircase (stairs_up), or 1x2 flat "
+				+ "tunnel (flat) step by step. Checks ahead for lava, water, drops, protected blocks and optional stop_on ores before "
+				+ "swinging, places torches every torch_every steps (torch_every=0 is limited to 12 steps), and reports all ores exposed along the tunnel.",
 			Hints.DESTRUCTIVE, Schema.object()
-				.enumString("mode", "stairs (descend 1x3) or straight (level 1x2)", true, "stairs", "straight")
+				.enumString("mode", "stairs_down (descend 1x3), stairs_up (ascend 1x3), or flat (level 1x2)", true, "stairs_down", "stairs_up", "flat")
 				.enumString("direction", null, true, "north", "south", "east", "west")
 				.integer("length", "Max steps (1-64; max 12 when torch_every=0)", false).range(1, TunnelPlanner.MAX_LENGTH).def(TunnelPlanner.DEFAULT_LENGTH)
-				.integer("target_y", "Stop at this y (stairs only)", false).range(-64, 320)
+				.integer("target_y", "Stop at this y (stairs_down or stairs_up only)", false).range(-64, 320)
 				.integer("torch_every", "Auto-place torch every N steps in darkness (0=unlit, max 12 steps)", false).range(0, TunnelPlanner.MAX_TORCH_EVERY).def(TunnelPlanner.DEFAULT_TORCH_EVERY)
 				.string("stop_on", "Comma-separated ore ids/groups to stop before breaking (e.g. diamond_ore, any_ore)", false)
 				.string("tool_match", "Optional tool filter for digging the tunnel", false),
 			args -> {
 				Args g = new Args(args);
-				TunnelPlanner.Mode mode = "stairs".equals(g.str("mode")) ? TunnelPlanner.Mode.STAIRS
-					: "straight".equals(g.str("mode")) ? TunnelPlanner.Mode.STRAIGHT : null;
+				TunnelPlanner.Mode mode = TunnelPlanner.Mode.parse(g.str("mode"));
 				TunnelPlanner.Dir dir = TunnelPlanner.Dir.parse(g.str("direction"));
-				if (mode == null) throw new Args.BadArgument("mode must be stairs or straight");
+				if (mode == null) throw new Args.BadArgument("mode must be stairs_down, stairs_up or flat");
 				if (dir == null) throw new Args.BadArgument("direction must be north, south, east or west");
 				int length = g.integer("length", TunnelPlanner.DEFAULT_LENGTH, 1, TunnelPlanner.MAX_LENGTH);
 				Integer targetY = g.has("target_y") ? g.integer("target_y", 0, -64, 320) : null;
@@ -2139,7 +2139,7 @@ public final class Tools {
 		String err = TunnelPlanner.validate(mode, length, targetY, startY, torchEvery);
 		if (err != null) {
 			return ToolResult.error(ErrorCode.INVALID_ARGUMENT,
-				Kv.of().put("mode", mode == TunnelPlanner.Mode.STAIRS ? "stairs" : "straight").put("length", length).put("torch_every", torchEvery),
+				Kv.of().put("mode", mode.wireName()).put("length", length).put("torch_every", torchEvery),
 				err, torchEvery == 0 ? "pass length<=12 or bring torches with torch_every=8" : null);
 		}
 		int steps = TunnelPlanner.targetSteps(mode, length, targetY, startY);
@@ -2170,7 +2170,7 @@ public final class Tools {
 			}
 		}
 		Kv pre = Kv.of()
-			.put("mode", mode == TunnelPlanner.Mode.STAIRS ? "stairs" : "straight")
+			.put("mode", mode.wireName())
 			.put("direction", dir.name().toLowerCase(java.util.Locale.ROOT))
 			.put("steps", steps)
 			.put("torch_every", torchEvery);
