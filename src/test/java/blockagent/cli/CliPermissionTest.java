@@ -163,6 +163,7 @@ class CliPermissionTest {
 			"ANTHROPIC_BASE_URL", stub.baseUrl(),
 			"ANTHROPIC_API_KEY", "sk-ant-stub-key",
 			"CLAUDE_CONFIG_DIR", cfg.toString(),
+			"BLOCKAGENT_PLANNER_MODEL", "", // 預設會開 Sonnet 規劃；這裡只測模組和內建工具
 			"DISABLE_TELEMETRY", "1",
 			"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"));
 
@@ -202,6 +203,67 @@ class CliPermissionTest {
 		assertNoLeaks();
 	}
 
+	@Test
+	void claudePlanner() throws Exception {
+		String player = "claude-haiku-5-5", planner = "claude-sonnet-5-5";
+		JsonObject plan = new JsonObject();
+		plan.addProperty("goal", "完成小屋");
+		plan.addProperty("recommendation", "換到新址");
+		JsonArray steps = new JsonArray();
+		steps.add("預檢新址");
+		steps.add("開始施工");
+		plan.add("steps", steps);
+		stub.structuredReply(planner, plan);
+		stub.script(List.of(
+			StubModelServer.Step.tool("mcp__planner__request_plan", obj("goal", "完成小屋", "context", "只摘要：兩次清除都到不了")),
+			StubModelServer.Step.tool("mcp__blockagent__wait_events", new JsonObject())));
+		Path cfg = tmp.resolve("claude-config");
+		Files.createDirectories(cfg);
+		String out = run(List.of(PROJECT.resolve("bin/blockagent-claude").toString(), "--test-print", "開始遊玩"), Map.of(
+			"ANTHROPIC_BASE_URL", stub.baseUrl(),
+			"ANTHROPIC_API_KEY", "sk-ant-stub-key",
+			"CLAUDE_CONFIG_DIR", cfg.toString(),
+			"BLOCKAGENT_CLAUDE_MODEL", player,
+			"BLOCKAGENT_PLANNER_MODEL", planner,
+			"DISABLE_TELEMETRY", "1",
+			"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"));
+
+		// 遊玩端多了 request_plan，其他照舊只有模組的工具
+		Set<String> tools = new TreeSet<>();
+		for (JsonElement e : stub.firstMainRequest().getAsJsonArray("tools")) tools.add(e.getAsJsonObject().get("name").getAsString());
+		tools.remove("DeferredToolPlaceholder");
+		Set<String> expected = new TreeSet<>();
+		for (String n : snapshotNames()) expected.add("mcp__blockagent__" + n);
+		expected.add("mcp__planner__request_plan");
+		assertEquals(expected, tools, out);
+
+		// 規劃端只有交結果用的 StructuredOutput，看得到快照和摘要，看不到遊玩對話
+		List<JsonObject> plannerRequests = stub.requests().stream()
+			.filter(r -> r.has("model") && planner.equals(r.get("model").getAsString())
+				&& r.has("tools") && r.getAsJsonArray("tools").size() > 0).toList();
+		assertFalse(plannerRequests.isEmpty(), () -> "規劃模型沒有被呼叫：" + out);
+		for (JsonObject r : plannerRequests) {
+			Set<String> names = new TreeSet<>();
+			for (JsonElement e : r.getAsJsonArray("tools")) names.add(e.getAsJsonObject().get("name").getAsString());
+			names.remove("DeferredToolPlaceholder");
+			assertEquals(Set.of("StructuredOutput"), names, "規劃端出現額外工具");
+		}
+		String request = plannerRequests.getFirst().toString();
+		assertTrue(request.contains("只摘要") && request.contains("inv=oak_log:3"), request);
+		assertFalse(request.contains("開始遊玩") || request.contains("mcp__blockagent__") || request.contains("mcp__planner__"), request);
+		assertEquals(1, planContextReads.size());
+
+		// 結果送回遊戲，wait_events 收到 plan_ready
+		String main = toolResults(stub.requests().stream()
+			.filter(r -> r.has("model") && player.equals(r.get("model").getAsString())).toList()).toString();
+		assertTrue(main.contains("pending") && main.contains("換到新址"), () -> main + "\n" + out);
+		var usageLog = Files.readString(home.resolve("claude/blockagent-planner-usage.jsonl"));
+		assertTrue(usageLog.contains("\"cli\": \"claude\"") && usageLog.contains("\"result\": \"ok\""), usageLog);
+		assertFalse(usageLog.contains("只摘要"), usageLog);
+		assertEquals(List.of("wait_events"), mcpCalls);
+		assertNoLeaks();
+	}
+
 	/** Anthropic 格式：從之後的請求裡取出 tool_result(依出現順序，不重複)。 */
 	static List<JsonObject> toolResults(List<JsonObject> reqs) {
 		Map<String, JsonObject> byId = new java.util.LinkedHashMap<>();
@@ -226,7 +288,7 @@ class CliPermissionTest {
 	@Test
 	void codexPlanner() throws Exception {
 		String planner = "gpt-6.2-sol";
-		stub.openAiReply(planner, new com.google.gson.Gson().toJson(Map.of("recommendation", "換到新址",
+		stub.openAiReply(planner, new com.google.gson.Gson().toJson(Map.of("goal", "完成小屋", "recommendation", "換到新址",
 			"steps", List.of("預檢新址", "開始施工"))));
 		stub.script(List.of(StubModelServer.Step.custom("exec",
 				"const p = await tools.mcp__planner__request_plan({goal: '完成小屋', context: '只摘要：兩次清除都到不了'}); text(JSON.stringify(p));"),

@@ -89,7 +89,7 @@ if [ -n "$planner_model" ]; then
 	"$PYTHON" -I -c 'import json, sys; print("""
 [mcp_servers.planner]
 command = """ + json.dumps(sys.argv[4], ensure_ascii=False) + """
-args = """ + json.dumps(["-I", sys.argv[1], sys.argv[2], sys.argv[5]], ensure_ascii=False) + """
+args = """ + json.dumps(["-I", sys.argv[1], "codex", sys.argv[2], sys.argv[5]], ensure_ascii=False) + """
 env_vars = """ + json.dumps(["CODEX_HOME", "BLOCKAGENT_PLAN_TOKEN"] + (["BLOCKAGENT_TEST_PROVIDER_TOML", "STUB_API_KEY"] if sys.argv[3] else [])) + """
 required = true
 tool_timeout_sec = 30

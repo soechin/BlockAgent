@@ -4,7 +4,8 @@
 #   blockagent-claude            以互動模式啟動(A1.3)
 #   blockagent-claude --dry-run  只印出要執行的指令和產生的設定檔
 # 環境變數：
-#   BLOCKAGENT_CLAUDE_MODEL=haiku   指定模型(不指定就用 Claude Code 的預設)
+#   BLOCKAGENT_CLAUDE_MODEL=…     遊玩模型(預設 claude-haiku-5-5)
+#   BLOCKAGENT_PLANNER_MODEL=…    規劃模型(預設 claude-sonnet-5-5；設成空字串就不開規劃，S11.7)
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 DRY=0
@@ -16,33 +17,60 @@ case "${1:-}" in
 	--test-print) TEST_PROMPT="${2:?}" ;;
 esac
 
+claude_model="${BLOCKAGENT_CLAUDE_MODEL:-claude-haiku-5-5}"
+planner_model="${BLOCKAGENT_PLANNER_MODEL-claude-sonnet-5-5}"
+for m in "$claude_model" "$planner_model"; do
+	case "$m" in
+		"") ;;
+		*[!A-Za-z0-9._-]*|[!A-Za-z0-9]*) die "模型名稱格式錯誤：$m" ;;
+	esac
+	[ "${#m}" -le 100 ] || die "模型名稱超過 100 字元：$m"
+done
+
 wait_runtime
 prepare_workdir
 CONF="$BA_HOME/claude"
 mkdir -p "$CONF"
 chmod 700 "$CONF"
 
-# MCP 設定(token 直接寫進檔案，檔案權限 600)
+# 規劃服務(S11.7)要 Python 3.11 以上和遊戲端給的規劃 token
+PYTHON=""
+PLAN_TOKEN=""
+if [ -n "$planner_model" ]; then
+	PYTHON="$("$BA_BIN/python311")" || exit 1
+	PLAN_TOKEN="$(plan_token)"
+	case "$PLAN_TOKEN" in
+		"" | *[!0-9a-f]*) die "遊戲端沒有提供規劃 token(模組版本太舊？)。請更新 BlockAgent 模組，或設 BLOCKAGENT_PLANNER_MODEL= 關掉規劃" ;;
+	esac
+fi
+
+# MCP 設定(token 直接寫進檔案，檔案權限 600)。路徑可能有空白或引號，用 Python 產生 JSON
 umask 077
-cat > "$CONF/mcp.json" <<JSON
-{ "mcpServers": { "blockagent": {
-    "type": "http",
-    "url": "http://127.0.0.1:$BLOCKAGENT_PORT/mcp",
-    "headers": { "Authorization": "Bearer $BLOCKAGENT_TOKEN" } } } }
-JSON
+python3 -I -c 'import json, sys
+port, token, python, planner, model, plan_token, home = sys.argv[1:]
+servers = {"blockagent": {"type": "http", "url": "http://127.0.0.1:%s/mcp" % port,
+                          "headers": {"Authorization": "Bearer " + token}}}
+if model:
+    servers["planner"] = {"type": "stdio", "command": python, "args": ["-I", planner, "claude", model, port],
+                          "env": {"BLOCKAGENT_PLAN_TOKEN": plan_token, "BLOCKAGENT_HOME": home}}
+print(json.dumps({"mcpServers": servers}, indent=2, ensure_ascii=False))' \
+	"$BLOCKAGENT_PORT" "$BLOCKAGENT_TOKEN" "$PYTHON" "$BA_BIN/blockagent-planner" "$planner_model" "$PLAN_TOKEN" "$BA_HOME" \
+	> "$CONF/mcp.json"
+ALLOWED="mcp__blockagent"
+[ -n "$planner_model" ] && ALLOWED="mcp__blockagent,mcp__planner__request_plan"
 
 # 第二道防線：就算 --tools "" 的行為改了，這些內建工具也會被拒絕。
 # Stop hook 的路徑可能有空白或引號：用 Python 先做 shell 引號再做 JSON 跳脫(L3)
 python3 -I -c 'import json, shlex, sys
 print(json.dumps({
   "permissions": {
-    "allow": ["mcp__blockagent"],
+    "allow": sys.argv[2].split(","),
     "deny": ["Bash", "Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep",
              "WebFetch", "WebSearch", "Agent", "Task", "Skill", "TodoWrite"],
     "defaultMode": "dontAsk"
   },
   "hooks": {"Stop": [{"hooks": [{"type": "command", "command": shlex.quote(sys.argv[1])}]}]}
-}, indent=2, ensure_ascii=False))' "$BA_BIN/stop-hook" > "$CONF/settings.json"
+}, indent=2, ensure_ascii=False))' "$BA_BIN/stop-hook" "$ALLOWED" > "$CONF/settings.json"
 
 export MCP_TOOL_TIMEOUT=150000
 # 開場白放在最前面：--tools、--allowedTools 會吃掉後面所有不是選項的參數
@@ -53,15 +81,12 @@ set -- "$@" \
 	--strict-mcp-config --mcp-config "$CONF/mcp.json" \
 	--setting-sources "" \
 	--settings "$CONF/settings.json" \
-	--allowedTools "mcp__blockagent" \
+	--allowedTools "$ALLOWED" \
 	--permission-mode dontAsk \
 	--disable-slash-commands \
 	--no-chrome \
-	--append-system-prompt-file "$PROMPT_FILE"
-
-if [ -n "${BLOCKAGENT_CLAUDE_MODEL:-}" ]; then
-	set -- "$@" --model "$BLOCKAGENT_CLAUDE_MODEL"
-fi
+	--append-system-prompt-file "$PROMPT_FILE" \
+	--model "$claude_model"
 
 if [ -n "$TEST_PROMPT" ]; then
 	# BLOCKAGENT_TEST_STREAM=1：逐步輸出(stream-json)，看得到每一步的想法

@@ -165,9 +165,61 @@ class PlannerTest(unittest.TestCase):
     def test_cli_rejects_out_of_range_ports(self):
         import sys
         for bad_port in ("0", "65536", "99999"):
-            res = subprocess.run([sys.executable, str(ROOT / "bin/blockagent-planner"), "gpt-6.2-sol", bad_port],
+            res = subprocess.run([sys.executable, str(ROOT / "bin/blockagent-planner"), "codex", "gpt-6.2-sol", bad_port],
                                  capture_output=True, text=True, env={"PATH": os.environ.get("PATH", "")})
             self.assertNotEqual(0, res.returncode, bad_port)
+
+    def test_cli_rejects_unknown_backend(self):
+        import sys
+        res = subprocess.run([sys.executable, str(ROOT / "bin/blockagent-planner"), "gemini", "x", "48800"],
+                             capture_output=True, text=True, env={"PATH": os.environ.get("PATH", "")})
+        self.assertNotEqual(0, res.returncode)
+
+    def test_claude_uses_no_tools_and_reads_structured_output(self):
+        import tempfile
+        output = [
+            {"type": "system", "subtype": "init", "tools": ["StructuredOutput"]},
+            {"type": "result", "subtype": "success", "is_error": False, "result": "ok", "structured_output": PLAN,
+             "usage": {"input_tokens": 2, "cache_read_input_tokens": 70, "cache_creation_input_tokens": 30,
+                       "output_tokens": 20}},
+        ]
+        usage = {}
+        with tempfile.TemporaryDirectory() as home:
+            with patch.object(planner, "PLANNER_HOME", home), \
+                    patch.dict(os.environ, {"BLOCKAGENT_TOKEN": "canary", "CLAUDECODE": "1"}):
+                with patch.object(planner.subprocess, "run",
+                                  return_value=subprocess.CompletedProcess([], 0, json.dumps(output), "")) as run:
+                    self.assertEqual(PLAN, planner.claude_plan("claude-sonnet-5-5", REQUEST, usage))
+            self.assertEqual(str(Path(home, "planner-workdir")), run.call_args.kwargs["cwd"])
+        self.assertEqual({"input_tokens": 102, "cached_input_tokens": 70, "output_tokens": 20}, usage)
+        argv = run.call_args.args[0]
+        options = run.call_args.kwargs
+        self.assertEqual("", argv[argv.index("--tools") + 1])
+        self.assertEqual('{"mcpServers":{}}', argv[argv.index("--mcp-config") + 1])
+        self.assertEqual("", argv[argv.index("--setting-sources") + 1])
+        self.assertTrue({"--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands"} <= set(argv))
+        self.assertEqual(planner.PLAN_SCHEMA, json.loads(argv[argv.index("--json-schema") + 1]))
+        self.assertIn("Bash", json.loads(argv[argv.index("--settings") + 1])["permissions"]["deny"])
+        self.assertFalse(any(key.startswith("BLOCKAGENT_") or key == "CLAUDECODE" for key in options["env"]))
+        self.assertEqual(REQUEST, json.loads(options["input"]))
+
+    def test_claude_failures_have_safe_messages(self):
+        def failed(text):
+            return json.dumps({"type": "result", "is_error": True, "result": text})
+        responses = {
+            "AUTH_FAILED": subprocess.CompletedProcess([], 1, failed("Failed to authenticate. API Error: 401 secret"), ""),
+            "CLI_FAILED": subprocess.CompletedProcess([], 1, failed("secret model not found"), ""),
+            "INVALID_OUTPUT": subprocess.CompletedProcess([], 0, json.dumps(
+                {"type": "result", "is_error": False, "result": "bad", "structured_output": {"steps": []}}), ""),
+            "TIMEOUT": subprocess.TimeoutExpired("claude", 120),
+        }
+        for code, response in responses.items():
+            kwargs = {"side_effect" if isinstance(response, Exception) else "return_value": response}
+            with patch.object(planner.subprocess, "run", **kwargs):
+                with self.assertRaises(planner.PlannerError) as error:
+                    planner.claude_plan("claude-sonnet-5-5", REQUEST, {})
+            self.assertEqual(code, error.exception.code)
+            self.assertNotIn("secret", str(error.exception))
 
     def test_codex_reuses_stable_workdir_and_orders_snapshot_first(self):
         import tempfile

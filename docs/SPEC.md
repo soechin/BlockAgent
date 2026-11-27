@@ -791,27 +791,37 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
     --strict-mcp-config --mcp-config ~/.blockagent/claude/mcp.json \
     --setting-sources "" \
     --settings ~/.blockagent/claude/settings.json \
-    --allowedTools "mcp__blockagent" \
+    --allowedTools "mcp__blockagent,mcp__planner__request_plan" \
     --permission-mode dontAsk \
     --disable-slash-commands \
-    --no-chrome
+    --no-chrome \
+    --model claude-haiku-5-5
   ```
+
+  遊玩模型預設 `claude-haiku-5-5`(`BLOCKAGENT_CLAUDE_MODEL` 可換)。規劃服務(S11.7)預設開著，規劃模型 `claude-sonnet-5-5`(`BLOCKAGENT_PLANNER_MODEL` 可換，設成空字串就不開；這時 `mcp.json`、`--allowedTools` 和 `allow` 都不含 `planner`)。兩個模型名稱都檢查格式(英數字、`.`、`_`、`-`，最多 100 字)。
 
   `mcp.json`：
 
   ```json
-  { "mcpServers": { "blockagent": {
-      "type": "http",
-      "url": "http://127.0.0.1:${BLOCKAGENT_PORT}/mcp",
-      "headers": { "Authorization": "Bearer ${BLOCKAGENT_TOKEN}" } } } }
+  { "mcpServers": {
+      "blockagent": {
+        "type": "http",
+        "url": "http://127.0.0.1:${BLOCKAGENT_PORT}/mcp",
+        "headers": { "Authorization": "Bearer ${BLOCKAGENT_TOKEN}" } },
+      "planner": {
+        "type": "stdio",
+        "command": "<Python 3.11 以上>",
+        "args": ["-I", "<bin/blockagent-planner>", "claude", "<規劃模型>", "${BLOCKAGENT_PORT}"],
+        "env": { "BLOCKAGENT_PLAN_TOKEN": "<plan_token>", "BLOCKAGENT_HOME": "<BlockAgent 目錄>" } } } }
   ```
+  `mcp.json` 由 Python 產生(路徑可能有空白或引號)，權限 600。
 
   `settings.json`(第二道防線，就算 `--tools ""` 的行為改了也擋得住)：
 
   ```json
   {
     "permissions": {
-      "allow": ["mcp__blockagent"],
+      "allow": ["mcp__blockagent", "mcp__planner__request_plan"],
       "deny": ["Bash", "Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep",
                "WebFetch", "WebSearch", "Agent", "Skill"],
       "defaultMode": "dontAsk"
@@ -885,12 +895,12 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 - **S11.6** 殘餘風險：
   - Codex 的 `apply_patch` 工具還在，只靠 sandbox 唯讀和 `approval_policy="never"` 擋住寫入。T9 會實際讓它試著寫檔。
   - 兩個 CLI 程式本身要連到各自的模型 API，這是正常的；「不能上網」指的是 AI 沒有可以上網的工具。
-- **S11.7** 非同步規劃(Codex 的 `request_plan`，`bin/blockagent-planner`)：
+- **S11.7** 非同步規劃(`request_plan`，`bin/blockagent-planner <codex|claude> <模型> <port>`)：
   - `request_plan(goal?, context?, recent_failures?)` 立刻回 `{"status":"pending"}`，遊玩模型不用等。沒寫 `goal` 時由規劃模型挑下一個目標(生存基礎沒齊就補最缺的，齊了就挑更進一步的專案)，結果的 `goal` 用它挑的；有寫就照用遊玩模型寫的。同時只有一個規劃在跑，第二個回 `BUSY`。規劃逾時 120 秒。
-  - 規劃服務在背景向遊戲讀快照、呼叫規劃模型(照舊用 `codex exec`、沒有任何工具)，再把結果和快照依據送回遊戲。維度改變、離開快照位置超過 8 格或目前計畫已更新時，結果以 `plan_stale` 提供建議(S5.6)。快照內容：`get_self` 的輸出、工作階段狀態、目前計畫、世界記憶(最多 4,000 字)、最近 6 筆任務失敗和被規則擋下的動作、遊玩工具的名稱清單。
-  - 遊戲端的 HTTP 伺服器另外開 `GET /plan/context`(回傳 `snapshot` 和 `basis`)和 `POST /plan/result`(`{goal, recommendation, steps, basis}` 或 `{goal, error:{code,message}, basis}`)。這兩個端點用**另一把 token**(`runtime.json` 的 `plan_token`)，它不能用在 `/mcp` 和 `/status`，MCP token 也不能用在這兩個端點。規劃服務拿不到 MCP token，所以不能操作遊戲；它呼叫的 `codex exec` 照舊拿不到任何 `BLOCKAGENT_*` 環境變數。
-  - 啟動腳本從 `runtime.json` 讀 `plan_token`，用 `BLOCKAGENT_PLAN_TOKEN` 交給規劃服務(`env_vars`)，遊戲的 port 用參數傳。規劃開著但遊戲沒有提供 `plan_token`(舊版模組)時，`codex-config` 停下並說明。
-  - 結果送不回遊戲(遊戲關了、已離開世界)時只記在 `blockagent-planner-usage.jsonl`(`delivered=false`)。
+  - 規劃服務在背景向遊戲讀快照、呼叫規劃模型(Codex 用 `codex exec`；Claude 用 `claude -p --json-schema`，跟遊玩一樣不給內建工具和 MCP、不讀使用者設定，只剩交結果用的 `StructuredOutput`；兩邊都是 effort `low`、固定的工作目錄)，再把結果和快照依據送回遊戲。維度改變、離開快照位置超過 8 格或目前計畫已更新時，結果以 `plan_stale` 提供建議(S5.6)。快照內容：`get_self` 的輸出、工作階段狀態、目前計畫、世界記憶(最多 4,000 字)、最近 6 筆任務失敗和被規則擋下的動作、遊玩工具的名稱清單。
+  - 遊戲端的 HTTP 伺服器另外開 `GET /plan/context`(回傳 `snapshot` 和 `basis`)和 `POST /plan/result`(`{goal, recommendation, steps, basis}` 或 `{goal, error:{code,message}, basis}`)。這兩個端點用**另一把 token**(`runtime.json` 的 `plan_token`)，它不能用在 `/mcp` 和 `/status`，MCP token 也不能用在這兩個端點。規劃服務拿不到 MCP token，所以不能操作遊戲；它呼叫的 `codex exec`、`claude -p` 拿不到任何 `BLOCKAGENT_*` 環境變數。
+  - 啟動腳本從 `runtime.json` 讀 `plan_token`，用 `BLOCKAGENT_PLAN_TOKEN` 交給規劃服務(Codex 用 `env_vars`，Claude 寫在 `mcp.json` 的 `env`)，遊戲的 port 用參數傳。規劃開著但遊戲沒有提供 `plan_token`(舊版模組)時，`codex-config` 和 `blockagent-claude` 都停下並說明。
+  - 結果送不回遊戲(遊戲關了、已離開世界)時只記在 `blockagent-planner-usage.jsonl`(`delivered=false`；Codex 在 `CODEX_HOME`，Claude 在 `~/.blockagent/claude`)。
 - **S11.8** 開場白：兩個啟動腳本在互動模式下自動送出固定的第一句話，內容在 `prompts/kickoff.md`(`bin/lib.sh` 讀取)；檔案不存在或是空的時拒絕啟動。使用者不用先打字，每次開場都一樣；之後在視窗裡說的話照樣優先。跟 6.2 節的提示詞一樣，本文件不定義內容。CLI 測試(`--test-print`、`--test-exec`)不送開場白。
 
 ---

@@ -43,6 +43,7 @@ public final class StubModelServer implements AutoCloseable {
 	private final List<String> rawBodies = Collections.synchronizedList(new ArrayList<>());
 	private final Deque<Step> script = new ArrayDeque<>();
 	private final java.util.Map<String, String> openAiReplies = new java.util.concurrent.ConcurrentHashMap<>();
+	private final java.util.Map<String, JsonObject> structuredReplies = new java.util.concurrent.ConcurrentHashMap<>();
 	private int ids;
 
 	public StubModelServer() throws IOException {
@@ -67,6 +68,11 @@ public final class StubModelServer implements AutoCloseable {
 
 	public void openAiReply(String model, String text) {
 		openAiReplies.put(model, text);
+	}
+
+	/** 這個模型帶工具的請求一律用 StructuredOutput 交出 output(Claude Code 的 --json-schema)，收到結果後結束；不消耗劇本。 */
+	public void structuredReply(String model, JsonObject output) {
+		structuredReplies.put(model, output);
 	}
 
 	public List<JsonObject> requests() {
@@ -136,7 +142,9 @@ public final class StubModelServer implements AutoCloseable {
 
 	private void anthropic(HttpExchange ex, JsonObject req) throws IOException {
 		boolean main = req != null && req.has("tools") && req.getAsJsonArray("tools").size() > 0;
-		Step step = main ? next() : null;
+		JsonObject structured = main && req.has("model") ? structuredReplies.get(req.get("model").getAsString()) : null;
+		Step step = structured != null ? (req.toString().contains("\"tool_result\"") ? null : Step.tool("StructuredOutput", structured))
+			: main ? next() : null;
 		ex.getResponseHeaders().set("Content-Type", "text/event-stream");
 		ex.sendResponseHeaders(200, 0);
 		try (OutputStream os = ex.getResponseBody()) {
