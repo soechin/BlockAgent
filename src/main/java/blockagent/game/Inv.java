@@ -1,22 +1,29 @@
 package blockagent.game;
 
+import blockagent.core.ItemMatcher;
 import net.minecraft.client.Minecraft;
+import net.minecraft.core.Holder;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.tags.ItemTags;
+import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.ItemAttributeModifiers;
+import net.minecraft.world.item.enchantment.ItemEnchantments;
 import net.minecraft.world.level.block.state.BlockState;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
 
@@ -24,6 +31,8 @@ import java.util.function.Predicate;
 public final class Inv {
 	/** 主背包加快捷列：Inventory 的 0–35。 */
 	public static final int MAIN_SIZE = 36;
+	/** 副手在統一槽位索引中的代號(與 SWAP 按鈕編號 40 一致)。 */
+	public static final int OFFHAND_SLOT = 40;
 
 	private Inv() {
 	}
@@ -195,8 +204,171 @@ public final class Inv {
 
 	/** 主背包加副手的物品數量(R12：Inv.count 只掃 0–35 格，看不到副手)。 */
 	public static int countWithOffhand(Player p, Item item) {
+		return countWithOffhand(p, s -> s.is(item));
+	}
+
+	public static int countWithOffhand(Player p, Predicate<ItemStack> pred) {
 		ItemStack off = p.getOffhandItem();
-		return count(p, item) + (off.is(item) ? off.getCount() : 0);
+		return count(p, pred) + (!off.isEmpty() && pred.test(off) ? off.getCount() : 0);
+	}
+
+	public static int count(Player p, Item item, ItemMatcher matcher) {
+		return count(p, s -> matches(s, item, matcher));
+	}
+
+	public static int countWithOffhand(Player p, Item item, ItemMatcher matcher) {
+		return countWithOffhand(p, s -> matches(s, item, matcher));
+	}
+
+	/** 從 {@link ItemStack} 抽出屬性快照供 {@link ItemMatcher} 比對(S4.2d)。 */
+	public static ItemMatcher.ItemInfo infoOf(ItemStack s) {
+		if (s == null || s.isEmpty()) {
+			return new ItemMatcher.ItemInfo(Map.of(), Map.of(), null, List.of(), null, null, 0, 0);
+		}
+		Map<String, Integer> ench = enchantMap(s.getEnchantments());
+		Map<String, Integer> stored = enchantMap(s.get(DataComponents.STORED_ENCHANTMENTS));
+		String potionName = null;
+		List<String> effects = new ArrayList<>();
+		var potion = s.get(DataComponents.POTION_CONTENTS);
+		if (potion != null) {
+			potionName = potion.potion().map(Inv::shortHolderName).orElse(null);
+			for (MobEffectInstance eff : potion.getAllEffects()) {
+				String n = shortHolderName(eff.getEffect());
+				if (!effects.contains(n)) effects.add(n);
+			}
+			for (MobEffectInstance eff : potion.customEffects()) {
+				String n = shortHolderName(eff.getEffect());
+				if (!effects.contains(n)) effects.add(n);
+			}
+		}
+		var customName = s.get(DataComponents.CUSTOM_NAME);
+		var book = s.get(DataComponents.WRITTEN_BOOK_CONTENT);
+		int maxDur = s.getMaxDamage();
+		int remDur = maxDur > 0 ? Math.max(0, maxDur - s.getDamageValue()) : 0;
+		return new ItemMatcher.ItemInfo(ench, stored, potionName, effects,
+			customName == null ? null : customName.getString(),
+			book == null ? null : book.title().raw(),
+			remDur, maxDur);
+	}
+
+	private static Map<String, Integer> enchantMap(ItemEnchantments e) {
+		if (e == null || e.isEmpty()) return Map.of();
+		Map<String, Integer> m = new LinkedHashMap<>();
+		for (var en : e.entrySet()) m.put(shortHolderName(en.getKey()), en.getIntValue());
+		return m;
+	}
+
+	private static String shortHolderName(Holder<?> h) {
+		String n = h.getRegisteredName();
+		return n.startsWith("minecraft:") ? n.substring(10) : n;
+	}
+
+	public static boolean matches(ItemStack s, Item item, ItemMatcher matcher) {
+		if (s == null || s.isEmpty() || !s.is(item)) return false;
+		return matcher == null || matcher.isAny() || matcher.matches(infoOf(s));
+	}
+
+	/** 取得統一槽位索引(0–35 主背包、{@link #OFFHAND_SLOT} 副手)的物品。 */
+	public static ItemStack stackAt(Player p, int idx) {
+		if (idx == OFFHAND_SLOT) return p.getOffhandItem();
+		return idx >= 0 && idx < MAIN_SIZE ? p.getInventory().getItem(idx) : ItemStack.EMPTY;
+	}
+
+	/** 在主背包(0–35)依 {@link ItemMatcher} 找最優先的格子；找不到回傳 -1。 */
+	public static int findBest(Player p, Item item, ItemMatcher matcher) {
+		Inventory inv = p.getInventory();
+		int bestIdx = -1;
+		ItemMatcher.ItemInfo bestInfo = null;
+		for (int i = 0; i < MAIN_SIZE; i++) {
+			ItemStack s = inv.getItem(i);
+			if (!matches(s, item, matcher)) continue;
+			if (matcher == null || matcher.durPref() == ItemMatcher.DurPref.NONE) return i;
+			ItemMatcher.ItemInfo info = infoOf(s);
+			if (bestIdx < 0 || matcher.comparePreference(info, bestInfo) < 0) {
+				bestIdx = i;
+				bestInfo = info;
+			}
+		}
+		return bestIdx;
+	}
+
+	/** 在主背包(0–35)與副手({@link #OFFHAND_SLOT})依 {@link ItemMatcher} 找最優先的格子；找不到回傳 -1。 */
+	public static int findBestWithOffhand(Player p, Item item, ItemMatcher matcher) {
+		int bestIdx = findBest(p, item, matcher);
+		ItemStack off = p.getOffhandItem();
+		if (!matches(off, item, matcher)) return bestIdx;
+		if (bestIdx < 0) return OFFHAND_SLOT;
+		if (matcher != null && matcher.durPref() != ItemMatcher.DurPref.NONE
+			&& matcher.comparePreference(infoOf(off), infoOf(p.getInventory().getItem(bestIdx))) < 0) {
+			return OFFHAND_SLOT;
+		}
+		return bestIdx;
+	}
+
+	/** 把符合條件的物品拿到主手(主背包找不到時也會把副手換到主手)。 */
+	public static boolean selectInHandWithOffhand(Minecraft mc, Predicate<ItemStack> pred) {
+		if (selectInHand(mc, pred)) return true;
+		var p = mc.player;
+		if (!p.getOffhandItem().isEmpty() && pred.test(p.getOffhandItem())) {
+			if (p.containerMenu != p.inventoryMenu) p.closeContainer();
+			swapToOffhand(mc, p.getInventory().getSelectedSlot());
+			return pred.test(p.getMainHandItem());
+		}
+		return false;
+	}
+
+	/** 依 {@link ItemMatcher} 從主背包與副手挑最優先的一件拿到主手。 */
+	public static boolean selectBestInHand(Minecraft mc, Item item, ItemMatcher matcher) {
+		var p = mc.player;
+		Inventory inv = p.getInventory();
+		int best = findBestWithOffhand(p, item, matcher);
+		if (best < 0) return false;
+		ItemStack cur = inv.getSelectedItem();
+		if (matches(cur, item, matcher)) {
+			if (matcher == null || matcher.durPref() == ItemMatcher.DurPref.NONE
+				|| matcher.comparePreference(infoOf(cur), infoOf(stackAt(p, best))) <= 0) {
+				return true;
+			}
+		}
+		if (best == OFFHAND_SLOT) {
+			if (p.containerMenu != p.inventoryMenu) p.closeContainer();
+			swapToOffhand(mc, inv.getSelectedSlot());
+			return matches(inv.getSelectedItem(), item, matcher);
+		}
+		if (best >= 9 && p.containerMenu != p.inventoryMenu) p.closeContainer();
+		return selectSlotInHand(mc, best);
+	}
+
+	/**
+	 * 純卸下副手或護甲欄裝備回主背包空格(S4.2d)。欄位原本為空或主背包沒有空格時回傳 false。
+	 */
+	public static boolean unequip(Minecraft mc, EquipmentSlot slot) {
+		var p = mc.player;
+		if (p.getItemBySlot(slot).isEmpty()) return false;
+		int free = -1;
+		for (int i = 0; i < MAIN_SIZE; i++) {
+			if (p.getInventory().getItem(i).isEmpty()) {
+				free = i;
+				break;
+			}
+		}
+		if (free < 0) return false;
+		if (p.containerMenu != p.inventoryMenu) p.closeContainer();
+		var menu = p.inventoryMenu;
+		if (!menu.getCarried().isEmpty()) return false;
+		if (slot == EquipmentSlot.OFFHAND) {
+			swapToOffhand(mc, free);
+			return p.getOffhandItem().isEmpty();
+		}
+		if (slot.getType() != EquipmentSlot.Type.HUMANOID_ARMOR) return false;
+		int armorMenuSlot = InventoryMenu.ARMOR_SLOT_END - 1 - slot.getIndex();
+		if (!menu.getSlot(armorMenuSlot).mayPickup(p)) return false;
+		click(mc, menu, armorMenuSlot, 0, ContainerInput.QUICK_MOVE);
+		if (!p.getItemBySlot(slot).isEmpty() && menu.getCarried().isEmpty()) {
+			click(mc, menu, armorMenuSlot, 0, ContainerInput.PICKUP);
+			click(mc, menu, menuSlot(free), 0, ContainerInput.PICKUP);
+		}
+		return p.getItemBySlot(slot).isEmpty();
 	}
 
 	/** 背包摘要加上副手的物品(R12)。 */
@@ -312,16 +484,21 @@ public final class Inv {
 		return pred.test(inv.getSelectedItem());
 	}
 
-	/** 從背包丟出指定數量的物品，回傳實際丟出的數量。只在沒有開容器時呼叫。 */
+	/** 從背包(含副手)丟出指定數量的物品，回傳實際丟出的數量。只在沒有開容器時呼叫。 */
 	public static int dropItem(Minecraft mc, Item item, int amount) {
+		return dropItem(mc, item, ItemMatcher.ANY, amount);
+	}
+
+	/** 依 {@link ItemMatcher} 從主背包與副手丟出指定數量的物品，回傳實際丟出的數量(S4.2d)。 */
+	public static int dropItem(Minecraft mc, Item item, ItemMatcher matcher, int amount) {
 		Player p = mc.player;
 		AbstractContainerMenu menu = p.inventoryMenu;
 		int left = amount;
-		for (int guard = 0; guard < MAIN_SIZE && left > 0; guard++) {
-			int idx = find(p, s -> s.is(item));
+		for (int guard = 0; guard < MAIN_SIZE + 2 && left > 0; guard++) {
+			int idx = findBestWithOffhand(p, item, matcher);
 			if (idx < 0) break;
-			int slot = menuSlot(idx);
-			int c = p.getInventory().getItem(idx).getCount();
+			int slot = idx == OFFHAND_SLOT ? InventoryMenu.SHIELD_SLOT : menuSlot(idx);
+			int c = stackAt(p, idx).getCount();
 			if (c <= left) {
 				click(mc, menu, slot, 1, ContainerInput.THROW); // 丟整疊
 				left -= c;

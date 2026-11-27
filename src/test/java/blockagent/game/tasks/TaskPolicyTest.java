@@ -110,4 +110,20 @@ class TaskPolicyTest {
 		assertFalse(GotoTask.shouldShiftEscapeWatch(850, 250, 100), "剛在 resume 前啟用，不可誤加上剛結束的撤退耗時");
 		assertTrue(GotoTask.shouldShiftEscapeWatch(850, 250, 300), "監控期間被其他反射暫停應平移計時窗");
 	}
+
+	@Test
+	void smeltTimeoutReflectsFastFurnaceSpeed() {
+		long base = 1000L;
+		assertEquals(64 * 100L + 1200L, SmeltTask.smeltTimeoutTicks(base, 64, true));
+		assertEquals(64 * 200L + 1200L, SmeltTask.smeltTimeoutTicks(base, 64, false));
+	}
+
+	@Test
+	void eatEffectsChangedIgnoresNaturalCountdown() {
+		var before = java.util.Map.of("minecraft:poison", new int[]{0, 200});
+		assertFalse(EatTask.effectsChanged(before, java.util.Map.of("minecraft:poison", new int[]{0, 160})), "自然倒數不算效果變化");
+		assertTrue(EatTask.effectsChanged(before, java.util.Map.of()), "牛奶清除中毒應視為變化");
+		assertTrue(EatTask.effectsChanged(java.util.Map.of(), java.util.Map.of("minecraft:fire_resistance", new int[]{0, 3600})), "新增抗火應視為變化");
+		assertTrue(EatTask.effectsChanged(before, java.util.Map.of("minecraft:poison", new int[]{0, 400})), "延長持續時間應視為變化");
+	}
 }

@@ -9,6 +9,7 @@ import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.function.Predicate;
 
@@ -35,11 +36,23 @@ public final class MenuOps {
 	}
 
 	public static int findPlayerSlot(AbstractContainerMenu m, Predicate<ItemStack> pred) {
+		return findPlayerSlot(m, pred, null);
+	}
+
+	/** 找符合條件且依 {@code order}(可為 null)最優先的玩家背包格。 */
+	public static int findPlayerSlot(AbstractContainerMenu m, Predicate<ItemStack> pred, Comparator<ItemStack> order) {
+		int best = -1;
+		ItemStack bestStack = ItemStack.EMPTY;
 		for (int i : playerSlots(m)) {
 			ItemStack s = m.getSlot(i).getItem();
-			if (!s.isEmpty() && pred.test(s)) return i;
+			if (s.isEmpty() || !pred.test(s)) continue;
+			if (order == null) return i;
+			if (best < 0 || order.compare(s, bestStack) < 0) {
+				best = i;
+				bestStack = s;
+			}
 		}
-		return -1;
+		return best;
 	}
 
 	public static int countInPlayer(AbstractContainerMenu m, Predicate<ItemStack> pred) {
@@ -56,11 +69,16 @@ public final class MenuOps {
 	 * 格子放不下(堆疊上限、燃料格只收燃料)時點擊會彈回來，不能當成放進去了(docs/REVIEW.md C7)。
 	 */
 	public static int placeInto(Minecraft mc, AbstractContainerMenu m, int target, Predicate<ItemStack> pred, int n) {
+		return placeInto(mc, m, target, pred, null, n);
+	}
+
+	public static int placeInto(Minecraft mc, AbstractContainerMenu m, int target, Predicate<ItemStack> pred,
+								Comparator<ItemStack> order, int n) {
 		int placed = 0;
 		Slot slot = m.getSlot(target);
 		for (int guard = 0; guard < 64 && placed < n; guard++) {
 			ItemStack t = slot.getItem();
-			int src = findPlayerSlot(m, s -> pred.test(s) && (t.isEmpty() || ItemStack.isSameItemSameComponents(s, t)));
+			int src = findPlayerSlot(m, s -> pred.test(s) && (t.isEmpty() || ItemStack.isSameItemSameComponents(s, t)), order);
 			if (src < 0) break;
 			ItemStack srcStack = m.getSlot(src).getItem();
 			int before = t.isEmpty() ? 0 : t.getCount();

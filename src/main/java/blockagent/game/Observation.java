@@ -1,5 +1,6 @@
 package blockagent.game;
 
+import blockagent.core.BookReader;
 import blockagent.core.CombatPolicy;
 import blockagent.core.DayClock;
 import blockagent.core.Event;
@@ -11,6 +12,7 @@ import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.TagKey;
@@ -18,6 +20,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.MobCategory;
+import net.minecraft.world.entity.decoration.ItemFrame;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.vehicle.VehicleEntity;
 import net.minecraft.world.entity.monster.Enemy;
@@ -32,6 +35,8 @@ import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.entity.SignBlockEntity;
+import net.minecraft.world.level.block.entity.SignTextSlot;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BedPart;
 import net.minecraft.world.level.levelgen.Heightmap;
@@ -99,8 +104,21 @@ public final class Observation {
 	private boolean sleepReadyReported;
 	/** 這次觀察到天黑過(黃昏到天亮前)，跨進白天時發一次 daybreak(M17)。 */
 	private boolean sawDark;
+	/** 上一次觀察到的主背包空格數與是否已發過 inventory_full(S5.2)。 */
+	private int lastFreeSlots = -1;
+	private boolean inventoryFullReported;
 	/** 上次執行 tick() 的 tick：暫停期間不會執行，恢復後的第一個 tick 不拿舊血量比(L5)。 */
 	private long lastObservedTick = -1;
+
+	/** 主背包滿格事件的純狀態轉換(S5.2：從 > 0 降至 0 送一次，再次 > 0 前不重發)。 */
+	record InventoryFullCheck(boolean fire, boolean reported) {
+	}
+
+	static InventoryFullCheck checkInventoryFull(int prevFree, int nowFree, boolean reported) {
+		if (nowFree > 0) return new InventoryFullCheck(false, false);
+		if (!reported && prevFree > 0) return new InventoryFullCheck(true, true);
+		return new InventoryFullCheck(false, reported);
+	}
 
 	Observation(Agent agent) {
 		this.agent = agent;
@@ -257,8 +275,24 @@ public final class Observation {
 			new Group("furnace", List.of(Blocks.FURNACE, Blocks.BLAST_FURNACE, Blocks.SMOKER)),
 			new Group("chest", List.of(Blocks.CHEST, Blocks.TRAPPED_CHEST, Blocks.BARREL)),
 			new Group("bed", tagged(BlockTags.BEDS)),
-			new Group("door", tagged(BlockTags.DOORS))
+			new Group("door", tagged(BlockTags.DOORS)),
+			new Group("sign", tagged(BlockTags.ALL_SIGNS))
 		);
+	}
+
+	/** 讀取告示牌正反面文字(S3.2a)：回傳 {front, back}；不是告示牌或兩面皆空時回傳 null。 */
+	static String[] signTexts(Level level, BlockPos pos) {
+		if (!(level.getBlockEntity(pos) instanceof SignBlockEntity sign)) return null;
+		String front = signSide(sign, SignTextSlot.FRONT);
+		String back = signSide(sign, SignTextSlot.BACK);
+		return front.isEmpty() && back.isEmpty() ? null : new String[]{front, back};
+	}
+
+	private static String signSide(SignBlockEntity sign, SignTextSlot slot) {
+		List<Component> msgs = sign.getText(slot).getMessages(false);
+		List<String> lines = new ArrayList<>(msgs.size());
+		for (Component c : msgs) lines.add(c.getString());
+		return BookReader.joinSignLines(lines);
 	}
 
 	/** 所有權的固定三個值 own、other、nat(docs/SPEC.md S3.0b)。 */
@@ -326,7 +360,10 @@ public final class Observation {
 		// 已依距離排序：每組只留最近的 cap 個；上限用總數，讓 Moves.scan 不夠時自己加大範圍重掃
 		for (BlockPos pos : Moves.scan(mc, solid, radius, MAX_SOLID_HITS, null)) {
 			String label = owner.get(mc.level.getBlockState(pos).getBlock());
-			if (label == null || counts.merge(label, 1, Integer::sum) > cap) continue;
+			if (label == null) continue;
+			// 告示牌只列有寫字的(S3.2a)，空白牌不佔名額
+			if ("sign".equals(label) && signTexts(mc.level, pos) == null) continue;
+			if (counts.merge(label, 1, Integer::sum) > cap) continue;
 			out.computeIfAbsent(label, k -> new ArrayList<>()).add(pos);
 		}
 		return out;
@@ -363,6 +400,20 @@ public final class Observation {
 		for (Group g : groups) {
 			List<BlockPos> found = scanned.getOrDefault(g.label(), List.of());
 			if (found.isEmpty()) continue;
+			if ("sign".equals(g.label())) {
+				for (BlockPos n : found) {
+					String[] texts = signTexts(mc.level, n);
+					if (texts == null) continue;
+					BlockState st = mc.level.getBlockState(n);
+					Kv line = Kv.of("sign").put("block", RuleGuard.shortId(st)).put("pos", Fmt.pos(n));
+					Fmt.rel(line, eye, Vec3.atCenterOf(n)).put("owner", ownerLabel(n, st));
+					if (!texts[0].isEmpty()) line.quoted("front", BookReader.clipSummary(texts[0], BookReader.MAX_SIGN_SUMMARY));
+					if (!texts[1].isEmpty()) line.quoted("back", BookReader.clipSummary(texts[1], BookReader.MAX_SIGN_SUMMARY));
+					sb.append("\n- ").append(line);
+				}
+				groupsShown++;
+				continue;
+			}
 			BlockPos n = found.getFirst();
 			BlockState st = mc.level.getBlockState(n);
 			Map<String, Integer> owners = new TreeMap<>();
@@ -381,9 +432,14 @@ public final class Observation {
 		for (String k : new String[]{"hostile", "neutral", "protected", "passive"}) byKind.put(k, new ArrayList<>());
 		Map<String, List<Entity>> vehicles = new LinkedHashMap<>();
 		Map<String, List<ItemEntity>> drops = new LinkedHashMap<>();
+		List<ItemFrame> frames = new ArrayList<>();
 		AABB box = p.getBoundingBox().inflate(radius);
 		Entity attacker = recentAttacker(mc, 100);
 		for (Entity e : mc.level.getEntities(p, box, e -> !(e instanceof AbstractClientPlayer) && e.isAlive())) {
+			if (e instanceof ItemFrame frame) {
+				if (!frame.getItem().isEmpty()) frames.add(frame);
+				continue;
+			}
 			if (e instanceof ItemEntity it) {
 				if (it.getItem().isEmpty()) continue;
 				drops.computeIfAbsent(Inv.id(it.getItem()), k -> new ArrayList<>()).add(it);
@@ -453,6 +509,16 @@ public final class Observation {
 			}
 		}
 		if (!anyMob) sb.append(" none");
+		// 物品展示框(S3.2a)：只列非空展示框的物品、座標、貼附方向與相對方位
+		frames.sort(Comparator.comparingDouble(f -> f.distanceToSqr(p)));
+		int maxFrames = detail ? 20 : 8;
+		for (int i = 0; i < Math.min(frames.size(), maxFrames); i++) {
+			ItemFrame f = frames.get(i);
+			Kv line = Kv.of("frame").put("item", Fmt.item(f.getItem())).put("pos", Fmt.pos(f.getPos()))
+				.put("face", f.getDirection().getSerializedName());
+			sb.append("\n- ").append(Fmt.rel(line, eye, f.position()));
+		}
+		hidden += Math.max(0, frames.size() - maxFrames);
 		// 載具(A1)：船、礦車，mount 用得到
 		for (var en : vehicles.entrySet()) {
 			List<Entity> list = en.getValue();
@@ -597,6 +663,20 @@ public final class Observation {
 		}
 		lastHealth = h;
 
+		int free = Inv.freeSlots(p);
+		if (firstOrResumed || changedDimension) {
+			lastFreeSlots = free;
+			inventoryFullReported = free == 0;
+		} else {
+			InventoryFullCheck invFull = checkInventoryFull(lastFreeSlots, free, inventoryFullReported);
+			inventoryFullReported = invFull.reported();
+			lastFreeSlots = free;
+			if (invFull.fire()) {
+				agent.events.add("inventory_full", Event.Level.BATCH,
+					"free=0 | main inventory is full | hint=store items with chest action=put, or drop junk");
+			}
+		}
+
 		Set<UUID> sleepingNow = new HashSet<>();
 		for (AbstractClientPlayer other : mc.level.players()) {
 			if (other == p || !other.isSleeping()) continue;
@@ -699,6 +779,8 @@ public final class Observation {
 		dangerReported = false;
 		sleepReadyReported = false;
 		sawDark = false;
+		lastFreeSlots = -1;
+		inventoryFullReported = false;
 		lastObservedTick = -1;
 	}
 }

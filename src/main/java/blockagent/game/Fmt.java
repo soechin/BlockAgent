@@ -1,11 +1,13 @@
 package blockagent.game;
 
+import blockagent.core.BookReader;
 import blockagent.mcp.Kv;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.chat.Component;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.item.ItemStack;
@@ -141,5 +143,34 @@ public final class Fmt {
 	private static String shortName(Holder<?> h) {
 		String n = h.getRegisteredName();
 		return n.startsWith("minecraft:") ? n.substring(10) : n;
+	}
+
+	/** 讀取成書或書與羽毛筆內容並格式化成 KV(S3.2a)。 */
+	public static BookReader.BookView readBook(ItemStack stack, int startPage) {
+		var written = stack.get(DataComponents.WRITTEN_BOOK_CONTENT);
+		if (written != null) {
+			List<String> pages = written.getPages(false).stream().map(Component::getString).toList();
+			return BookReader.formatBook(written.title().raw(), written.author(), pages, startPage, BookReader.MAX_BOOK_CHARS);
+		}
+		var writable = stack.get(DataComponents.WRITABLE_BOOK_CONTENT);
+		if (writable != null) {
+			var custom = stack.get(DataComponents.CUSTOM_NAME);
+			List<String> pages = writable.getPages(false).toList();
+			return BookReader.formatBook(custom == null ? null : custom.getString(), null, pages, startPage, BookReader.MAX_BOOK_CHARS);
+		}
+		return BookReader.formatBook(null, null, List.of(), startPage, BookReader.MAX_BOOK_CHARS);
+	}
+
+	/** 把 {@link BookReader.BookView} 轉成給 AI 看的 Compact KV(S3.2a)。 */
+	public static Kv bookKv(BookReader.BookView view) {
+		Kv kv = Kv.of();
+		if (view.title() != null) kv.quoted("title", view.title());
+		if (view.author() != null) kv.put("author", view.author());
+		kv.put("pages", view.totalPages());
+		if (view.startPage() > 1) kv.put("page", view.startPage());
+		if (view.nextPage() != null) kv.put("next_page", view.nextPage());
+		if (view.truncated()) kv.put("truncated", true);
+		kv.quoted("text", view.text());
+		return kv;
 	}
 }

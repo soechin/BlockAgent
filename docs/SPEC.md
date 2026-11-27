@@ -183,12 +183,19 @@ flowchart TD
 | 工具 | 內容 | 需求 |
 |---|---|---|
 | `get_self` | 位置、所在維度、傳送門冷卻剩餘 tick(`portal_cooldown`，冷卻中需先停在門外)、生態域、面朝方向(`face=`，八方位)；遊戲模式(創造模式另外提醒「挖掉的方塊不會掉落，要材料用 creative_take」，飛行中也會標出)；血量、飢餓度、飽和度、氧氣；經驗等級；狀態效果(`effects=poison:1:12s,...`，等級和剩餘秒數)；手上和副手物品、盔甲(耐久、附魔、藥水內容、書名、自訂名稱，S3.0b 的物品寫法)；背包(同種物品合併計數，標出可吃、可當燃料的物品；附魔書、藥水這類同 id 也不同的物品另外列在 `special=`)；目前任務與暫停狀態；啟用中的反射 | M1.1 |
-| `get_surroundings(radius=16, detail=false)` | 腳下方塊與光線；地形概要(地表、洞穴、水邊、高度落差)、面朝方向與周圍已載入生態域方向；**重要方塊**依種類分組，列出最近的位置和數量(礦石、原木、水、岩漿、工作台、熔爐、箱子、床、門)，每組標出所有權(`own`/`other`/`nat`)；危險(岩漿、懸崖、火)；生物依 `hostile`、`neutral`、`protected`、`passive` 分組，每種列出數量與最近個體的 id 和方向(`detail=true` 展開多隻)；**載具**(船、礦車：id、位置、誰在上面，`mount` 用)；**地上的掉落物**(依物品 id 合併計數，列最近那一堆的位置)；主世界的時間與天氣 | M1.2 |
-| `inspect_area(from, to, mode=auto, type?, offset=0, limit=32)` | 讀取目前維度的長方體(含兩端，最多 32,768 格)。小範圍或指定方塊時預設列出座標、狀態與所有權，其他範圍預設統計方塊種類。分開標示空氣、未載入及超出世界範圍。 | M1.2, M1.7 |
+| `get_surroundings(radius=16, detail=false)` | 腳下方塊與光線；地形概要(地表、洞穴、水邊、高度落差)、面朝方向與周圍已載入生態域方向；**重要方塊**依種類分組，列出最近的位置和數量(礦石、原木、水、岩漿、工作台、熔爐、箱子、床、門，以及有寫字的告示牌 `sign`，附文字摘要)，每組標出所有權(`own`/`other`/`nat`)；危險(岩漿、懸崖、火)；生物依 `hostile`、`neutral`、`protected`、`passive` 分組，每種列出數量與最近個體的 id 和方向(`detail=true` 展開多隻)；**物品展示框**(`frame`，非空展示框的物品、位置與貼附方向，S3.2a)；**載具**(船、礦車：id、位置、誰在上面，`mount` 用)；**地上的掉落物**(依物品 id 合併計數，列最近那一堆的位置)；主世界的時間與天氣 | M1.2 |
+| `inspect_area(from, to, mode=auto, type?, offset=0, limit=32)` | 讀取目前維度的長方體(含兩端，最多 32,768 格)。小範圍或指定方塊時預設列出座標、狀態與所有權(遇到告示牌時附上非空的正面/背面文字，S3.2a)，其他範圍預設統計方塊種類。分開標示空氣、未載入及超出世界範圍。 | M1.2, M1.7 |
 | `find_blocks(type, radius=48, max=10, min_y?, max_y?, source_only=false)` | 在已載入的區塊中找指定方塊，回傳最近的 N 個位置與所有權標記。`type` 可用逗號列出最多 8 種，各自回報。高度是含端點的範圍，`source_only` 只保留流體來源。篩選後才取各類最近的結果，全部找不到才回傳 `NOT_FOUND` | M1.2 |
 | `get_players` | 附近其他玩家：名稱、座標(`pos=`，可以直接拿去 `goto`)、距離方向、手上物品、盔甲、最近的行為(S3.4) | M1.3, M1.4 |
 | `get_chat(since?)` | 最近的公開聊天(S3.5)，預設最近 20 則 | M1.5 |
 | `get_task` | 目前任務的狀態與進度(S4.3) | M2.7, M2.10 |
+
+- **S3.2a 告示牌、物品展示框與書本讀取**(2026-11-27，不新增獨立工具)：[M1.2, M1.7, M2.2]
+  - **告示牌**(`SignBlockEntity`，含懸掛告示牌)：MC 26.3 以 `getText(SignTextSlot.FRONT / BACK).getMessages(false)` 讀取四行文字，去掉空白行後以 `/` 串接。`inspect_area`(blocks 模式)於該格後方附 `front="..."`、`back="..."`(空面省略)；`get_surroundings` 的 `sign` 群組只列有寫字的告示牌，每則文字摘要上限 60 字。所有文字以 `Kv.quote` 保持原文。
+  - **物品展示框**(`ItemFrame`，含 `GlowItemFrame`)：直接以 `getItem()` 讀取非空展示物，於 `get_surroundings` 的 `frame` 區塊列出物品(`Fmt.item`)、座標、貼附面方向與相對方位(一般上限 8 個、`detail=true` 上限 20 個)。
+  - **書台與背包書本**：
+    - `LecternBlockEntity` 客戶端不自動同步書本內容，須開啟 `LecternMenu` 才讀得到 `LecternMenu.getBook()`。`use_block(x,y,z)` 對有書的 `lectern` 按右鍵時，改以短任務等待 `LecternMenu` 同步(同容器 `OPEN` → `SYNC`)，讀取 `WrittenBookContent.getPages(false)` 或 `WritableBookContent.getPages(false)` 後**立刻關閉** `LecternMenu`，在結果附上 `title=`、`author=`、`pages=` 與內文摘要(上限 1,200 字元，超過時註記 `truncated=true`)；空書台則照一般 `use_block` 處理。
+    - 背包裡的 `written_book` 或 `writable_book`：`use_item(item, match?, page?)` 未給座標時，不打開會鎖住操作畫面的原版書本 GUI，直接從背包(含副手)讀出該書的 `title`、`author`、總頁數與文字內容(預設從第 1 頁起，總長上限 1,200 字元；給 `page` 時從該頁開始讀並回報 `next_page=` 以便翻頁)。`get_self` 維持只顯示書名，不展開內文。
 
 ### 3.3 其他玩家的位置與物品
 
@@ -269,14 +276,14 @@ flowchart TD
 | `goto_block(type, radius=48)` | 走到最近的某種方塊旁(背景任務) | M2.1, M2.7 |
 | `look_at(x,y,z)` | 轉頭 | M2.1 |
 | `break_block(x,y,z)` | 挖一格。一般操作需在觸及範圍內(S4.6f) | M2.1 |
-| `place_block(x,y,z, item, facing?)` | 放一格，等伺服器確認再回傳。一般操作需在觸及範圍內、有支撐面和背包材料(S4.6f)；被規矩擋下時回報那個錯誤碼和原因。不帶 `facing` 的生存模式放置雖然不是背景任務，也照樣尊重進行中的任務(`replace=false` 回 `BUSY`，`replace=true` 先取消舊任務)。`facing` 見 S4.2b | M2.2 |
-| `use_block(x,y,z)` | 對方塊按右鍵：開門、按鈕、拉桿、開容器。適用時回報操作後的 `open`、`powered`、`lit`。被規矩擋下時照實回報那個錯誤碼和原因，不包成「沒有反應」 | M2.2, M5.3 |
-| `equip(item, slot="mainhand")` | 換手上或身上的裝備 | M2.1 |
-| `eat(item?)` | 吃東西(不指定就挑最好的) | M2.1 |
+| `place_block(x,y,z, item, facing?, half?, sneak?)` | 放一格，等伺服器確認再回傳。一般操作需在觸及範圍內、有支撐面和背包(含副手)材料(S4.6f)；被規矩擋下時回報那個錯誤碼和原因。不帶 `facing`/`half`/`sneak` 的生存模式放置雖然不是背景任務，也照樣尊重進行中的任務(`replace=false` 回 `BUSY`，`replace=true` 先取消舊任務)。`facing`/`half`/`sneak` 見 S4.2b | M2.2 |
+| `use_block(x,y,z)` | 對方塊按右鍵：開門、按鈕、拉桿、開容器、讀書台上的書(S3.2a)。適用時回報操作後的 `open`、`powered`、`lit`。被規矩擋下時照實回報那個錯誤碼和原因，不包成「沒有反應」 | M2.2, M5.3 |
+| `equip(item, slot="mainhand", match?)` | 換手上或身上的裝備；`item="none"` 搭配 `slot=offhand\|head\|chest\|legs\|feet` 可純卸下裝備回主背包；`match` 依屬性挑選同 id 物品(S4.2d) | M2.1 |
+| `eat(item?, match?)` | 進食或飲用：不指定 `item` 時挑營養最高的安全食物；指定 `item` 時支援所有具 `CONSUMABLE` 的食物與飲品(藥水、牛奶桶、蜂蜜瓶)，可用 `match` 指定藥水效果(S4.2c) | M2.1 |
 | `attack(target)` | 攻擊某個生物一下(entity id 或種類+最近)。`attack`、`hunt`、`use_on_entity`、`mount` 的 `target` 都接受字串或整數 id；給 id 時也要在該工具的範圍內、是該工具能選的實體，否則 `NOT_FOUND` | M2.1 |
-| `use_item(item, x?,y?,z?)` | 使用手上的物品：給座標就對那格用(水桶倒水或撈水、打火石、骨粉)，沒反應時改成直接使用。倒水、點火的位置比照放方塊，撈水比照破壞，點燃或催熟別人的方塊比照用工具改變方塊(S7.3) | M2.2 |
+| `use_item(item, x?,y?,z?, match?, page?)` | 使用手上的物品：給座標就對那格用(水桶倒水或撈水、打火石、骨粉)，沒反應時改成直接使用；不給座標且為成書/書與羽毛筆時直接讀出文字內容而不開書本畫面(S3.2a)。支援副手與 `match`(S4.2d)。倒水、點火的位置比照放方塊，撈水比照破壞，點燃或催熟別人的方塊比照用工具改變方塊(S7.3) | M2.2 |
 | `dismount()` | 從載具下來：按住蹲下鍵(很短的任務) | M2.1 |
-| `drop(item, count, toward?)` | 丟出物品，可以指定朝向某個位置 | M2.2 |
+| `drop(item, count, toward?, match?)` | 丟出物品(含副手)，可以指定朝向某個位置與屬性篩選 `match`(S4.2d) | M2.2 |
 | `creative_take(item, count=1)` | **只在創造模式**：從創造物品欄拿東西放進背包(S4.6c) | M2.4 |
 | `stop()` | 停止目前的任務 | M2.7 |
 | `set_status(text)` | 設定 HUD 第二行 AI 說的一句話(在做什麼、為什麼)，最多 30 字。一直顯示到下次設定，空字串清除(S8.3) | M6.3 |
@@ -288,7 +295,7 @@ flowchart TD
 | `mine(block, count, radius=48)` | 找到指定方塊，走過去、挖、撿起來，直到數量達到。`block` 可以是方塊 id 或群組(`log`、`stone`、`coal_ore`、`iron_ore`…)| 有沒有挖得動的工具；背包空間；已載入範圍內有沒有足夠的目標(沒有就 `NOT_FOUND`，加 `search=true` 才會往外找，最多 5 分鐘) | M2.1, M2.8, M2.9 |
 | `hunt(target)` | 追蹤指定 entity id 或生物種類(48 格內最近)的生物並打倒，擊殺後走近並撿取掉落物。敵對生物照 S9.1b 的戰術打(苦力怕打了就退、遠程怪舉盾衝過去、有弓就射)，其他生物走近用劍或斧頭打 | 目標消失、攻擊被守衛擋下，或擊殺後未能撿取時回報原因 |
 | `craft(item, count=1)` | 合成。優先使用伸手可及的工作台，其次從 16 格內選自有或其他工作台。高危險時使用手邊工作台，或從背包就近放置。每一批最多做到材料的堆疊上限那麼多次(弓 1、雪球 16)；放進合成格的數量、拿出來的數量都照格子實際的變化算，背包滿了拿不出來就照實回報 | 用配方資料計算所需材料(包括做工作台的木板)；不夠就回報缺什麼 | M2.1, M2.8, M2.9 |
-| `smelt(item, count, fuel?)` | 熔煉。找附近 32 格的熔爐(優先自有，啟動回應列出第一個嘗試的熔爐)；沒有就用背包材料做一個放下；放入原料和燃料，等燒好，拿出產物。燃料比燃料格一次放得下的多時(木棒超過 64 根、木鏟一次只能放 1 個)，燒完再補；熄火、產物格空了，而且燃料格空了(燒完)或原料格空了(被拿走)就停下回報。給產物時，背包裡有好幾種原料就優先用數量夠的那種；指定的 `fuel` 不是燃料就回傳 `INVALID_ARGUMENT` | 原料、燃料是否夠；熔爐是否可用 | M2.2, M2.8, M2.9, M5.3 |
+| `smelt(item?, count?, fuel?, action="smelt", x?,y?,z?)` | 熔煉與爐子存取(S4.2e)：`action="smelt"`(預設)支援普通熔爐、高爐(`blast_furnace`)與煙燻爐(`smoker`)，依配方優先使用加速爐，再其次自有普通熔爐與其他熔爐，沒有才從背包放普通熔爐；放入原料(含副手)和燃料，等燒好，拿出產物。`action="list"` 查看指定座標爐子的原料/燃料/產物與燃燒狀態；`action="take"` 取出指定座標爐子的產物格 | `smelt`：原料、燃料是否夠、爐子是否可用；`list`/`take`：目標座標是否為熔爐/高爐/煙燻爐 | M2.2, M2.8, M2.9, M5.3 |
 | `build_wall(from, to, height, material, dry_run=false)` | 在兩點之間蓋一面牆(直線，指定高度，最多 32,768 格) | 材料數量；位置上有沒有別人的方塊擋著(只填空氣和可替換方塊，不拆東西) | M2.2, M2.8, M2.9 |
 | `build_house(from, to, material, height=4, floor?, roof?, door_side=north, door?, window?, name?, id?, dry_run=false)` | 依現場地形算出一間能住的房子(地基、地板、牆、窗、平屋頂、門)，存成藍圖再開工(S4.8b)。給 `id` 時重新量地形、重算同一份藍圖 | 地面高低差；材料數量；S4.8c 的施工規則 | M2.2, M2.3, M2.8, M2.9 |
 | `build_blueprint(action, origin?, parts?, add_parts?, name?, id?, dry_run=false, offset?)` | 儲存、施工、查看、修改、拆除多材質藍圖：`create`、`resume`、`list`、`show`、`update`、`demolish`、`delete`(S4.8a、S4.8c) | 比對實際方塊、已載入區塊、空格、衝突及材料，依 S4.8c 決定每格放、挖、拆或略過 | M2.2, M2.3, M2.8, M2.9 |
@@ -300,7 +307,7 @@ flowchart TD
 | `use_on_entity(target, item?)` | 走到生物旁邊，拿著物品按右鍵(剪羊毛、餵食繁殖、拴繩、擠奶)，省略 item 就空手；撿起互動後掉在旁邊的東西。村民和流浪商人一律不能互動(不做交易，S7.7、A3) | 背包有這個物品；目標是否受保護(S7.7 的 `interact`) | M2.2, M5.1 |
 | `mount(target)` | 走過去坐上船、礦車等載具。不會自己開船；乘坐中不能開始走路的任務，要先 `dismount` | 目標是否受保護(馴服的馬算寵物，不分主人，自己的也擋；村民和流浪商人一律擋下) | M2.1 |
 | `fish(count=1, max_sec=120)` | 走到 16 格內的水邊拋竿，浮標被咬住就收竿，釣到 count 次或時間到 | 背包有釣竿；附近有沒有上方是空氣的水源 | M2.1, M2.8 |
-| `chest(action, x,y,z, items?)` | 走到箱子、木桶、界伏盒或終界箱前：`list` 看內容，`put` 放東西，`take` 拿東西(別人的和自然生成的也可以)。結果都附上關上前的內容(`contents=id:數量,... free=空格數`，附魔書等另外列在 `special=`) | `put` 時背包有這些東西；目標是不是箱子 | M2.2, M5.3 |
+| `chest(action, x,y,z, items?)` | 走到箱子、木桶、界伏盒或終界箱前：`list` 看內容，`put` 放東西(含副手)，`take` 拿東西(別人的和自然生成的也可以)。`items` 鍵支援純 id 或 `id[屬性]` 篩選語法(S4.2d)。結果都附上關上前的內容(`contents=id:數量,... free=空格數`，附魔書等另外列在 `special=`) | `put` 時背包(含副手)有符合條件的東西；目標是不是箱子 | M2.2, M5.3 |
 
 **記憶**(S4.8)：`memory_read()`、`memory_write(key, value)`、`memory_delete(key)`。
 
@@ -310,11 +317,37 @@ flowchart TD
 
 **發言**(S6)：`say(text)`。
 
-- **S4.2b** `place_block` 的 `facing`(A6，2026-11-23)：選填 `north`/`south`/`east`/`west`/`up`/`down`，意思是**放好之後**方塊狀態的朝向：有 `facing`(含 `HORIZONTAL_FACING`、漏斗的 `FACING_HOPPER`)就比那個方向；原木這類的 `axis` 比軸(`north`/`south` 都是 `z`)；告示牌、旗幟、頭顱的 `rotation` 比四個正方向。
-  - 每種方塊決定朝向的規則不同(樓梯朝玩家視線、熔爐和箱子背對玩家、漏斗和牆上的火把看點的那一面、原木看點的面的軸、觀察者看上下視線)，所以不逐一手寫，而是用原版自己的放置邏輯(`BlockItem.getPlacementState`)模擬「點旁邊哪個實心方塊的哪一面 × 視角(四個水平方向，平視、往下、往上)」，挑出會放成指定朝向的組合。不點有方塊實體的鄰格，也不點右鍵會打開介面或切換狀態的方塊(工作台、門、活板門、柵欄門、床、按鈕、拉桿，跟守門員分辨「放置/使用」用同一個判斷 `RuleGuard.isInteractive`)；不帶 `facing` 時挑支撐面也一樣。萬一點了還是打開介面，立刻關掉並回 `INVALID_ARGUMENT`。
-  - 點擊封包不帶視角，伺服器用上一次同步的視角決定朝向，所以先轉向等 3 個 tick 再點(背景任務 `place_block`，照常吃 `wait_sec`)。還沒點下去就被反射(進食、自衛)暫停時，恢復後重新轉向、重選物品並重檢距離。伺服器確認後讀方塊狀態：朝向不對回 `ERR INVALID_ARGUMENT ... | placed with facing=X instead of Y | hint=break_block it, then place again from another side`。
-  - 方塊沒有任何朝向屬性時，不管背包和距離，一律先回 `ERR INVALID_ARGUMENT ... | this block has no facing property | hint=omit facing`(火把要貼牆才有朝向，不算)。有朝向但目前的鄰格放不出那個方向時，回 `INVALID_ARGUMENT` 並在 `possible=` 列出放得出的朝向；創造模式用指令放時，方塊不接受這個方向(例如樓梯、漏斗朝上)也一樣回 `possible=`。
-  - 創造模式能用指令放時(S4.6f)，直接把朝向寫進方塊狀態再送指令。
+- **S4.2b** `place_block` 的 `facing`、`half` 與 `sneak`(A6 2026-11-23；2026-11-27 擴充 `half`、`sneak`)：
+  - `facing`：選填 `north`/`south`/`east`/`west`/`up`/`down`，意思是**放好之後**方塊狀態的朝向：有 `facing`(含 `HORIZONTAL_FACING`、漏斗的 `FACING_HOPPER`)就比那個方向；原木這類的 `axis` 比軸(`north`/`south` 都是 `z`)；告示牌、旗幟、頭顱的 `rotation` 比四個正方向。
+  - `half`：選填 `bottom`/`top`，意思是**放好之後**的上下半狀態：半磚比 `SlabBlock.TYPE`(`bottom`/`top`)，樓梯與活板門比 `BlockStateProperties.HALF`(`bottom`/`top`)。方塊沒有這兩種屬性時，不管背包和距離，一律回 `ERR INVALID_ARGUMENT ... | this block has no half property | hint=omit half`。
+  - `sneak`：選填布林，預設 `false`。設為 `true` 時允許以有方塊實體或可互動的鄰格(箱子、熔爐、工作台、漏斗、門、按鈕等)為支撐面貼著放，例如對箱子放漏斗、在工作台側邊插火把。生存模式走背景任務 `PlaceTask`，於 `TURN` 階段同步按住 `mc.options.keyShift`(等 3 tick 讓 `ServerboundPlayerInputPacket` 送出 `shift=true`)再點擊；任務結束、暫停、取消或異常時，於 `onStop` 強制放開 `keyShift`。**安全底線不降級**：守門員仍照 S7.3b 檢查目標格(不可覆蓋他人方塊、不可蹲下疊合他人的半磚)。
+  - 每種方塊決定朝向與上下半的規則不同，因此不逐一手寫，而是用原版放置邏輯(`BlockItem.getPlacementState`)模擬「可貼放鄰格面 × 點擊高度(側面額外模擬下半 `y+0.25` 與上半 `y+0.75`) × 視角(四個水平方向，平視、往下、往上)」，挑出同時符合 `facing`(若有)與 `half`(若有)的組合。`sneak=false` 時不點有方塊實體的鄰格或 `RuleGuard.isInteractive` 方塊；萬一點了還是打開介面，立刻關掉並回 `INVALID_ARGUMENT`。
+  - 點擊封包不帶視角與蹲下鍵本身，伺服器依前次同步狀態判定，所以有指定 `facing`、`half` 或 `sneak=true` 時一律走背景任務 `PlaceTask`(照常吃 `wait_sec`)：先轉向/按住蹲下等 3 tick 再點。還沒點下去就被反射(進食、自衛)暫停時，恢復後重新轉向/蹲下、重選物品並重檢距離。伺服器確認後讀方塊狀態：朝向或上下半不符回 `ERR INVALID_ARGUMENT ... | hint=break_block it, then place again from another side`。
+  - 方塊沒有任何朝向屬性卻給 `facing` 時，不管背包和距離，一律先回 `ERR INVALID_ARGUMENT ... | this block has no facing property | hint=omit facing`(火把要貼牆才有朝向，不算)。有朝向但目前的鄰格放不出那個方向時，回 `INVALID_ARGUMENT` 並在 `possible=` 列出放得出的朝向；創造模式用指令放時，方塊不接受這個方向或上下半也一樣回 `possible=`。
+  - 創造模式能用指令放時(S4.6f)，直接把 `facing` 與 `half` 寫進方塊狀態再送指令；`sneak` 在指令模式不需實際蹲下但仍照常檢查目標格與所有權。
+- **S4.2c** 長按飲用與 `CONSUMABLE` 擴充(2026-11-27)：[M2.1]
+  - MC 26.3 以 `DataComponents.CONSUMABLE` 統一食物與飲品(`Consumable.canConsume`、`consumeTicks`、`animation()` 為 `EAT` 或 `DRINK`)。
+  - `eat(item?, match?)` 省略 `item` 時維持自動挑選背包(含副手)內營養最高的**安全食物**(限 `DataComponents.FOOD`，避開腐肉、蜘蛛眼、毒馬鈴薯等不良食物)。
+  - 指定 `item` 時，接受任何帶 `DataComponents.CONSUMABLE` 的物品(食物、`potion`、`milk_bucket`、`honey_bottle` 等)，並先以 `Consumable.canConsume(player, stack)` 檢查當下是否可使用(例如滿飽食度吃一般食物時直接回 `INVALID_ARGUMENT`，但藥水、牛奶桶、金蘋果不受飽食度限制)。
+  - `EatTask` 的逾時上限改為 `Math.max(20 * 5, consumable.consumeTicks() + 60)`；沿用 `UseKey.startEating`/`holdOff`，並依 `match`(若有)選取目標物品。完成條件為該批符合條件的物品總數減少，結果除原本欄位外，若前後狀態效果有變化則附上 `effects=`。
+  - 進食反射(`EAT`)與撤退回血維持只挑安全食物(撤退血量低時優先金蘋果)，不自動喝藥水或牛奶。
+- **S4.2d** 物品屬性篩選 `match`、純卸裝備與副手一致化(2026-11-27)：[M2.1, M2.2]
+  - **屬性篩選語法**(純邏輯抽出為 `blockagent.core.ItemMatcher`，便於單元測試)：
+    - 單項工具(`equip`、`drop`、`eat`、`use_item`)使用選填參數 `match`；`chest(action=put|take)` 的 `items` 鍵支援純 id 或 `id[條件]`(例如 `potion[fire_resistance]: 1`、`enchanted_book[mending]: 1`、`diamond_pickaxe[silk_touch;best_dur]: 1`)，與 `Fmt.item` 輸出一致。
+    - 多條件以 `;` 分隔，全部須滿足(AND)；支援鍵值與簡寫：
+      - `ench=<id>[:<min_level>]` / `stored=<id>[:<min_level>]`：比對物品附魔或附魔書儲存附魔。
+      - `potion=<id>`：比對 `POTION_CONTENTS` 的藥水名稱(如 `fire_resistance`、`long_night_vision`、`strong_healing`)或自訂效果名稱。
+      - `name=<子字串>`：不分大小寫比對自訂名稱(`CUSTOM_NAME`)或成書書名(`WRITTEN_BOOK_CONTENT.title`)。
+      - `best_dur` / `low_dur`：排序偏好(剩餘耐久最高或最低優先；無耐久物照原本順序)。
+      - 純值簡寫(無 `=` 且非 `best_dur`/`low_dur`)：依序比對附魔名、儲存附魔名、藥水名或自訂名稱子字串，讓模型直接寫 `mending`、`silk_touch`、`fire_resistance` 即可命中。
+    - 找不到符合條件的物品回 `ERR MISSING_MATERIALS` 並附 `match=`；語法錯誤回 `ERR INVALID_ARGUMENT`。
+  - **純卸下裝備**：`equip` 的 `slot` 擴充為 `mainhand`、`offhand`、`armor`、`head`、`chest`、`legs`、`feet`。呼叫 `equip(item="none", slot=offhand|head|chest|legs|feet)` 時，把該裝備欄的物品移回主背包空格(該欄本來就空時直接回 `OK already_empty`)；主背包沒有空格時回 `ERR MISSING_MATERIALS free_slots=0 | main inventory is full`。
+  - **副手一致化**：`eat`、`smelt`、`drop`、`use_item`、`place_block`、`chest(put)` 的事前數量檢查納入副手(`countWithOffhand` / `summaryWithOffhand`)。實際執行時若目標物品只在副手：不需開容器的動作直接切或透過 `pullOffhandToMain` 換回主背包；需開容器的任務(`smelt`、`chest(put)`)比照 `craft`(R12)在開工前先檢核並於 `start()` 換回主背包，主背包滿無法換回時於事前檢查回 `MISSING_MATERIALS` 並附提示。
+- **S4.2e** `smelt` 擴充高爐、煙燻爐、`list`/`take` 與共用 `ContainerTask` 基底(2026-11-27)：[M2.2, M2.8, M2.9, M5.3]
+  - **配方擴充**：`Recipes` 除 `minecraft:smelting` 外，一併解析 `minecraft:blasting`(25 條)與 `minecraft:smoking`(9 條)，區分每個原料/產物支援的爐種(`FURNACE`、`BLAST_FURNACE`、`SMOKER`)。高爐與煙燻爐燒煉速度為 2 倍、單個燃料燃燒時間折半，因此燒 `count` 個所需燃料總數與普通熔爐相同，僅任務逾時改依每格 100 tick 估算。
+  - **`action="smelt"`(預設)**：尋找 32 格內可用爐子時，只考慮支援該配方的爐種，優先順序為：自有加速爐(高爐/煙燻爐) → 其他加速爐 → 自有普通熔爐 → 其他普通熔爐；全部不可用且背包有普通熔爐時，放下普通熔爐使用。開啟後接受 `AbstractFurnaceMenu`(涵蓋 `FurnaceMenu`、`BlastFurnaceMenu`、`SmokerMenu`，槽位皆為 `0`=原料、`1`=燃料、`2`=產物)。
+  - **`action="list"` 與 `action="take"`**(須指定 `x,y,z`，省略或目標不是三種爐子之一時回 `INVALID_ARGUMENT`/`NOT_FOUND`)：走到指定爐子、開啟並同步後，`list` 回報 `in=`、`fuel=`、`out=`、`lit=`、`progress=` 後關閉；`take` 將產物格(槽位 2)移入背包(若背包滿則回報實際取出數量與剩餘內容)，回報 `took=` 與爐內剩餘內容後關閉。
+  - **共用容器任務基底 `ContainerTask`**：抽取 `WALK` → `OPEN` → `SYNC`(等 `stateId != 0` 或 3 tick，且每階段驗證 `containerMenu` 仍為預期畫面)→ 子類 `work()` → `CLOSE` 與反射暫停/恢復(`onSuspend`/`onResume`)的共用生命週期，供 `SmeltTask`、`StationTask` 及後續工作站任務(附魔台、鐵砧、砂輪等)共用。
 - **S4.2a** 工具整併(使用者決定，2026-11-23，`docs/REVIEW.md` A7)：`preview_build` 併入 `build_wall`/`build_house`/`build_blueprint` 的 `dry_run`(唯讀、暫停時也能用，阻擋明細用 `offset` 分頁)；`chest_put`、`chest_take` 併成 `chest(action=list|put|take)`。`memory_*` 和 `list_reflexes`/`set_reflex` 保持獨立：依 `action` 改變必填參數的工具容易讓模型填錯，這兩組又不是重複的 schema。區域工具的兩個端點一律叫 `from`/`to`(`"x,y,z"`)；舊藍圖記下的 `corner1`/`corner2` 照樣讀得懂。
 - **S4.2** 工具清單裡**沒有**：自動跟隨、自動幫忙、連線伺服器、切換世界、離開世界、執行指令、Baritone 指令轉送。`follow` 只在 AI 自己呼叫時才跟，不會因為看到朋友就自己開始。[M2.5, M2.6]
 - 尋路避開怪物：Baritone `avoidance=true`，8 格內有敵對生物的路線成本較高(Baritone 內建排除沒生氣的終界使者、殭屍化豬布林和亮處的蜘蛛)。
@@ -438,7 +471,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
   |---|---|---|
   | 緊急 | 立刻讓 `wait_events` 返回 | `health_low`(≤ 6)、`attacked`(被生物或玩家打)、`reflex`(保命、撤退類)、`user_paused`、`user_resumed`、`user_took_over`、`session_ended` |
   | 即時 | 2 秒內返回(讓同時發生的事一起送) | `task_done`、`task_failed`、`rule_blocked`、`dimension_changed`、`player_sleeping`、`daybreak`(觀察到天黑後跨進白天時送一次，附天氣；下雨時不死系不會自燃)、`danger_rising`(危險程度升到 `high` 時送一次，降回 `low` 前不重發；見 S9.1c)、`destination_hostile`(`goto` 的目的地在遠程怪射程或近戰怪 8 格內，附怪物種類和數量；見 S9.1b) |
-  | 合併 | 累積起來，最多每 15 秒送一則合併摘要 | `chat`、`task_progress`、`night_falling`(黃昏開始，離地表生怪約 1 分鐘；附備戰程度 `gear=`、`missing=`，見 S9.1c)、`hostile_near`(16 格內出現威脅，還沒攻擊；威脅的定義見 S9.1b，沒生氣的中立生物不算)、`damaged`(輕傷)、`reflex`(進食、脫困這類輕微的) |
+  | 合併 | 累積起來，最多每 15 秒送一則合併摘要 | `chat`、`task_progress`、`night_falling`(黃昏開始，離地表生怪約 1 分鐘；附備戰程度 `gear=`、`missing=`，見 S9.1c)、`hostile_near`(16 格內出現威脅，還沒攻擊；威脅的定義見 S9.1b，沒生氣的中立生物不算)、`damaged`(輕傷)、`inventory_full`(主背包空格從 > 0 降至 0 時送一次，再次 > 0 前不重發；提示用 `chest` 存物或 `drop` 丟棄多餘物品)、`reflex`(進食、脫困這類輕微的) |
 
   合併時同組事件合成一行(S3.0e)，例如 `[BATCH] chat(3): Ming="好餓"; Ming="有人要鐵嗎"; Amy="哈哈"`、`[BATCH] damaged(2): lost=1 hp=17; lost=2 hp=15`。
 - **S5.3** **閒置提醒**：沒有進行中的任務，而且 60 秒內 AI 除了 `wait_events` 之外沒有呼叫任何工具，就送出 `idle_reminder`(`no task and no recent actions | hint=pick a next goal`；有計畫時改成接著做目前步驟，見 S5.6)。間隔可以設定。[M3.2]
@@ -951,6 +984,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 | M2.2、M2.3、M2.8、M2.9(房子與藍圖修改) | T15 `HouseGameTest`(遊戲測試，5×5 房子；(a) 生存模式，其餘用創造模式的指令施工以縮短時間)：(a) 往東每格降 1 的斜坡，地板高低差 3 格內：`build_house` 蓋好，地板下沒有空格，門口外一格跟地板同高，門裝上了，室內擋路的泥土被挖掉。(b) 地板比地面高 5 格：`INVALID_ARGUMENT`，訊息說明地面要在地板上下 3 格內，沒有開始任務。(c) 蓋好後在室內放箱子和火把，舊屋頂的一格換成別人的石磚；把一格地基和一格牆打掉，再用同一個 `id` 呼叫 `build_house(height=5)`：預檢寫出放、挖、拆的格數；完成後牆加高、打掉的兩格補回、舊屋頂拆掉換到新高度，箱子、火把和別人的石磚都還在。(d) 藍圖用 `update` 的 `add_parts` 在牆上加一格 `air` 和一格玻璃：那兩格自己的木板被拆掉，一格變空、一格變玻璃，其他格不動。(e) 創造模式 `demolish`：自己蓋的方塊全部拆掉，箱子和別人的方塊還在，藍圖紀錄刪掉；`list` 看不到它。(f) `delete`：紀錄刪掉，現場方塊不變。(g) `show` 的現場比對跟 (c) 打掉兩格之後的狀態相符。 |
 | M6.7 | `SessionGameTest.t5` 用 `TestInput.moveCursor` 轉動視角後，檢查工作階段仍在進行。接手測試情境：任務進行中按 W 鍵觸發 `user_took_over`，打開聊天框打字則不觸發。 |
 | M7.8、M7.9 | 單元測試+遊戲測試：紀錄的 `source` 欄位；關掉 `eat` 後肚子餓不會吃；被鎖定的反射關不掉 |
+| M1.2、M2.1、M2.2(底層體檢與日常擴充，S3.2a、S4.2b–S4.2e) | T16(單元測試 + 遊戲測試)：(a) 單元測試：`ItemMatcher` 解析/比對/耐久排序、`Recipes` 載入 `blasting`/`smoking` 與爐種優先順序、`inventory_full` 觸發去重、`ToolsSnapshotTest` 同步更新 `tools-snapshot.json`；(b) `eat` 喝抗火藥水(`match=fire_resistance`)與牛奶桶(清除中毒效果)，確認 `effects=` 回報與不影響食物自動選擇；(c) `equip(item="none", slot=head/offhand)` 純卸裝、`chest` 用 `id[屬性]` 精準取放附魔書/藥水/高耐久工具、副手持有材料時的 `smelt`/`drop`/`chest(put)`/`place_block`；(d) `inspect_area` 與 `get_surroundings` 讀出雙面告示牌文字與非空物品展示框，`use_block` 讀書台並確認自動關閉介面，`use_item` 讀背包成書分頁且不開書本 GUI；(e) `smelt` 優先用高爐燒鐵礦、煙燻爐烤肉，以及 `action=list`/`take` 查看與取出既有成品；(f) `place_block` 設 `half=top` 放上半磚/倒置樓梯，設 `sneak=true` 貼著箱子放漏斗與火把，並驗證放完後放開 `keyShift` 且無法蹲下覆蓋或疊合他人半磚(S7.3b) |
 
 ---
 
@@ -983,14 +1017,14 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 | 需求 | 規格 | 驗收測試 |
 |---|---|---|
 | M1.1 | S3.2(`get_self`) | 12.3 ObservationTest |
-| M1.2 | S3.2(`get_surroundings`、`find_blocks`) | 12.3 ObservationTest |
+| M1.2 | S3.2(`get_surroundings`、`find_blocks`)、S3.2a | 12.3 ObservationTest、T16 |
 | M1.3 | S3.2(`get_players`)、S3.7 | 12.3 ObservationTest |
 | M1.4 | S3.4 | 12.3 ObservationTest |
 | M1.5 | S3.5、S3.5a | T3 |
 | M1.6 | S3.6、S4.5 | T1、T11 |
-| M1.7 | S3.1、S3.2 | 12.3 ObservationTest |
-| M2.1 | S4.2 | T11、T2 |
-| M2.2 | S4.2、S4.8b、S4.8c | T2、T15 |
+| M1.7 | S3.1、S3.2、S3.2a | 12.3 ObservationTest、T16 |
+| M2.1 | S4.2、S4.2c、S4.2d | T11、T2、T16 |
+| M2.2 | S4.2、S4.2b、S4.2d、S4.2e、S4.8b、S4.8c | T2、T15、T16 |
 | M2.3 | S4.8、S4.8c | 12.3 MemoryTest、T15 |
 | M2.4 | S4.6a–S4.6e、S4.5a、S6.3、S7.2、S9.1a | T1、T4、T12、T14 |
 | M2.5 | S3.5a、S4.2、S4.7、S9.1 | T3 |

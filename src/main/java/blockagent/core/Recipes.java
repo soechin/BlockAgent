@@ -28,10 +28,17 @@ public final class Recipes {
 		}
 	}
 
-	public enum Kind {SHAPED, SHAPELESS, SMELTING}
+	public enum Kind {SHAPED, SHAPELESS, SMELTING, BLASTING, SMOKING}
+
+	/** 支援的熔爐種類(S4.2e)。 */
+	public enum FurnaceKind {FURNACE, BLAST_FURNACE, SMOKER}
+
+	/** 候選爐子(純資料，供優先順序單元測試與 SmeltTask 共用)。 */
+	public record FurnaceCandidate<T>(T target, FurnaceKind kind, boolean owned, double distSq) {
+	}
 
 	/**
-	 * @param grid   SHAPED：width*height 格，空格是 null；SHAPELESS：所有材料；SMELTING：一個材料
+	 * @param grid   SHAPED：width*height 格，空格是 null；SHAPELESS：所有材料；SMELTING/BLASTING/SMOKING：一個材料
 	 */
 	public record Recipe(String id, Kind kind, int width, int height, List<Ingredient> grid, String result, int resultCount) {
 		public boolean needsTable() {
@@ -53,6 +60,10 @@ public final class Recipes {
 	private final Map<String, List<Recipe>> byResult = new HashMap<>();
 	private final Map<String, List<Recipe>> smeltingByResult = new HashMap<>();
 	private final Map<String, Recipe> smeltingByInput = new HashMap<>();
+	private final Map<String, List<Recipe>> blastingByResult = new HashMap<>();
+	private final Map<String, Recipe> blastingByInput = new HashMap<>();
+	private final Map<String, List<Recipe>> smokingByResult = new HashMap<>();
+	private final Map<String, Recipe> smokingByInput = new HashMap<>();
 
 	/** tag(不含 #，例如 minecraft:planks)→ 物品 id 清單。 */
 	private final Function<String, Collection<String>> tagResolver;
@@ -94,6 +105,16 @@ public final class Recipes {
 				Recipe r = new Recipe(id, Kind.SMELTING, 1, 1, List.of(ingredient(o.get("ingredient"))), resultId(o), resultCount(o));
 				smeltingByResult.computeIfAbsent(r.result(), k -> new ArrayList<>()).add(r);
 				for (String in : r.grid().getFirst().options()) smeltingByInput.putIfAbsent(in, r);
+			}
+			case "minecraft:blasting" -> {
+				Recipe r = new Recipe(id, Kind.BLASTING, 1, 1, List.of(ingredient(o.get("ingredient"))), resultId(o), resultCount(o));
+				blastingByResult.computeIfAbsent(r.result(), k -> new ArrayList<>()).add(r);
+				for (String in : r.grid().getFirst().options()) blastingByInput.putIfAbsent(in, r);
+			}
+			case "minecraft:smoking" -> {
+				Recipe r = new Recipe(id, Kind.SMOKING, 1, 1, List.of(ingredient(o.get("ingredient"))), resultId(o), resultCount(o));
+				smokingByResult.computeIfAbsent(r.result(), k -> new ArrayList<>()).add(r);
+				for (String in : r.grid().getFirst().options()) smokingByInput.putIfAbsent(in, r);
 			}
 			default -> {
 				// 其他種類(切石機、鍛造台、特殊配方)不支援
@@ -151,13 +172,93 @@ public final class Recipes {
 		return smeltingByResult.getOrDefault(norm(result), List.of());
 	}
 
-	/** 這個物品放進熔爐會燒成什麼(null 表示不能燒)。 */
+	/** 這個物品放進普通熔爐會燒成什麼(null 表示不能燒)。 */
 	public Recipe smeltingFor(String input) {
 		return smeltingByInput.get(norm(input));
 	}
 
+	public Recipe blastingFor(String input) {
+		return blastingByInput.get(norm(input));
+	}
+
+	public Recipe smokingFor(String input) {
+		return smokingByInput.get(norm(input));
+	}
+
+	public List<Recipe> blastingRecipesFor(String result) {
+		return blastingByResult.getOrDefault(norm(result), List.of());
+	}
+
+	public List<Recipe> smokingRecipesFor(String result) {
+		return smokingByResult.getOrDefault(norm(result), List.of());
+	}
+
+	public int blastingRecipeCount() {
+		return blastingByResult.values().stream().mapToInt(List::size).sum();
+	}
+
+	public int smokingRecipeCount() {
+		return smokingByResult.values().stream().mapToInt(List::size).sum();
+	}
+
+	/** 這個原料可以在任何一種熔爐(普通/高爐/煙燻爐)燒出的配方。 */
+	public Recipe cookingFor(String input) {
+		String k = norm(input);
+		Recipe r = smeltingByInput.get(k);
+		if (r != null) return r;
+		r = blastingByInput.get(k);
+		return r != null ? r : smokingByInput.get(k);
+	}
+
+	/** 這個產物可以用任何一種熔爐燒出的配方(去重同 id)。 */
+	public List<Recipe> cookingRecipesFor(String result) {
+		String k = norm(result);
+		List<Recipe> out = new ArrayList<>(smeltingByResult.getOrDefault(k, List.of()));
+		if (out.isEmpty()) {
+			out.addAll(blastingByResult.getOrDefault(k, List.of()));
+			out.addAll(smokingByResult.getOrDefault(k, List.of()));
+		}
+		return out;
+	}
+
+	/** 這個原料支援哪些爐種(S4.2e：高爐/煙燻爐優先列出)。 */
+	public List<FurnaceKind> supportedFurnaces(String input) {
+		String k = norm(input);
+		List<FurnaceKind> out = new ArrayList<>(3);
+		if (blastingByInput.containsKey(k)) out.add(FurnaceKind.BLAST_FURNACE);
+		if (smokingByInput.containsKey(k)) out.add(FurnaceKind.SMOKER);
+		if (smeltingByInput.containsKey(k)) out.add(FurnaceKind.FURNACE);
+		return out;
+	}
+
+	/**
+	 * 依 S4.2e 優先順序挑選最佳爐子：自有加速爐 → 其他加速爐 → 自有普通熔爐 → 其他普通熔爐；
+	 * 同層級取距離最近者。只考慮 {@code supported} 允許的爐種。
+	 */
+	public static <T> T selectPreferredFurnace(List<FurnaceCandidate<T>> candidates, Collection<FurnaceKind> supported) {
+		FurnaceCandidate<T> best = null;
+		int bestRank = Integer.MAX_VALUE;
+		for (FurnaceCandidate<T> c : candidates) {
+			if (!supported.contains(c.kind())) continue;
+			int rank = furnaceRank(c.kind(), c.owned());
+			if (best == null || rank < bestRank || (rank == bestRank && c.distSq() < best.distSq())) {
+				best = c;
+				bestRank = rank;
+			}
+		}
+		return best == null ? null : best.target();
+	}
+
+	private static int furnaceRank(FurnaceKind kind, boolean owned) {
+		boolean fast = kind != FurnaceKind.FURNACE;
+		if (fast && owned) return 0;
+		if (fast) return 1;
+		return owned ? 2 : 3;
+	}
+
 	public int size() {
-		return byResult.values().stream().mapToInt(List::size).sum() + smeltingByResult.size();
+		return byResult.values().stream().mapToInt(List::size).sum()
+			+ smeltingByResult.size() + blastingByResult.size() + smokingByResult.size();
 	}
 
 	// ---- 事前檢查 ----

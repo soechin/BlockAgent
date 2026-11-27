@@ -140,4 +140,36 @@ class RecipesTest {
 		assertEquals(200, Recipes.burnTicks("wooden_pickaxe", true));
 		assertEquals(0, Recipes.burnTicks("dirt", false));
 	}
+
+	@Test
+	void loadsBlastingAndSmokingRecipesAndFurnacePriority() {
+		assertTrue(recipes.blastingRecipeCount() >= 20, "應載入高爐配方：" + recipes.blastingRecipeCount());
+		assertTrue(recipes.smokingRecipeCount() >= 8, "應載入煙燻爐配方：" + recipes.smokingRecipeCount());
+		assertEquals("minecraft:iron_ingot", recipes.blastingFor("raw_iron").result());
+		assertEquals("minecraft:cooked_beef", recipes.smokingFor("beef").result());
+
+		assertEquals(java.util.List.of(Recipes.FurnaceKind.BLAST_FURNACE, Recipes.FurnaceKind.FURNACE),
+			recipes.supportedFurnaces("raw_iron"));
+		assertEquals(java.util.List.of(Recipes.FurnaceKind.SMOKER, Recipes.FurnaceKind.FURNACE),
+			recipes.supportedFurnaces("beef"));
+		assertEquals(java.util.List.of(Recipes.FurnaceKind.FURNACE),
+			recipes.supportedFurnaces("sand"));
+
+		var ownBlast = new Recipes.FurnaceCandidate<>("own_blast", Recipes.FurnaceKind.BLAST_FURNACE, true, 100);
+		var otherBlast = new Recipes.FurnaceCandidate<>("other_blast", Recipes.FurnaceKind.BLAST_FURNACE, false, 4);
+		var ownFurnace = new Recipes.FurnaceCandidate<>("own_furnace", Recipes.FurnaceKind.FURNACE, true, 9);
+		var otherFurnace = new Recipes.FurnaceCandidate<>("other_furnace", Recipes.FurnaceKind.FURNACE, false, 1);
+		var ownSmoker = new Recipes.FurnaceCandidate<>("own_smoker", Recipes.FurnaceKind.SMOKER, true, 1);
+
+		var ironKinds = recipes.supportedFurnaces("raw_iron");
+		assertEquals("own_blast", Recipes.selectPreferredFurnace(
+			java.util.List.of(otherFurnace, ownFurnace, otherBlast, ownBlast, ownSmoker), ironKinds));
+		assertEquals("other_blast", Recipes.selectPreferredFurnace(
+			java.util.List.of(otherFurnace, ownFurnace, otherBlast, ownSmoker), ironKinds));
+		assertEquals("own_furnace", Recipes.selectPreferredFurnace(
+			java.util.List.of(otherFurnace, ownFurnace, ownSmoker), ironKinds));
+		assertEquals("other_furnace", Recipes.selectPreferredFurnace(
+			java.util.List.of(otherFurnace, ownSmoker), ironKinds));
+		assertNull(Recipes.selectPreferredFurnace(java.util.List.of(ownSmoker), ironKinds));
+	}
 }

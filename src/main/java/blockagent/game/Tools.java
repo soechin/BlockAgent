@@ -4,6 +4,7 @@ import baritone.api.pathing.goals.GoalGetToBlock;
 import baritone.api.pathing.goals.GoalNear;
 import blockagent.core.ChatPolicy;
 import blockagent.core.EventQueue;
+import blockagent.core.ItemMatcher;
 import blockagent.core.Recipes;
 import blockagent.game.reflex.Reflexes;
 import blockagent.game.tasks.BreakTask;
@@ -19,6 +20,7 @@ import blockagent.game.tasks.FishTask;
 import blockagent.game.tasks.FollowTask;
 import blockagent.game.tasks.GotoTask;
 import blockagent.game.tasks.HuntTask;
+import blockagent.game.tasks.LecternReadTask;
 import blockagent.game.tasks.MineTask;
 import blockagent.game.tasks.MountTask;
 import blockagent.game.tasks.PlaceTask;
@@ -54,10 +56,12 @@ import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.Consumable;
 import net.minecraft.world.item.component.SwingAnimation;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.LecternBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.Vec3;
@@ -345,9 +349,26 @@ public final class Tools {
 	}
 
 	private static ToolResult missingItem(Item item, int have, int need) {
-		return ToolResult.error(ErrorCode.MISSING_MATERIALS, Kv.of().put("item", Inv.id(item)).put("have", have).put("need", need),
-			"not enough in inventory");
+		return missingItem(item, have, need, null);
 	}
+
+	private static ToolResult missingItem(Item item, int have, int need, ItemMatcher matcher) {
+		Kv kv = Kv.of().put("item", Inv.id(item)).put("have", have).put("need", need);
+		if (matcher != null && !matcher.isAny()) kv.put("match", matcher.raw());
+		return ToolResult.error(ErrorCode.MISSING_MATERIALS, kv, "not enough in inventory");
+	}
+
+	private static ItemMatcher parseMatch(Args g) {
+		if (!g.has("match")) return ItemMatcher.ANY;
+		try {
+			return ItemMatcher.parse(g.str("match"));
+		} catch (IllegalArgumentException e) {
+			throw new Args.BadArgument(e.getMessage());
+		}
+	}
+
+	private static final Set<Item> BAD_FOOD =
+		Set.of(Items.ROTTEN_FLESH, Items.SPIDER_EYE, Items.POISONOUS_POTATO, Items.PUFFERFISH, Items.CHORUS_FRUIT, Items.SUSPICIOUS_STEW);
 
 	// ---- 註冊 ----
 
@@ -359,7 +380,7 @@ public final class Tools {
 				+ "(durability, enchantments, potion), armor, inventory, task, session, reflexes, time.",
 			Hints.READ, Schema.object().build(), args -> observe(mc -> ToolResult.ok(a.observation.self(mc))));
 		t.register("get_surroundings", "Nearby summary: ground, light, terrain, biome directions, time, weather, notable blocks "
-				+ "with owner, mobs per species (nearest id), vehicles, dropped items.",
+				+ "with owner (incl. written signs), item frames, mobs per species (nearest id), vehicles, dropped items.",
 			Hints.READ, Schema.object().integer("radius", null, false).range(4, 48).def(16)
 				.bool("detail", "List more entries", false).def(false).build(),
 			args -> {
@@ -368,8 +389,8 @@ public final class Tools {
 				boolean d = g.bool("detail", false);
 				return observe(mc -> ToolResult.ok(a.observation.surroundings(mc, r, d)));
 			});
-		t.register("inspect_area", "Read a box of blocks in the current dimension: per-block pos, state and owner, or a summary "
-				+ "of block counts. Unloaded cells are marked.",
+		t.register("inspect_area", "Read a box of blocks in the current dimension: per-block pos, state, owner (and sign text), "
+				+ "or a summary of block counts. Unloaded cells are marked.",
 			Hints.READ, area(Schema.object())
 				.enumString("mode", "auto: per-block when small or filtered", false, "auto", "summary", "blocks").def("auto")
 				.string("type", "Only this block id", false)
@@ -656,9 +677,12 @@ public final class Tools {
 			});
 		taskTool(t, a, "place_block", "Place a block item at a position within reach, next to a solid face; waits for server "
 				+ "confirmation. facing sets the placed block's facing (stairs, furnace, chest, hopper, wall torch, observer...; "
-				+ "logs use its axis); the result is verified. A block without a facing property gives INVALID_ARGUMENT.",
+				+ "logs use its axis); half sets top/bottom for slabs, stairs and trapdoors; sneak=true holds shift to place "
+				+ "against interactive blocks (chest, furnace, crafting table...). Results are verified.",
 			Hints.ACTION, xyz(Schema.object()).string("item", "Block item id", true)
-				.enumString("facing", "Facing of the placed block; omit for the default", false, "north", "south", "east", "west", "up", "down"),
+				.enumString("facing", "Facing of the placed block; omit for the default", false, "north", "south", "east", "west", "up", "down")
+				.enumString("half", "Half for slabs, stairs and trapdoors", false, "bottom", "top")
+				.bool("sneak", "Hold shift to place against interactive/block-entity neighbors", false).def(false),
 			args -> {
 				Args g = new Args(args);
 				BlockPos p = pos(g, "");
@@ -666,47 +690,49 @@ public final class Tools {
 				boolean replace = g.bool("replace", false);
 				Direction facing = g.has("facing") ? Direction.byName(g.str("facing")) : null;
 				if (g.has("facing") && facing == null) throw new Args.BadArgument("facing must be north, south, east, west, up or down");
-				if (facing != null) return act(a, "place_block", args, mc -> placeFacing(a, mc, p, item, facing, replace));
+				String half = g.has("half") ? g.str("half") : null;
+				if (half != null && !half.equals("bottom") && !half.equals("top")) throw new Args.BadArgument("half must be bottom or top");
+				boolean sneak = g.bool("sneak", false);
+				if (facing != null || half != null || sneak) {
+					return act(a, "place_block", args, mc -> placeStructured(a, mc, p, item, facing, half, sneak, replace));
+				}
 				return actConfirmed(a, "place_block", args, mc -> placeBlock(a, mc, p, item, replace));
 			});
-		t.register("use_block", "Right-click a block within reach and report open/powered/lit when applicable.",
+		t.register("use_block", "Right-click a block within reach: doors, switches, containers, or read a book on a lectern; "
+				+ "reports open/powered/lit or book contents when applicable.",
 			Hints.ACTION, xyz(Schema.object()).build(),
 			args -> {
 				BlockPos p = pos(new Args(args), "");
-				return actConfirmed(a, "use_block", args, mc -> useBlock(a, mc, p));
+				ToolResult r = actConfirmed(a, "use_block", args, mc -> useBlock(a, mc, p));
+				if (r.isOk() && "running".equals(statusOf(r))) return r.withSuffixHandled(awaitTask(a, 10, true));
+				return r;
 			});
-		t.register("equip", "Equip an item to the main hand, off hand, or its armor slot.",
-			Hints.IDEMPOTENT, Schema.object().string("item", null, true)
-				.enumString("slot", null, false, "mainhand", "offhand", "armor").def("mainhand").build(),
+		t.register("equip", "Equip an item to the main hand, off hand, or an armor slot; pass item=\"none\" with "
+				+ "slot=offhand|head|chest|legs|feet to unequip back to the main inventory.",
+			Hints.IDEMPOTENT, Schema.object().string("item", "Item id, or \"none\" to unequip", true)
+				.enumString("slot", null, false, "mainhand", "offhand", "armor", "head", "chest", "legs", "feet").def("mainhand")
+				.string("match", "Attribute filter: ench=, stored=, potion=, name=, best_dur, low_dur, or shorthand", false).build(),
 			args -> {
 				Args g = new Args(args);
-				Item item = parseItem(g.str("item"));
+				String rawItem = g.str("item").trim();
 				String slot = g.str("slot", "mainhand");
-				return act(a, "equip", args, mc -> equip(mc, item, slot));
+				ItemMatcher matcher = parseMatch(g);
+				if (rawItem.equalsIgnoreCase("none")) {
+					if (!matcher.isAny()) throw new Args.BadArgument("match cannot be used with item=none");
+					return act(a, "equip", args, mc -> unequip(mc, slot));
+				}
+				Item item = parseItem(rawItem);
+				return act(a, "equip", args, mc -> equip(mc, item, slot, matcher));
 			});
-		taskTool(t, a, "eat", "Eat food (about 2 s). Omit item to pick the best safe food.",
-			Hints.ACTION, Schema.object().string("item", null, false),
+		taskTool(t, a, "eat", "Eat food or drink a consumable (potion, milk_bucket, honey_bottle). Omit item to pick the best safe food.",
+			Hints.ACTION, Schema.object().string("item", null, false)
+				.string("match", "Attribute filter, e.g. fire_resistance, potion=long_night_vision", false),
 			args -> {
 				Args g = new Args(args);
 				Item item = g.has("item") ? parseItem(g.str("item")) : null;
+				ItemMatcher matcher = parseMatch(g);
 				boolean replace = g.bool("replace", false);
-				return act(a, "eat", args, mc -> {
-					Item food = item;
-					if (food == null) {
-						int best = -1;
-						for (int i = 0; i < Inv.MAIN_SIZE; i++) {
-							ItemStack s = mc.player.getInventory().getItem(i);
-							var fp = s.get(DataComponents.FOOD);
-							if (fp != null && fp.nutrition() > best && !s.is(Items.ROTTEN_FLESH) && !s.is(Items.SPIDER_EYE) && !s.is(Items.POISONOUS_POTATO)) {
-								best = fp.nutrition();
-								food = s.getItem();
-							}
-						}
-					}
-					if (food == null) return ToolResult.error(ErrorCode.MISSING_MATERIALS, "no food in inventory", "hunt, fish, or harvest crops");
-					if (Inv.count(mc.player, food) == 0) return missingItem(food, 0, 1);
-					return a.tasks.start(new EatTask(a, food), replace, null);
-				});
+				return act(a, "eat", args, mc -> startEat(a, mc, item, matcher, replace));
 			});
 		t.register("attack", "Hit a mob once within reach (entity id, or type = nearest within 16). Players, pets and villagers "
 				+ "are protected. To fight until it dies, use hunt.",
@@ -731,20 +757,22 @@ public final class Tools {
 						Kv.of().put("target", Fmt.entityId(mob)).put("id", mob.getId()).toString());
 				});
 			});
-		t.register("drop", "Drop items from the inventory, optionally facing a position (e.g. to give to a player).",
+		t.register("drop", "Drop items from the inventory (incl. offhand), optionally facing a position or filtered by match.",
 			Hints.DESTRUCTIVE, Schema.object().string("item", null, true).integer("count", null, false).range(1, 64 * 36).def(1)
-				.integer("toward_x", null, false).integer("toward_y", null, false).integer("toward_z", null, false).build(),
+				.integer("toward_x", null, false).integer("toward_y", null, false).integer("toward_z", null, false)
+				.string("match", "Attribute filter: ench=, stored=, potion=, name=, best_dur, low_dur, or shorthand", false).build(),
 			args -> {
 				Args g = new Args(args);
 				Item item = parseItem(g.str("item"));
 				int count = g.integer("count", 1, 1, 64 * 36);
 				BlockPos toward = g.has("toward_x") ? pos(g, "toward_") : null;
+				ItemMatcher matcher = parseMatch(g);
 				return act(a, "drop", args, mc -> {
-					int have = Inv.count(mc.player, item);
-					if (have < count) return missingItem(item, have, count);
+					int have = Inv.countWithOffhand(mc.player, item, matcher);
+					if (have < count) return missingItem(item, have, count, matcher);
 					if (mc.player.containerMenu != mc.player.inventoryMenu) mc.player.closeContainer();
 					if (toward != null) Moves.lookAt(mc.player, Vec3.atCenterOf(toward));
-					int n = Inv.dropItem(mc, item, count);
+					int n = Inv.dropItem(mc, item, matcher, count);
 					return ToolResult.ok(Kv.of("OK dropped").put("item", Inv.id(item)).put("count", n)
 						.put("toward", toward == null ? null : Fmt.pos(toward)));
 				});
@@ -858,16 +886,34 @@ public final class Tools {
 					return a.tasks.start(new CraftTask(a, plan, id, count, table, pullOffhandKeep), g.bool("replace", false), pre.toString());
 				});
 			});
-		taskTool(t, a, "smelt", "Smelt in a furnace within 32 blocks (anyone's) or one placed from inventory; adds input and "
-				+ "fuel, waits, and takes the output.",
-			Hints.ACTION, Schema.object().string("item", "Input (e.g. raw_iron) or wanted output (e.g. iron_ingot)", true)
-				.integer("count", null, true).range(1, 64).string("fuel", "Omit to pick automatically", false),
+		taskTool(t, a, "smelt", "Smelt in a furnace, blast_furnace or smoker within 32 blocks (prefers blast_furnace/smoker when "
+				+ "supported, or places a furnace from inventory), or inspect/collect a furnace with action=list|take at x,y,z.",
+			Hints.ACTION, Schema.object()
+				.enumString("action", "smelt (default), list (inspect furnace), or take (collect output)", false, "smelt", "list", "take").def("smelt")
+				.string("item", "Input (e.g. raw_iron) or wanted output (e.g. iron_ingot); required for smelt", false)
+				.integer("count", "Required for smelt", false).range(1, 64)
+				.string("fuel", "Omit to pick automatically", false)
+				.integer("x", "Furnace x (required for list/take)", false)
+				.integer("y", "Furnace y (required for list/take)", false)
+				.integer("z", "Furnace z (required for list/take)", false),
 			args -> {
 				Args g = new Args(args);
+				String action = g.str("action", "smelt");
+				boolean replace = g.bool("replace", false);
+				if (action.equals("list") || action.equals("take")) {
+					if (!g.has("x") || !g.has("y") || !g.has("z")) {
+						throw new Args.BadArgument("action=" + action + " requires x, y and z");
+					}
+					BlockPos target = pos(g, "");
+					SmeltTask.Mode mode = action.equals("list") ? SmeltTask.Mode.LIST : SmeltTask.Mode.TAKE;
+					return act(a, "smelt", args, mc -> smeltInspectOrTake(a, mc, mode, target, replace));
+				}
+				if (!action.equals("smelt")) throw new Args.BadArgument("action must be smelt, list or take");
+				if (!g.has("item") || !g.has("count")) throw new Args.BadArgument("action=smelt requires item and count");
 				Item item = parseItem(g.str("item"));
 				int count = g.integer("count", 1, 1, 64);
 				Item fuelArg = g.has("fuel") ? parseItem(g.str("fuel")) : null;
-				return act(a, "smelt", args, mc -> smelt(a, mc, item, count, fuelArg, g.bool("replace", false)));
+				return act(a, "smelt", args, mc -> smelt(a, mc, item, count, fuelArg, replace));
 			});
 		taskTool(t, a, "build_wall", "Build a straight wall between two points (same x or same z), height blocks up from the lower "
 				+ "point. Fills empty cells only; never breaks anything. dry_run=true previews (also while paused).",
@@ -1037,15 +1083,22 @@ public final class Tools {
 			});
 		taskTool(t, a, "dismount", "Get off a boat, minecart or similar (usually under 1 s).", Hints.IDEMPOTENT, Schema.object(),
 			args -> act(a, "dismount", args, mc -> a.tasks.start(new DismountTask(a), new Args(args).bool("replace", false), null)));
-		t.register("use_item", "Use an item: on the block at x,y,z within reach (fill/pour bucket, flint_and_steel, bone_meal), or in "
-				+ "the air if omitted. Pouring and igniting follow the same rules as placing blocks.",
-			Hints.DESTRUCTIVE, Schema.object().string("item", "e.g. water_bucket, bucket, flint_and_steel, bone_meal", true)
-				.integer("x", null, false).integer("y", null, false).integer("z", null, false).build(),
+		t.register("use_item", "Use an item (incl. offhand): on the block at x,y,z within reach (fill/pour bucket, flint_and_steel, "
+				+ "bone_meal), or without x,y,z in the air — or read written_book/writable_book text directly without opening the book GUI.",
+			Hints.DESTRUCTIVE, Schema.object().string("item", "e.g. water_bucket, bucket, flint_and_steel, bone_meal, written_book", true)
+				.integer("x", null, false).integer("y", null, false).integer("z", null, false)
+				.string("match", "Attribute filter: ench=, stored=, potion=, name=, best_dur, low_dur, or shorthand", false)
+				.integer("page", "Start page (1-based) when reading a book without x,y,z", false).range(1, 100).build(),
 			args -> {
 				Args g = new Args(args);
 				Item item = parseItem(g.str("item"));
 				BlockPos p = g.has("x") ? pos(g, "") : null;
-				return act(a, "use_item", args, mc -> useItem(a, mc, item, p));
+				ItemMatcher matcher = parseMatch(g);
+				Integer page = g.has("page") ? g.integer("page", 1, 1, 100) : null;
+				if (page != null && (p != null || (item != Items.WRITTEN_BOOK && item != Items.WRITABLE_BOOK))) {
+					throw new Args.BadArgument("page is only for reading written_book or writable_book without x,y,z");
+				}
+				return act(a, "use_item", args, mc -> useItem(a, mc, item, p, matcher, page == null ? 1 : page));
 			});
 		taskTool(t, a, "fish", "Fish at water within 16 blocks until count catches or time is up. Needs a fishing rod.",
 			Hints.ACTION, Schema.object().integer("count", "Catches", false).range(1, 16).def(1)
@@ -1062,10 +1115,11 @@ public final class Tools {
 				});
 			});
 
-		taskTool(t, a, "chest", "Walk to a chest, barrel, shulker box or ender chest and list its contents, put items in, or take "
-				+ "items out. Anyone's chests and naturally generated ones are allowed. The result lists the contents.",
+		taskTool(t, a, "chest", "Walk to a chest, barrel, shulker box or ender chest and list its contents, put items in (incl. "
+				+ "offhand), or take items out. items keys accept item_id or item_id[filter] (e.g. potion[fire_resistance]). "
+				+ "Anyone's chests and naturally generated ones are allowed. The result lists the contents.",
 			Hints.ACTION, xyz(Schema.object().enumString("action", null, true, "list", "put", "take"))
-				.itemCounts("items", "{item_id: count}; required for put and take", false),
+				.itemCounts("items", "{item_id or item_id[filter]: count}; required for put and take", false),
 			args -> {
 				Args g = new Args(args);
 				String action = g.str("action");
@@ -1076,14 +1130,33 @@ public final class Tools {
 					case "take" -> StationTask.Mode.CHEST_TAKE;
 					default -> throw new Args.BadArgument("action must be list, put or take");
 				};
-				Map<String, Integer> items = mode == StationTask.Mode.CHEST_LIST ? Map.of() : g.itemCounts("items");
-				for (String k : items.keySet()) parseItem(k);
+				Map<String, Integer> rawItems = mode == StationTask.Mode.CHEST_LIST ? Map.of() : g.itemCounts("items");
+				List<StationTask.ChestEntry> entries = new ArrayList<>();
+				for (var en : rawItems.entrySet()) {
+					ItemMatcher.Spec spec;
+					try {
+						spec = ItemMatcher.parseSpec(en.getKey());
+					} catch (IllegalArgumentException e) {
+						throw new Args.BadArgument(e.getMessage());
+					}
+					entries.add(new StationTask.ChestEntry(en.getKey(), parseItem(spec.itemId()), spec.matcher(), en.getValue()));
+				}
 				return act(a, "chest", args, mc -> {
+					java.util.function.Predicate<ItemStack> pullOffhandKeep = null;
 					if (mode == StationTask.Mode.CHEST_PUT) {
-						for (var e : items.entrySet()) {
-							Item it = parseItem(e.getKey());
-							int have = Inv.count(mc.player, it);
-							if (have < e.getValue()) return missingItem(it, have, e.getValue());
+						boolean needsOffhand = false;
+						for (StationTask.ChestEntry e : entries) {
+							int have = Inv.countWithOffhand(mc.player, e.item(), e.matcher());
+							if (have < e.count()) return missingItem(e.item(), have, e.count(), e.matcher());
+							if (Inv.count(mc.player, e.item(), e.matcher()) < e.count()) needsOffhand = true;
+						}
+						if (needsOffhand) {
+							java.util.function.Predicate<ItemStack> keep = s -> entries.stream().anyMatch(e -> Inv.matches(s, e.item(), e.matcher()));
+							if (Inv.findOffhandPullSlot(mc.player, keep) < 0) {
+								return ToolResult.error(ErrorCode.MISSING_MATERIALS, Kv.of().put("free_slots", 0),
+									"a needed item is in the offhand and the main inventory is full", "drop or store one item, then chest again");
+							}
+							pullOffhandKeep = keep;
 						}
 					}
 					BlockState st = mc.level.getBlockState(p);
@@ -1091,7 +1164,7 @@ public final class Tools {
 						return ToolResult.error(ErrorCode.NOT_FOUND, Kv.of().put("pos", Fmt.pos(p)).put("block", RuleGuard.shortId(st)),
 							"not a chest", "find_blocks type=chest,barrel");
 					}
-					return a.tasks.start(new StationTask(a, mode, p, items), g.bool("replace", false), null);
+					return a.tasks.start(new StationTask(a, mode, p, entries, pullOffhandKeep), g.bool("replace", false), null);
 				});
 			});
 	}
@@ -1152,6 +1225,9 @@ public final class Tools {
 	private static CompletableFuture<ToolResult> useBlock(Agent a, Minecraft mc, BlockPos p) {
 		if (!Moves.canReach(mc.player, p)) return CompletableFuture.completedFuture(tooFar(p));
 		BlockState st = mc.level.getBlockState(p);
+		if (st.is(Blocks.LECTERN) && st.getValue(LecternBlock.HAS_BOOK)) {
+			return CompletableFuture.completedFuture(a.tasks.start(new LecternReadTask(a, p), false, null));
+		}
 		Kv at = Kv.of().put("block", RuleGuard.shortId(st)).put("pos", Fmt.pos(p));
 		if (a.tracker.placementPending(p)) {
 			return CompletableFuture.completedFuture(ToolResult.error(ErrorCode.BUSY, at, "still confirming a block change here"));
@@ -1221,13 +1297,13 @@ public final class Tools {
 			return CompletableFuture.completedFuture(ToolResult.error(ErrorCode.BUSY, Kv.of().put("pos", Fmt.pos(p)),
 				"still confirming the previous placement here", "retry in a moment"));
 		}
-		int idx = Inv.find(mc.player, s -> s.is(item));
+		int idx = Inv.findBestWithOffhand(mc.player, item, ItemMatcher.ANY);
 		if (idx < 0) return CompletableFuture.completedFuture(missingItem(item, 0, 1));
 		// 不是背景任務，但會搶快捷列和視角：照樣尊重進行中的任務和 replace(P2-5)
 		ToolResult busy = a.tasks.claim("place_block", replace);
 		if (busy != null) return CompletableFuture.completedFuture(busy);
-		if (idx >= 9 && mc.player.containerMenu != mc.player.inventoryMenu) mc.player.closeContainer();
-		if (!Inv.selectInHand(mc, s -> s.is(item))) {
+		if ((idx >= 9 || idx == Inv.OFFHAND_SLOT) && mc.player.containerMenu != mc.player.inventoryMenu) mc.player.closeContainer();
+		if (!Inv.selectInHandWithOffhand(mc, s -> s.is(item))) {
 			return CompletableFuture.completedFuture(ToolResult.error(ErrorCode.INVALID_ARGUMENT, Kv.of().put("item", Inv.id(item)),
 				"could not take the item into the hand"));
 		}
@@ -1260,13 +1336,18 @@ public final class Tools {
 		});
 	}
 
-	/** place_block 指定 facing(A6、S4.2b)：創造模式能用指令時直接寫進狀態，否則照原版放置規則找出點哪一面、怎麼看。 */
-	private static ToolResult placeFacing(Agent a, Minecraft mc, BlockPos p, Item item, Direction facing, boolean replace) {
-		Kv at = Kv.of().put("item", Inv.id(item)).put("pos", Fmt.pos(p)).put("facing", facing.getSerializedName());
+	/** place_block 指定 facing/half/sneak(A6、S4.2b)：創造模式能用指令時直接寫進狀態，否則模擬鄰格與點擊高度。 */
+	private static ToolResult placeStructured(Agent a, Minecraft mc, BlockPos p, Item item, Direction facing, String half, boolean sneak, boolean replace) {
+		Kv at = Kv.of().put("item", Inv.id(item)).put("pos", Fmt.pos(p))
+			.put("facing", facing == null ? null : facing.getSerializedName())
+			.put("half", half)
+			.putIf(sneak, "sneak", true);
 		if (!(item instanceof BlockItem bi)) return ToolResult.error(ErrorCode.INVALID_ARGUMENT, at, "not a block item");
-		// 沒有朝向屬性一律先回同一個錯誤，跟背包、距離無關(火把要貼牆才有朝向，不算)
 		BlockState def = bi.getBlock().defaultBlockState();
-		if (Facing.of(def) == null && !(bi instanceof net.minecraft.world.item.StandingAndWallBlockItem)) return noFacing(at, def);
+		if (facing != null && Facing.of(def) == null && !(bi instanceof net.minecraft.world.item.StandingAndWallBlockItem)) {
+			return noFacing(at, def);
+		}
+		if (half != null && !Facing.hasHalf(def)) return noHalf(at, def);
 		if (!BuildCommands.validTarget(mc.level, p)) return invalidBlockTarget(p);
 		BlockState cur = mc.level.getBlockState(p);
 		RuleGuard.Verdict v = a.guard.canPlaceInto(mc.level, p);
@@ -1279,11 +1360,20 @@ public final class Tools {
 			&& RuleGuard.companionCell(def, BlockPos.ZERO) == null
 			&& BuildCommands.available(mc) && BuildCommands.directAllowed(mc, cur, bi);
 		if (direct) {
-			BlockState desired = Facing.apply(def, facing);
-			if (desired == null) {
-				// 有朝向屬性，只是不接受這個方向(例如樓梯、漏斗朝上)：跟生存模式一樣列出可以的方向(P2-3)
-				return ToolResult.error(ErrorCode.INVALID_ARGUMENT, at.put("block", RuleGuard.shortId(def)).put("possible", Facing.possible(def)),
-					"this block cannot face " + facing.getSerializedName(), "pick one of possible");
+			BlockState desired = def;
+			if (facing != null) {
+				desired = Facing.apply(desired, facing);
+				if (desired == null) {
+					return ToolResult.error(ErrorCode.INVALID_ARGUMENT, at.put("block", RuleGuard.shortId(def)).put("possible", Facing.possible(def)),
+						"this block cannot face " + facing.getSerializedName(), "pick one of possible");
+				}
+			}
+			if (half != null) {
+				desired = Facing.applyHalf(desired, half);
+				if (desired == null) {
+					return ToolResult.error(ErrorCode.INVALID_ARGUMENT, at.put("block", RuleGuard.shortId(def)).put("possible", "bottom,top"),
+						"this block cannot have half=" + half, "pick bottom or top");
+				}
 			}
 			if (cur == desired) return ToolResult.ok(Kv.of("OK already").add(at));
 			return a.tasks.start(new CommandBlockTask(a, mc.level, p, cur, desired), replace, null);
@@ -1292,14 +1382,17 @@ public final class Tools {
 		if (a.tracker.placementPending(p)) {
 			return ToolResult.error(ErrorCode.BUSY, at, "still confirming the previous placement here", "retry in a moment");
 		}
-		if (Inv.count(mc.player, item) == 0) return missingItem(item, 0, 1);
-		return switch (Facing.solve(mc.level, mc.player, p, bi, facing)) {
-			case Facing.Found f -> a.tasks.start(new PlaceTask(a, mc.level, p, item, facing, f.plan()), replace,
+		if (Inv.countWithOffhand(mc.player, item) == 0) return missingItem(item, 0, 1);
+		return switch (Facing.solve(mc.level, mc.player, p, bi, facing, half, sneak)) {
+			case Facing.Found f -> a.tasks.start(new PlaceTask(a, mc.level, p, item, facing, half, sneak, f.plan()), replace,
 				Kv.of().put("against", Fmt.pos(f.plan().hit().getBlockPos())).put("click", f.plan().hit().getDirection().getSerializedName()).toString());
-			case Facing.NoFacing _ -> noFacing(at, bi.getBlock().defaultBlockState());
+			case Facing.NoFacing _ -> noFacing(at, def);
+			case Facing.NoHalf _ -> noHalf(at, def);
 			case Facing.NoWay w -> ToolResult.error(ErrorCode.INVALID_ARGUMENT, at.putIf(!w.possible().isEmpty(), "possible", w.possible()),
-				"no adjacent face here can give that facing",
-				"place a supporting block on the side that facing needs, or pick another facing");
+				facing != null || half != null ? "no adjacent face here can give that placement state"
+					: "no adjacent block face here can accept this block",
+				sneak ? "place a supporting block on the needed side, or pick another state"
+					: "use sneak=true for interactive neighbors, or place a supporting block first");
 		};
 	}
 
@@ -1308,17 +1401,33 @@ public final class Tools {
 			"omit facing");
 	}
 
-	/** use_item：對方塊用手上的物品，沒有反應就改成直接使用(水桶是直接使用，看準的方向決定倒在哪)。 */
-	static ToolResult useItem(Agent a, Minecraft mc, Item item, BlockPos pos) {
+	private static ToolResult noHalf(Kv at, BlockState st) {
+		return ToolResult.error(ErrorCode.INVALID_ARGUMENT, at.put("block", RuleGuard.shortId(st)), "this block has no half property",
+			"omit half");
+	}
+
+	/** use_item：不給座標且為成書/書與羽毛筆時直接讀內容(S3.2a)；其餘對方塊用或直接使用(支援副手與 match，S4.2d)。 */
+	static ToolResult useItem(Agent a, Minecraft mc, Item item, BlockPos pos, ItemMatcher matcher, int page) {
 		LocalPlayer p = mc.player;
-		if (Inv.count(p, item) == 0) return missingItem(item, 0, 1);
+		if (pos == null && (item == Items.WRITTEN_BOOK || item == Items.WRITABLE_BOOK)) {
+			int idx = Inv.findBestWithOffhand(p, item, matcher);
+			if (idx < 0) return missingItem(item, 0, 1, matcher);
+			ItemStack stack = Inv.stackAt(p, idx);
+			try {
+				var view = Fmt.readBook(stack, page);
+				return ToolResult.ok(Kv.of("OK read").put("item", Inv.id(item)).add(Fmt.bookKv(view)));
+			} catch (IllegalArgumentException e) {
+				return ToolResult.error(ErrorCode.INVALID_ARGUMENT, Kv.of().put("item", Inv.id(item)).put("page", page), e.getMessage());
+			}
+		}
+		if (Inv.countWithOffhand(p, item, matcher) == 0) return missingItem(item, 0, 1, matcher);
 		if (pos != null && !BuildCommands.validTarget(mc.level, pos)) return invalidBlockTarget(pos);
 		if (pos != null && !Moves.canReach(p, pos)) return tooFar(pos);
 		if (p.containerMenu != p.inventoryMenu) p.closeContainer();
-		if (!Inv.selectInHand(mc, s -> s.is(item))) {
+		if (!Inv.selectBestInHand(mc, item, matcher)) {
 			return ToolResult.error(ErrorCode.INVALID_ARGUMENT, Kv.of().put("item", Inv.id(item)), "could not take the item into the hand");
 		}
-		var before = Inv.summary(p);
+		var before = Inv.summaryWithOffhand(p);
 		BlockState was = pos == null ? null : mc.level.getBlockState(pos);
 		long mark = a.guard.blockMark();
 		net.minecraft.world.InteractionResult r;
@@ -1337,8 +1446,47 @@ public final class Tools {
 		}
 		if (!r.consumesAction()) return ToolResult.error(ErrorCode.INVALID_ARGUMENT, at, "using the item had no effect");
 		p.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
-		String change = Inv.diff(before, Inv.summary(p));
+		String change = Inv.diff(before, Inv.summaryWithOffhand(p));
 		return ToolResult.ok(Kv.of("OK used").add(at).putIf(!change.isEmpty(), "inv_change", change));
+	}
+
+	/** eat：未指定 item 挑營養最高的安全食物；指定 item 支援所有帶 CONSUMABLE 的食物與飲品(S4.2c)。 */
+	private static ToolResult startEat(Agent a, Minecraft mc, Item item, ItemMatcher matcher, boolean replace) {
+		LocalPlayer p = mc.player;
+		Item chosenItem = item;
+		ItemStack chosenStack = ItemStack.EMPTY;
+		if (chosenItem == null) {
+			int best = -1;
+			for (int i = 0; i < Inv.MAIN_SIZE + 1; i++) {
+				ItemStack s = i < Inv.MAIN_SIZE ? p.getInventory().getItem(i) : p.getOffhandItem();
+				if (s.isEmpty() || BAD_FOOD.contains(s.getItem())) continue;
+				var fp = s.get(DataComponents.FOOD);
+				if (fp == null) continue;
+				if (!matcher.isAny() && !matcher.matches(Inv.infoOf(s))) continue;
+				if (fp.nutrition() > best) {
+					best = fp.nutrition();
+					chosenItem = s.getItem();
+					chosenStack = s;
+				}
+			}
+			if (chosenItem == null) {
+				Kv kv = Kv.of().putIf(!matcher.isAny(), "match", matcher.raw());
+				return ToolResult.error(ErrorCode.MISSING_MATERIALS, kv, "no food in inventory", "hunt, fish, or harvest crops");
+			}
+		} else {
+			int idx = Inv.findBestWithOffhand(p, chosenItem, matcher);
+			if (idx < 0) return missingItem(chosenItem, 0, 1, matcher);
+			chosenStack = Inv.stackAt(p, idx);
+		}
+		Consumable consumable = chosenStack.get(DataComponents.CONSUMABLE);
+		if (consumable == null) {
+			return ToolResult.error(ErrorCode.INVALID_ARGUMENT, Kv.of().put("item", Inv.id(chosenItem)), "not a consumable item");
+		}
+		if (!consumable.canConsume(p, chosenStack)) {
+			return ToolResult.error(ErrorCode.INVALID_ARGUMENT, Kv.of().put("item", Inv.id(chosenItem)),
+				"cannot consume right now (food bar is full)");
+		}
+		return a.tasks.start(new EatTask(a, chosenItem, matcher, consumable), replace, null);
 	}
 
 	/**
@@ -1351,7 +1499,34 @@ public final class Tools {
 			.put("hostiles", near) + " | hint=hostiles are around the destination; wait for daylight, clear them with good gear, or go somewhere else");
 	}
 
-	static ToolResult equip(Minecraft mc, Item item, String slot) {
+	static ToolResult unequip(Minecraft mc, String slot) {
+		EquipmentSlot target = switch (slot) {
+			case "offhand" -> EquipmentSlot.OFFHAND;
+			case "head" -> EquipmentSlot.HEAD;
+			case "chest" -> EquipmentSlot.CHEST;
+			case "legs" -> EquipmentSlot.LEGS;
+			case "feet" -> EquipmentSlot.FEET;
+			default -> null;
+		};
+		if (target == null) {
+			return ToolResult.error(ErrorCode.INVALID_ARGUMENT, Kv.of().put("slot", slot),
+				"item=none requires slot=offhand, head, chest, legs or feet");
+		}
+		LocalPlayer p = mc.player;
+		ItemStack cur = p.getItemBySlot(target);
+		if (cur.isEmpty()) return ToolResult.ok(Kv.of("OK already_empty").put("slot", slot));
+		if (Inv.freeSlots(p) == 0) {
+			return ToolResult.error(ErrorCode.MISSING_MATERIALS, Kv.of().put("free_slots", 0).put("slot", slot),
+				"main inventory is full", "drop or store an item first");
+		}
+		String removed = Inv.id(cur);
+		if (!Inv.unequip(mc, target)) {
+			return ToolResult.error(ErrorCode.INVALID_ARGUMENT, Kv.of().put("slot", slot), "could not unequip item");
+		}
+		return ToolResult.ok(Kv.of("OK unequipped").put("item", removed).put("slot", slot));
+	}
+
+	static ToolResult equip(Minecraft mc, Item item, String slot, ItemMatcher matcher) {
 		LocalPlayer p = mc.player;
 		EquipmentSlot target = switch (slot) {
 			case "mainhand" -> EquipmentSlot.MAINHAND;
@@ -1360,33 +1535,51 @@ public final class Tools {
 				var eq = new ItemStack(item).get(DataComponents.EQUIPPABLE);
 				yield eq == null || eq.slot() == EquipmentSlot.MAINHAND || eq.slot() == EquipmentSlot.OFFHAND ? null : eq.slot();
 			}
+			case "head" -> EquipmentSlot.HEAD;
+			case "chest" -> EquipmentSlot.CHEST;
+			case "legs" -> EquipmentSlot.LEGS;
+			case "feet" -> EquipmentSlot.FEET;
 			default -> null;
 		};
-		Kv what = Kv.of().put("item", Inv.id(item)).put("slot", slot);
+		Kv what = Kv.of().put("item", Inv.id(item)).put("slot", slot).putIf(!matcher.isAny(), "match", matcher.raw());
 		if (target == null) return ToolResult.error(ErrorCode.INVALID_ARGUMENT, what, "slot=armor needs a wearable item");
-		if (!p.getItemBySlot(target).is(item)) {
-			int idx = Inv.find(p, s -> s.is(item));
-			if (idx < 0 && p.getOffhandItem().is(item) && target != EquipmentSlot.OFFHAND) {
-				// 東西在副手(R12)：Inv.find 只掃主背包，直接把副手換到主手或換回背包再處理
+		if (target.getType() == EquipmentSlot.Type.HUMANOID_ARMOR) {
+			var eq = new ItemStack(item).get(DataComponents.EQUIPPABLE);
+			if (eq == null || eq.slot() != target) {
+				return ToolResult.error(ErrorCode.INVALID_ARGUMENT, what, "item cannot be worn in slot=" + slot);
+			}
+		}
+		ItemStack equipped = p.getItemBySlot(target);
+		boolean alreadyMatches = Inv.matches(equipped, item, matcher);
+		int bestIdx = target == EquipmentSlot.OFFHAND
+			? Inv.findBest(p, item, matcher)
+			: Inv.findBestWithOffhand(p, item, matcher);
+		boolean betterInInv = bestIdx >= 0 && alreadyMatches && matcher.durPref() != ItemMatcher.DurPref.NONE
+			&& matcher.comparePreference(Inv.infoOf(Inv.stackAt(p, bestIdx)), Inv.infoOf(equipped)) < 0;
+		if (!alreadyMatches || betterInInv) {
+			if (bestIdx < 0) return missingItem(item, 0, 1, matcher);
+			if (bestIdx == Inv.OFFHAND_SLOT) {
 				if (p.containerMenu != p.inventoryMenu) p.closeContainer();
 				if (target == EquipmentSlot.MAINHAND) {
 					Inv.swapToOffhand(mc, p.getInventory().getSelectedSlot());
 				} else {
-					Inv.pullOffhandToMain(mc, s -> false);
-					idx = Inv.find(p, s -> s.is(item));
+					if (!Inv.pullOffhandToMain(mc, s -> false)) {
+						return ToolResult.error(ErrorCode.MISSING_MATERIALS, Kv.of().put("free_slots", 0),
+							"item is in the offhand and the main inventory is full");
+					}
+					int idx = Inv.findBest(p, item, matcher);
 					if (idx >= 0) Inv.wear(mc, idx);
 				}
 			} else {
-				if (idx < 0) return missingItem(item, 0, 1);
-				if ((target != EquipmentSlot.MAINHAND || idx >= 9) && p.containerMenu != p.inventoryMenu) p.closeContainer();
+				if ((target != EquipmentSlot.MAINHAND || bestIdx >= 9) && p.containerMenu != p.inventoryMenu) p.closeContainer();
 				switch (target) {
-					case MAINHAND -> Inv.selectInHand(mc, s -> s.is(item));
-					case OFFHAND -> Inv.swapToOffhand(mc, idx);
-					default -> Inv.wear(mc, idx);
+					case MAINHAND -> Inv.selectSlotInHand(mc, bestIdx);
+					case OFFHAND -> Inv.swapToOffhand(mc, bestIdx);
+					default -> Inv.wear(mc, bestIdx);
 				}
 			}
 		}
-		if (!p.getItemBySlot(target).is(item)) {
+		if (!Inv.matches(p.getItemBySlot(target), item, matcher)) {
 			return ToolResult.error(ErrorCode.INVALID_ARGUMENT, what.put("now", Inv.id(p.getItemBySlot(target))), "item was not equipped");
 		}
 		return ToolResult.ok(Kv.of("OK equipped").add(what));
@@ -1447,21 +1640,32 @@ public final class Tools {
 			return ToolResult.error(ErrorCode.INVALID_ARGUMENT, data,
 				"can only sleep at night or in a thunderstorm", "do something else, or wait_events until can_sleep");
 		}
-		return a.tasks.start(new StationTask(a, StationTask.Mode.SLEEP, bed, Map.of()), replace,
+		return a.tasks.start(new StationTask(a, StationTask.Mode.SLEEP, bed, List.of(), null), replace,
 			Kv.of().put("bed", Fmt.pos(bed)).put("owner", Fmt.owner(a, bed, mc.level.getBlockState(bed))).toString());
+	}
+
+	private static ToolResult smeltInspectOrTake(Agent a, Minecraft mc, SmeltTask.Mode mode, BlockPos pos, boolean replace) {
+		if (!BuildCommands.validTarget(mc.level, pos)) return invalidBlockTarget(pos);
+		BlockState st = mc.level.getBlockState(pos);
+		if (!SmeltTask.isFurnaceBlock(st)) {
+			return ToolResult.error(ErrorCode.NOT_FOUND, Kv.of().put("pos", Fmt.pos(pos)).put("block", RuleGuard.shortId(st)),
+				"not a furnace, blast_furnace or smoker", "find_blocks type=furnaces");
+		}
+		return a.tasks.start(new SmeltTask(a, mode, pos), replace,
+			Kv.of().put("furnace", Fmt.pos(pos)).put("furnace_type", RuleGuard.shortId(st)).toString());
 	}
 
 	static ToolResult smelt(Agent a, Minecraft mc, Item item, int count, Item fuelArg, boolean replace) {
 		String id = BuiltInRegistries.ITEM.getKey(item).toString();
-		Recipes.Recipe r = a.recipes.smeltingFor(id);
+		Recipes.Recipe r = a.recipes.cookingFor(id);
 		Item input = item;
 		if (r == null) {
-			// 給的是產物：找背包裡有的原料，優先選數量夠的，都不夠就選最多的(M10)
+			// 給的是產物：找背包(含副手)裡有的原料，優先選數量夠的，都不夠就選最多的(M10、S4.2d)
 			int best = 0;
-			for (Recipes.Recipe cand : a.recipes.smeltingRecipesFor(id)) {
+			for (Recipes.Recipe cand : a.recipes.cookingRecipesFor(id)) {
 				for (String opt : cand.grid().getFirst().options()) {
 					Item in = parseItem(opt);
-					int have = Inv.count(mc.player, in);
+					int have = Inv.countWithOffhand(mc.player, in);
 					if (have > best && (best < count || r == null)) {
 						r = cand;
 						input = in;
@@ -1471,12 +1675,12 @@ public final class Tools {
 			}
 			if (r == null) {
 				Kv what = Kv.of().put("item", Inv.id(item));
-				if (a.recipes.smeltingRecipesFor(id).isEmpty()) return ToolResult.error(ErrorCode.INVALID_ARGUMENT, what, "cannot be smelted");
+				if (a.recipes.cookingRecipesFor(id).isEmpty()) return ToolResult.error(ErrorCode.INVALID_ARGUMENT, what, "cannot be smelted");
 				return ToolResult.error(ErrorCode.MISSING_MATERIALS, what, "no input in inventory that smelts into it");
 			}
 		}
 		Item result = parseItem(r.result());
-		int haveInput = Inv.count(mc.player, input);
+		int haveInput = Inv.countWithOffhand(mc.player, input);
 		if (haveInput < count) return missingItem(input, haveInput, count);
 		Item fuel = fuelArg;
 		if (fuel != null && !fuel.getDefaultInstance().has(DataComponents.COOKING_FUEL)) {
@@ -1485,10 +1689,10 @@ public final class Tools {
 		}
 		if (fuel == null) {
 			int best = 0;
-			for (int i = 0; i < Inv.MAIN_SIZE; i++) {
-				ItemStack s = mc.player.getInventory().getItem(i);
+			for (int i = 0; i < Inv.MAIN_SIZE + 1; i++) {
+				ItemStack s = i < Inv.MAIN_SIZE ? mc.player.getInventory().getItem(i) : mc.player.getOffhandItem();
 				if (s.isEmpty() || !s.has(DataComponents.COOKING_FUEL) || s.getItem() == input) continue;
-				int burn = Recipes.burnTicks(BuiltInRegistries.ITEM.getKey(s.getItem()).toString(), true) * Inv.count(mc.player, s.getItem());
+				int burn = Recipes.burnTicks(BuiltInRegistries.ITEM.getKey(s.getItem()).toString(), true) * Inv.countWithOffhand(mc.player, s.getItem());
 				if (burn > best) {
 					best = burn;
 					fuel = s.getItem();
@@ -1497,15 +1701,36 @@ public final class Tools {
 			if (fuel == null) return ToolResult.error(ErrorCode.MISSING_MATERIALS, "no fuel in inventory", "get coal, charcoal, logs or planks");
 		}
 		int need = SmeltTask.fuelNeeded(fuel, count);
-		int haveFuel = Inv.count(mc.player, fuel) - (fuel == input ? count : 0);
+		int haveFuel = Inv.countWithOffhand(mc.player, fuel) - (fuel == input ? count : 0);
 		if (haveFuel < need) return missingItem(fuel, haveFuel, need);
-		BlockPos furnace = SmeltTask.findFurnace(a, mc, Set.of());
-		if (furnace == null && Inv.count(mc.player, Items.FURNACE) == 0) {
+		String inputId = BuiltInRegistries.ITEM.getKey(input).toString();
+		List<Recipes.FurnaceKind> supported = a.recipes.supportedFurnaces(inputId);
+		BlockPos furnace = SmeltTask.findFurnace(a, mc, supported, Set.of());
+		boolean canPlaceFurnace = supported.contains(Recipes.FurnaceKind.FURNACE) && Inv.countWithOffhand(mc.player, Items.FURNACE) > 0;
+		if (furnace == null && !canPlaceFurnace) {
 			return ToolResult.error(ErrorCode.NO_STATION, Kv.of().put("radius", 32), "no furnace nearby or in inventory", "craft furnace (8 cobblestone)");
+		}
+		Set<Item> pullOffhandKeep = null;
+		if (!mc.player.getOffhandItem().isEmpty()) {
+			int mainInput = Inv.count(mc.player, input);
+			int mainFuel = Inv.count(mc.player, fuel) - (fuel == input ? count : 0);
+			boolean needOffFurnace = furnace == null && Inv.count(mc.player, Items.FURNACE) == 0;
+			if (mainInput < count || mainFuel < need || needOffFurnace) {
+				Set<Item> keep = new java.util.HashSet<>();
+				keep.add(input);
+				keep.add(fuel);
+				if (furnace == null) keep.add(Items.FURNACE);
+				if (Inv.findOffhandPullSlot(mc.player, s -> keep.contains(s.getItem())) < 0) {
+					return ToolResult.error(ErrorCode.MISSING_MATERIALS, Kv.of().put("free_slots", 0),
+						"a needed item is in the offhand and the main inventory is full", "drop or store one item, then smelt again");
+				}
+				pullOffhandKeep = keep;
+			}
 		}
 		Kv pre = Kv.of().put("input", Inv.id(input) + ":" + count).put("fuel", Inv.id(fuel) + ":" + need)
 			.put("furnace", furnace == null ? "from_inventory" : Fmt.pos(furnace));
-		return a.tasks.start(new SmeltTask(a, input, result, count, fuel, need, furnace), replace, pre.toString());
+		if (furnace != null) pre.put("furnace_type", RuleGuard.shortId(mc.level.getBlockState(furnace)));
+		return a.tasks.start(new SmeltTask(a, input, result, count, fuel, need, furnace, supported, pullOffhandKeep), replace, pre.toString());
 	}
 
 	private static ToolResult clearArea(Agent a, Minecraft mc, AreaInspection.Region region, Set<Block> blocks, boolean replace) {

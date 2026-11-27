@@ -39,4 +39,27 @@ class ObservationTest {
 		assertTrue(body.length() <= Observation.MAX_CHARS, "本文不能超過上限：" + body.length());
 		for (int i = 0; i < lines.length - 1; i++) assertTrue(lines[i].matches("- line=\\d+"), "不能切在一行中間：" + lines[i]);
 	}
+
+	@Test
+	void inventoryFullTriggersOncePerDropToZero() {
+		// 初始已是 0 格(prevFree=-1)不應誤觸發
+		var init = Observation.checkInventoryFull(-1, 0, false);
+		assertFalse(init.fire());
+		// 從 > 0 降至 0：觸發一次並標記已回報
+		var drop = Observation.checkInventoryFull(1, 0, false);
+		assertTrue(drop.fire());
+		assertTrue(drop.reported());
+		// 持續維持 0 格：不重發
+		var stillFull = Observation.checkInventoryFull(0, 0, drop.reported());
+		assertFalse(stillFull.fire());
+		assertTrue(stillFull.reported());
+		// 騰出空格後重置
+		var freed = Observation.checkInventoryFull(0, 2, stillFull.reported());
+		assertFalse(freed.fire());
+		assertFalse(freed.reported());
+		// 再次滿格時重新觸發一次
+		var dropAgain = Observation.checkInventoryFull(2, 0, freed.reported());
+		assertTrue(dropAgain.fire());
+		assertTrue(dropAgain.reported());
+	}
 }

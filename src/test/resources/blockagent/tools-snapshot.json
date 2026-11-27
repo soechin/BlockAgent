@@ -14,7 +14,7 @@
   },
   {
     "name": "get_surroundings",
-    "description": "Nearby summary: ground, light, terrain, biome directions, time, weather, notable blocks with owner, mobs per species (nearest id), vehicles, dropped items.",
+    "description": "Nearby summary: ground, light, terrain, biome directions, time, weather, notable blocks with owner (incl. written signs), item frames, mobs per species (nearest id), vehicles, dropped items.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -39,7 +39,7 @@
   },
   {
     "name": "inspect_area",
-    "description": "Read a box of blocks in the current dimension: per-block pos, state and owner, or a summary of block counts. Unloaded cells are marked.",
+    "description": "Read a box of blocks in the current dimension: per-block pos, state, owner (and sign text), or a summary of block counts. Unloaded cells are marked.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -570,7 +570,7 @@
   },
   {
     "name": "place_block",
-    "description": "Place a block item at a position within reach, next to a solid face; waits for server confirmation. facing sets the placed block\u0027s facing (stairs, furnace, chest, hopper, wall torch, observer...; logs use its axis); the result is verified. A block without a facing property gives INVALID_ARGUMENT.",
+    "description": "Place a block item at a position within reach, next to a solid face; waits for server confirmation. facing sets the placed block\u0027s facing (stairs, furnace, chest, hopper, wall torch, observer...; logs use its axis); half sets top/bottom for slabs, stairs and trapdoors; sneak\u003dtrue holds shift to place against interactive blocks (chest, furnace, crafting table...). Results are verified.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -598,6 +598,19 @@
             "up",
             "down"
           ]
+        },
+        "half": {
+          "type": "string",
+          "description": "Half for slabs, stairs and trapdoors",
+          "enum": [
+            "bottom",
+            "top"
+          ]
+        },
+        "sneak": {
+          "type": "boolean",
+          "description": "Hold shift to place against interactive/block-entity neighbors",
+          "default": false
         },
         "replace": {
           "type": "boolean",
@@ -627,7 +640,7 @@
   },
   {
     "name": "use_block",
-    "description": "Right-click a block within reach and report open/powered/lit when applicable.",
+    "description": "Right-click a block within reach: doors, switches, containers, or read a book on a lectern; reports open/powered/lit or book contents when applicable.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -657,21 +670,30 @@
   },
   {
     "name": "equip",
-    "description": "Equip an item to the main hand, off hand, or its armor slot.",
+    "description": "Equip an item to the main hand, off hand, or an armor slot; pass item\u003d\"none\" with slot\u003doffhand|head|chest|legs|feet to unequip back to the main inventory.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "item": {
-          "type": "string"
+          "type": "string",
+          "description": "Item id, or \"none\" to unequip"
         },
         "slot": {
           "type": "string",
           "enum": [
             "mainhand",
             "offhand",
-            "armor"
+            "armor",
+            "head",
+            "chest",
+            "legs",
+            "feet"
           ],
           "default": "mainhand"
+        },
+        "match": {
+          "type": "string",
+          "description": "Attribute filter: ench\u003d, stored\u003d, potion\u003d, name\u003d, best_dur, low_dur, or shorthand"
         }
       },
       "additionalProperties": false,
@@ -688,12 +710,16 @@
   },
   {
     "name": "eat",
-    "description": "Eat food (about 2 s). Omit item to pick the best safe food.",
+    "description": "Eat food or drink a consumable (potion, milk_bucket, honey_bottle). Omit item to pick the best safe food.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "item": {
           "type": "string"
+        },
+        "match": {
+          "type": "string",
+          "description": "Attribute filter, e.g. fire_resistance, potion\u003dlong_night_vision"
         },
         "replace": {
           "type": "boolean",
@@ -773,7 +799,7 @@
   },
   {
     "name": "drop",
-    "description": "Drop items from the inventory, optionally facing a position (e.g. to give to a player).",
+    "description": "Drop items from the inventory (incl. offhand), optionally facing a position or filtered by match.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -794,6 +820,10 @@
         },
         "toward_z": {
           "type": "integer"
+        },
+        "match": {
+          "type": "string",
+          "description": "Attribute filter: ench\u003d, stored\u003d, potion\u003d, name\u003d, best_dur, low_dur, or shorthand"
         }
       },
       "additionalProperties": false,
@@ -969,22 +999,45 @@
   },
   {
     "name": "smelt",
-    "description": "Smelt in a furnace within 32 blocks (anyone\u0027s) or one placed from inventory; adds input and fuel, waits, and takes the output.",
+    "description": "Smelt in a furnace, blast_furnace or smoker within 32 blocks (prefers blast_furnace/smoker when supported, or places a furnace from inventory), or inspect/collect a furnace with action\u003dlist|take at x,y,z.",
     "inputSchema": {
       "type": "object",
       "properties": {
+        "action": {
+          "type": "string",
+          "description": "smelt (default), list (inspect furnace), or take (collect output)",
+          "enum": [
+            "smelt",
+            "list",
+            "take"
+          ],
+          "default": "smelt"
+        },
         "item": {
           "type": "string",
-          "description": "Input (e.g. raw_iron) or wanted output (e.g. iron_ingot)"
+          "description": "Input (e.g. raw_iron) or wanted output (e.g. iron_ingot); required for smelt"
         },
         "count": {
           "type": "integer",
+          "description": "Required for smelt",
           "minimum": 1,
           "maximum": 64
         },
         "fuel": {
           "type": "string",
           "description": "Omit to pick automatically"
+        },
+        "x": {
+          "type": "integer",
+          "description": "Furnace x (required for list/take)"
+        },
+        "y": {
+          "type": "integer",
+          "description": "Furnace y (required for list/take)"
+        },
+        "z": {
+          "type": "integer",
+          "description": "Furnace z (required for list/take)"
         },
         "replace": {
           "type": "boolean",
@@ -997,11 +1050,7 @@
           "default": 30
         }
       },
-      "additionalProperties": false,
-      "required": [
-        "item",
-        "count"
-      ]
+      "additionalProperties": false
     },
     "annotations": {
       "readOnlyHint": false,
@@ -1551,13 +1600,13 @@
   },
   {
     "name": "use_item",
-    "description": "Use an item: on the block at x,y,z within reach (fill/pour bucket, flint_and_steel, bone_meal), or in the air if omitted. Pouring and igniting follow the same rules as placing blocks.",
+    "description": "Use an item (incl. offhand): on the block at x,y,z within reach (fill/pour bucket, flint_and_steel, bone_meal), or without x,y,z in the air — or read written_book/writable_book text directly without opening the book GUI.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "item": {
           "type": "string",
-          "description": "e.g. water_bucket, bucket, flint_and_steel, bone_meal"
+          "description": "e.g. water_bucket, bucket, flint_and_steel, bone_meal, written_book"
         },
         "x": {
           "type": "integer"
@@ -1567,6 +1616,16 @@
         },
         "z": {
           "type": "integer"
+        },
+        "match": {
+          "type": "string",
+          "description": "Attribute filter: ench\u003d, stored\u003d, potion\u003d, name\u003d, best_dur, low_dur, or shorthand"
+        },
+        "page": {
+          "type": "integer",
+          "description": "Start page (1-based) when reading a book without x,y,z",
+          "minimum": 1,
+          "maximum": 100
         }
       },
       "additionalProperties": false,
@@ -1622,7 +1681,7 @@
   },
   {
     "name": "chest",
-    "description": "Walk to a chest, barrel, shulker box or ender chest and list its contents, put items in, or take items out. Anyone\u0027s chests and naturally generated ones are allowed. The result lists the contents.",
+    "description": "Walk to a chest, barrel, shulker box or ender chest and list its contents, put items in (incl. offhand), or take items out. items keys accept item_id or item_id[filter] (e.g. potion[fire_resistance]). Anyone\u0027s chests and naturally generated ones are allowed. The result lists the contents.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1645,7 +1704,7 @@
         },
         "items": {
           "type": "object",
-          "description": "{item_id: count}; required for put and take",
+          "description": "{item_id or item_id[filter]: count}; required for put and take",
           "additionalProperties": {
             "type": "integer",
             "minimum": 1

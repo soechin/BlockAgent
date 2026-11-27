@@ -76,8 +76,15 @@ final class AreaInspection {
 			if (!details) counts.merge(RuleGuard.shortId(state), 1, Integer::sum);
 			if (details && matched >= offset && page.size() < limit) {
 				String st = BlockStateParser.serialize(state);
-				page.add("- " + Fmt.pos(pos) + " " + (st.startsWith("minecraft:") ? st.substring(10) : st)
-					+ (state.isAir() ? "" : " owner=" + observation.ownerLabel(pos, state)));
+				StringBuilder line = new StringBuilder("- ").append(Fmt.pos(pos)).append(' ')
+					.append(st.startsWith("minecraft:") ? st.substring(10) : st);
+				if (!state.isAir()) line.append(" owner=").append(observation.ownerLabel(pos, state));
+				String[] sign = Observation.signTexts(level, pos);
+				if (sign != null) {
+					if (!sign[0].isEmpty()) line.append(" front=").append(blockagent.mcp.Kv.quote(sign[0]));
+					if (!sign[1].isEmpty()) line.append(" back=").append(blockagent.mcp.Kv.quote(sign[1]));
+				}
+				page.add(line.toString());
 			}
 			matched++;
 		}
