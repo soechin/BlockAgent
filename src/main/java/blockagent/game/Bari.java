@@ -31,6 +31,8 @@ public final class Bari {
 		s.allowPlace.value = true;
 		// 蓋建時不挖掉已經蓋好的方塊(預設只是成本乘 10，必要時還是會挖)
 		s.breakCorrectBlockPenaltyMultiplier.value = 1_000_000d;
+		// 提高破塊尋路代價(預設 2.0，穿 1×2 石牆只比走路貴 ~5 格)；設 16.0 讓有路時優先走礦道，且低於放方塊代價(20.0)避免亂搭橋
+		s.blockBreakAdditionalPenalty.value = 16.0d;
 		// 不拿劍挖方塊(2026-11-22 試玩：拿鐵劍砍樹、挖石頭，白白耗損耐久)
 		s.useSwordToMine.value = false;
 		// 尋路避開敵對生物(S9.1b)：8 格內有怪的路線成本較高。Baritone 已排除沒生氣的終界使者、殭屍化豬布林和亮處的蜘蛛
@@ -46,7 +48,8 @@ public final class Bari {
 		Settings s = BaritoneAPI.getSettings();
 		if (s.chatControl.value || s.chatControlAnyway.value || s.prefixControl.value || s.allowInventory.value
 			|| !s.buildIgnoreExisting.value || s.allowParkour.value || s.allowParkourPlace.value || s.allowWaterBucketFall.value
-			|| s.breakCorrectBlockPenaltyMultiplier.value < 1_000_000d || !s.avoidance.value
+			|| s.breakCorrectBlockPenaltyMultiplier.value < 1_000_000d || s.blockBreakAdditionalPenalty.value != 16.0d
+			|| !s.avoidance.value
 			|| s.chatDebug.value || s.desktopNotifications.value || s.useSwordToMine.value) {
 			applySettings();
 		}

@@ -60,6 +60,7 @@
   | `allowInventory` | `false` | 背包整理由本模組控制，避免 Baritone 繞過守門員搬物品 |
   | `buildIgnoreExisting` | `true` | 建造時不去拆已經存在的方塊 |
   | `breakCorrectBlockPenaltyMultiplier` | `1000000` | 建造時不挖掉已經蓋好的方塊。預設只是成本乘 10，路線不好走時還是會挖穿剛蓋的牆(T13(b) 實測發現) |
+  | `blockBreakAdditionalPenalty` | `16.0` | 提高尋路破塊代價(預設 `2.0`，穿石牆只比走路貴約 5 格)；設 `16.0` 讓有路時優先沿礦道與門走，且低於預設放置代價(`20.0`)避免改搭空中橋 |
   | `allowParkour`, `allowParkourPlace` | `false` | 降低意外掉落或跳進危險地方的機率 |
   | `freeLook` | 平常 `false`；使用者 3 秒內用滑鼠轉過視角時 `true` | 平常鏡頭跟著 AI 的前進方向；使用者在看別的地方時，Baritone 只改移動方向、不轉鏡頭(S8.2a)。這個值每個 tick 由 `Control` 同步，不在 20 tick 的檢查裡 |
   | `chatDebug`, `desktopNotifications` | `false` | 不在聊天框或系統通知顯示除錯訊息 |
