@@ -5,7 +5,6 @@ import blockagent.game.Bari;
 import blockagent.game.BuildCommands;
 import blockagent.game.BuildTarget;
 import blockagent.game.Creative;
-import blockagent.game.RuleGuard;
 import blockagent.mcp.ErrorCode;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;

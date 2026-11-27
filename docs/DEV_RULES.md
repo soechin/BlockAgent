@@ -53,3 +53,11 @@
 - **數值與編號範圍用 en-dash**：`–`(例：`S5.1–S5.4`、`範圍 3–8`)，不用全形波浪號。
 - **遊戲內 HUD 用顏色和空白分段**(例：`● 挖 鐵礦 4/10 · 剩 42 分`)；計數和剩餘時間之間用 `·`。
 - **文件圖表用 Mermaid**：架構圖、流程圖、狀態機一律使用 `mermaid` 區塊(`flowchart` / `stateDiagram-v2`)，不用 ASCII 框線繪圖。
+
+---
+
+## 6. 不留多餘的 import 與死碼
+
+- **Java 改完先跑 `./gradlew spotlessApply`**：Spotless 只負責刪掉沒用到的 import(含 `import static`)，不改其他排版；`./gradlew build` 會跑 `spotlessCheck`，有漏掉的就失敗。`javac` 本身不會警告未使用的 import，不要靠編譯通過判斷。
+- **Python 要自己檢查**：`bin/`、`src/test/python` 沒有接工具，刪除、搬移或改寫程式碼後，回頭看 import 清單，把不再使用的一起刪掉。
+- **連帶清掉沒人用的私有成員**：改動後不再被呼叫的 `private` 方法、欄位、區域變數一併刪除，不要留著「以後可能用到」。

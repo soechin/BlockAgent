@@ -1,6 +1,5 @@
 package blockagent.game;
 
-import blockagent.core.BlockClassifier;
 import blockagent.core.Event;
 import blockagent.core.OwnershipLedger;
 import blockagent.game.tasks.BuildTask;
