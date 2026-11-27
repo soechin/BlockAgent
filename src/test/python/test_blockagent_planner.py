@@ -17,7 +17,7 @@ SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 planner = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(planner)
 REQUEST = {"goal": "蓋屋", "context": "地點 A 到不了"}
-PLAN = {"recommendation": "去 B 地", "steps": ["先預檢地點 B"]}
+PLAN = {"goal": "蓋屋", "recommendation": "去 B 地", "steps": ["先預檢地點 B"]}
 
 
 class PlannerTest(unittest.TestCase):
@@ -25,12 +25,15 @@ class PlannerTest(unittest.TestCase):
         self.assertEqual(REQUEST, planner.checked_request(REQUEST))
         self.assertEqual(PLAN, planner.checked_plan(json.dumps(PLAN)))
         self.assertEqual({"goal": "蓋屋"}, planner.checked_request({"goal": "蓋屋"}), "context 可以不寫")
-        for request in ({}, {"context": "x"}, {"goal": "蓋" * 501}, dict(REQUEST, context="地" * 4000),
+        self.assertEqual({}, planner.checked_request({}), "goal 不寫就由規劃模型挑")
+        for request in ({"goal": " "}, {"goal": "蓋" * 501}, dict(REQUEST, context="地" * 4000),
                         dict(REQUEST, model="custom")):
             with self.assertRaisesRegex(planner.PlannerError, "欄位|字元|只能") as error:
                 planner.checked_request(request)
             self.assertEqual("INVALID_ARGUMENT", error.exception.code)
-        for invalid in (None, "plain text", json.dumps(dict(PLAN, steps=[])), json.dumps(dict(PLAN, steps=["走"] * 6))):
+        no_goal = {key: value for key, value in PLAN.items() if key != "goal"}
+        for invalid in (None, "plain text", json.dumps(no_goal), json.dumps(dict(PLAN, goal=" ")),
+                        json.dumps(dict(PLAN, steps=[])), json.dumps(dict(PLAN, steps=["走"] * 6))):
             with self.assertRaises(planner.PlannerError) as error:
                 planner.checked_plan(invalid)
             self.assertEqual("INVALID_OUTPUT", error.exception.code)
@@ -121,6 +124,25 @@ class PlannerTest(unittest.TestCase):
         self.assertEqual("找村莊", bridge.delivered[0]["goal"])
         self.assertEqual("TIMEOUT", log.call_args.args[0]["result"])
         self.assertFalse(log.call_args.args[0]["delivered"])
+
+    def test_goal_comes_from_planner_only_when_not_given(self):
+        def backend(model, request, usage):
+            return dict(PLAN, goal="挖到鑽石")
+
+        bridge = FakeBridge("[self]\nhp=20")
+        server = planner.Server("gpt-6.2-sol", backend, bridge, io.StringIO())
+        with patch.object(planner, "log_usage"):
+            server.run_plan({})
+            server.run_plan({"goal": "蓋屋"})
+        self.assertEqual(["挖到鑽石", "蓋屋"], [payload["goal"] for payload in bridge.delivered])
+
+        def failing(model, request, usage):
+            raise planner.PlannerError("TIMEOUT", "逾時")
+
+        bridge = FakeBridge(None)
+        with patch.object(planner, "log_usage"):
+            planner.Server("gpt-6.2-sol", failing, bridge, io.StringIO()).run_plan({})
+        self.assertEqual("下一個目標", bridge.delivered[0]["goal"])
 
     def test_http_exceptions_do_not_drop_usage_log(self):
         class BrokenHttpBridge:

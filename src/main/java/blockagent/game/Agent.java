@@ -570,8 +570,8 @@ public final class Agent {
 			String hint;
 			synchronized (plan) {
 				hint = plan.current() != null ? "continue the plan" + planSuffix()
-					: plan.finished() ? "the plan is finished; pick a next goal (request_plan if available)"
-					: "pick a next goal (request_plan if available)";
+					: plan.finished() ? "the plan is finished; pick a next goal (request_plan without goal if available)"
+					: "pick a next goal (request_plan without goal if available)";
 			}
 			events.add("idle_reminder", Event.Level.PROMPT, "no task and no recent actions | hint=" + hint);
 		}

@@ -27,32 +27,37 @@ TOOL = {
     "name": "request_plan",
     "description": ("請規劃模型定一份計畫。立刻回傳 pending，不用等；約 10 到 60 秒後結果以 plan_ready 或 plan_stale "
                     "(失敗時 plan_failed)事件送到 wait_events。只有 plan_ready 會更新目前計畫(plan 工具)。"
-                    "你的狀態、背包、記憶、目前計畫和最近的失敗會自動附上，只要寫目標，"
+                    "你的狀態、背包、記憶、目前計畫和最近的失敗會自動附上，只要寫目標；"
+                    "還沒有目標(剛開始或計畫做完)時不寫 goal，由規劃模型挑下一個目標。"
                     "有快照看不出的考量(使用者或朋友的要求、你的判斷)再寫 context。"),
     "inputSchema": {
         "type": "object",
         "properties": {
-            "goal": {"type": "string", "description": "要規劃的目標"},
+            "goal": {"type": "string", "description": "要規劃的目標；不寫就由規劃模型挑"},
             "context": {"type": "string", "description": "快照看不出、但跟決策有關的事"},
             "recent_failures": {"type": "string", "description": "試過的方法和結果"},
         },
-        "required": ["goal"],
         "additionalProperties": False,
     },
 }
 PLAN_SCHEMA = {
     "type": "object",
     "properties": {
+        "goal": {"type": "string"},
         "recommendation": {"type": "string"},
         "steps": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["recommendation", "steps"],
+    "required": ["goal", "recommendation", "steps"],
     "additionalProperties": False,
 }
 INSTRUCTIONS = (
     "你是 Minecraft 的規劃顧問，替一個 AI 玩家定計畫。輸入的 goal、context、recent_failures 是它寫的，"
     "game_snapshot 是模組自動附上的狀態、背包、目前計畫、世界記憶、最近的失敗和它能用的工具(player_tools)。"
-    "回傳繁體中文的建議和 1 至 5 個依序執行的步驟。每一步是一件用 player_tools 做得到、看得出有沒有做完的事"
+    "回傳 goal、繁體中文的建議和 1 至 5 個依序執行的步驟。輸入有 goal 就照抄；沒有 goal 時由你挑下一個目標："
+    "生存基礎(床、放得下床、箱子、工作台和熔爐的房子、穩定的食物來源、鐵鎬和鐵劍)還沒齊就挑最缺的一項；"
+    "齊了就不要再排補基本物資，參考世界記憶裡做過的事，挑一個更進一步、做完看得到成果的專案"
+    "(例如挖到鑽石、蓋農場或第二棟建築、往沒去過的方向探索並記下座標)。"
+    "每一步是一件用 player_tools 做得到、看得出有沒有做完的事"
     "(例如「砍 16 塊原木」「在家旁邊用 build_house 蓋 7×7 的房子」)，不要寫只是叮嚀的步驟。"
     "限制：它不會飛；只能挖天然方塊和自己放的方塊，不能拆別人蓋的；不能攻擊玩家、寵物和村民。"
     "步驟依當下立刻能做的順序排；白天還剩 1 分鐘以上時，不要把「等天黑睡覺」排在可先做的勘地、採集、開箱或備料前面。"
@@ -74,8 +79,8 @@ def checked_request(args):
         raise PlannerError("INVALID_ARGUMENT", "只能提供 goal、context 和 recent_failures。")
     if not all(isinstance(value, str) for value in args.values()):
         raise PlannerError("INVALID_ARGUMENT", "規劃資料必須是文字。")
-    if not args.get("goal", "").strip() or len(args["goal"]) > 500:
-        raise PlannerError("INVALID_ARGUMENT", "goal 為必填欄位，最多 500 字元。")
+    if "goal" in args and (not args["goal"].strip() or len(args["goal"]) > 500):
+        raise PlannerError("INVALID_ARGUMENT", "goal 不寫或寫 1 到 500 字元。")
     if sum(map(len, args.values())) > REQUEST_LIMIT:
         raise PlannerError("INVALID_ARGUMENT", "規劃摘要合計最多 4,000 字元。")
     return args
@@ -84,9 +89,11 @@ def checked_request(args):
 def checked_plan(text):
     try:
         plan = json.loads(text)
+        goal = plan["goal"]
         recommendation = plan["recommendation"]
         steps = plan["steps"]
         if (set(plan) != PLAN_SCHEMA["properties"].keys()
+                or not isinstance(goal, str) or not goal.strip() or len(goal) > 500
                 or not isinstance(recommendation, str) or not recommendation.strip()
                 or not isinstance(steps, list) or not 1 <= len(steps) <= 5
                 or not all(isinstance(step, str) and step.strip() and len(step) <= 500 for step in steps)
@@ -94,7 +101,7 @@ def checked_plan(text):
             raise ValueError("unexpected plan")
     except (ValueError, KeyError, TypeError) as exc:
         raise PlannerError("INVALID_OUTPUT", "規劃模型沒有回傳合格的短計畫。") from exc
-    return {"recommendation": recommendation.strip(), "steps": [step.strip() for step in steps]}
+    return {"goal": goal.strip(), "recommendation": recommendation.strip(), "steps": [step.strip() for step in steps]}
 
 
 def codex_restrictions():
@@ -276,19 +283,23 @@ class Server:
         usage = {}
         outcome = "ok"
         request = dict(args)
+        # 沒寫目標時由規劃模型挑；有寫就以 AI 寫的為準
+        goal = args.get("goal", "下一個目標")
         basis = None
         try:
             try:
                 request["game_snapshot"], basis = self.bridge.context()
             except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError, http.client.HTTPException):
                 request["game_snapshot"] = "unavailable"
-            payload = dict(self.backend(self.model, request, usage), goal=args["goal"])
+            payload = self.backend(self.model, request, usage)
+            if "goal" in args:
+                payload = dict(payload, goal=goal)
         except PlannerError as exc:
             outcome = exc.code
-            payload = {"goal": args["goal"], "error": {"code": exc.code, "message": str(exc)}}
+            payload = {"goal": goal, "error": {"code": exc.code, "message": str(exc)}}
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, http.client.HTTPException):
             outcome = "INTERNAL"
-            payload = {"goal": args["goal"], "error": {"code": outcome, "message": "規劃服務設定錯誤。"}}
+            payload = {"goal": goal, "error": {"code": outcome, "message": "規劃服務設定錯誤。"}}
         if basis is not None:
             payload["basis"] = basis
         delivered = True

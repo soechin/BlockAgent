@@ -519,7 +519,7 @@ public final class Tools {
 						}
 						a.log.log(ActionLog.Source.ai, "plan", "done step " + n);
 						return ToolResult.ok(next != null ? Kv.of("OK step_done").put("step", n) + suffix
-							: Kv.of("OK plan_finished").put("step", n) + " | hint=pick a next goal (request_plan if available)");
+							: Kv.of("OK plan_finished").put("step", n) + " | hint=pick a next goal (request_plan without goal if available)");
 					}
 					case "set" -> {
 						if (!g.has("goal") || !g.has("steps")) throw new Args.BadArgument("set needs goal and steps");
