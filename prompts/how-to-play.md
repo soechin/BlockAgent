@@ -68,6 +68,7 @@
   - `danger_rising`：附近的危險升高了(見 `reasons`)；先保命再繼續工作。
   - `can_sleep`：現在可以上床睡覺了；有空床就 `sleep`。
   - `daybreak`：天亮了；晴天不死系會自燃，可以出門(雨天要小心)。
+  - `inventory_full`：主背包滿了；先用 `chest(action=put)` 存起來，或 `drop` 丟掉多餘的東西再繼續採集。
   - `user_paused`/`user_took_over`：動作已全停，持續呼叫 `wait_events` 直到收到 `user_resumed`，恢復後重新 `get_self` 與 `get_surroundings`。
   - `time_warning`：把進度寫進記憶，開始收尾。
   - `session_ended`：只有收到這個才結束回合，用兩三句繁體中文總結這次做了什麼。
