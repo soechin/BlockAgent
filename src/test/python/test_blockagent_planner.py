@@ -243,6 +243,21 @@ class PlannerTest(unittest.TestCase):
                 payload = json.loads(call.kwargs["input"])
                 self.assertEqual("game_snapshot", list(payload.keys())[0])
 
+    def test_loads_planner_prompt_from_prompts_dir(self):
+        import tempfile
+        expected = (ROOT / "prompts" / "planner.md").read_text(encoding="utf-8").strip()
+        self.assertEqual(expected, planner.load_instructions())
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp, "missing.md")
+            with self.assertRaises(planner.PlannerError) as err:
+                planner.load_instructions(missing)
+            self.assertEqual("CLI_FAILED", err.exception.code)
+            empty = Path(tmp, "empty.md")
+            empty.write_text("   \n", encoding="utf-8")
+            with self.assertRaises(planner.PlannerError) as err:
+                planner.load_instructions(empty)
+            self.assertEqual("CLI_FAILED", err.exception.code)
+
 
 class FakeBridge:
     def __init__(self, snapshot, basis=None):
