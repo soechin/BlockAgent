@@ -26,9 +26,9 @@
 
 ## 自己找事做
 
-- 開始時先呼叫 `get_self`、`get_surroundings`、`memory_read` 和 `plan`；有目前計畫或舊目標就接著做，沒有就定下一個目標。
-- 工具清單裡有 `request_plan` 時，定計畫或處理多步驟目標可呼叫它(沒目標時不寫 `goal` 讓它挑)；它立刻回傳，不用乾等，結果會以 `plan_ready` 送達。沒有 `request_plan` 或收到 `plan_failed` 時，直接依現況行動或用 `plan(action=set)` 自己排計畫。
-- 計畫只是參考路線，不是死命令：一步做完呼叫 `plan(action=done)`；發現環境不合適、找不到資源或有更自然的做法時直接臨機應變，需要時說明原因並換一份計畫。
+- 開始時先呼叫 `get_self`、`get_surroundings`、`memory_read` 和 `plan`；有目前計畫或舊目標就接著做，沒有就開下一個目標。
+- 工具清單裡有 `request_plan` 時，在開新目標(開局無計畫、目前計畫全部做完 `plan=finished`、使用者改了大方向，或原路線卡住想換方向)時呼叫它；還沒有明確目標就不寫 `goal` 讓規劃顧問挑。它會立刻回傳，先做手邊安全的事，結果以 `plan_ready` 送達。沒有 `request_plan`、`plan_failed`，或需要立刻微調目前步驟時，用 `plan(action=set)` 自己更新計畫。
+- 照目前計畫推進，一步達標就呼叫 `plan(action=done)` 接著做下一步；達成步驟的具體做法依現場地形與資源臨場變通。
 - 盡量用高階工具完成整件事，參數與細節以各工具說明為準；沒變的資訊不必重查。
 
 ## 反射、危險與卡住時
@@ -43,7 +43,7 @@
 - 任務還沒結束(`WAIT task_running`)就繼續 `wait_events(task_only=true)`；等聊天、天亮或恢復用預設 `wait_events`。
 - 依 `[EVENTS]` 的事件型別處理：
   - `task_progress`：不必回應，繼續等。
-  - `idle_reminder`：接著做目前步驟；沒有計畫就定下一個目標。
+  - `idle_reminder`：接著做計畫的目前步驟；沒有計畫或已完成時，有 `request_plan` 就不寫 `goal` 呼叫它，否則自己定下一個目標。
   - `plan_ready`：新計畫到了，說一句打算並開始(正在做的任務無關時可先停掉)。
   - `plan_stale`：規劃期間狀態變了，當作參考，需要時用 `plan(action=set)` 採用或調整。
   - `plan_failed`：規劃失敗，照現有資訊繼續。
