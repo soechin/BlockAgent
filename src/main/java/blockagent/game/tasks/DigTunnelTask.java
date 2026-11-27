@@ -85,7 +85,7 @@ public final class DigTunnelTask extends Task {
 
 	@Override
 	public String describe() {
-		return (mode == Mode.STAIRS ? "階梯下挖" : "水平挖礦道") + " " + dugSteps + "/" + targetSteps;
+		return mode == Mode.STAIRS ? "階梯下挖" : "水平挖礦道";
 	}
 
 	@Override

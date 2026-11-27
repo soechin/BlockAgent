@@ -101,14 +101,25 @@ public final class MenuOps {
 		return placed;
 	}
 
-	/** 游標上還拿著東西：放回原本的格子，那格被占走了就放到任何一個空格。 */
-	private static void returnCarried(Minecraft mc, AbstractContainerMenu m, int src) {
-		if (!m.getCarried().isEmpty()) Inv.click(mc, m, src, 0, ContainerInput.PICKUP);
+	/** 游標上還拿著東西：先放回原本的格子(若有指定)，再嘗試合併進同物品且有空位的背包格，最後放進任意空格。 */
+	public static void returnCarried(Minecraft mc, AbstractContainerMenu m, int src) {
+		if (m.getCarried().isEmpty()) return;
+		if (src >= 0) Inv.click(mc, m, src, 0, ContainerInput.PICKUP);
+		if (!m.getCarried().isEmpty()) {
+			for (int i : playerSlots(m)) {
+				ItemStack s = m.getSlot(i).getItem();
+				if (!s.isEmpty() && s.getCount() < s.getMaxStackSize()
+					&& ItemStack.isSameItemSameComponents(s, m.getCarried())) {
+					Inv.click(mc, m, i, 0, ContainerInput.PICKUP);
+					if (m.getCarried().isEmpty()) return;
+				}
+			}
+		}
 		if (!m.getCarried().isEmpty()) {
 			for (int i : playerSlots(m)) {
 				if (m.getSlot(i).getItem().isEmpty()) {
 					Inv.click(mc, m, i, 0, ContainerInput.PICKUP);
-					break;
+					if (m.getCarried().isEmpty()) return;
 				}
 			}
 		}

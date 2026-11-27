@@ -29,7 +29,36 @@ import java.util.List;
  * 需要工作台時，附近有就走過去用(別人的也可以)，沒有就用背包材料做一個放下。
  */
 public final class CraftTask extends Task {
-	private enum Phase {NEXT_STEP, PLACE_TABLE, WALK, OPEN, FILL, TAKE, CLEAR, DONE}
+	private enum Phase {NEXT_STEP, PLACE_TABLE, WALK, OPEN, CLEAN_GRID, FILL, SYNC_CELL, TAKE, CLEAR, DONE}
+
+	/** 填完一格後，游標為空且連續幾個 tick 沒再收到容器狀態同步，才視為已與伺服器對齊。 */
+	static final int CELL_SYNC_QUIET_TICKS = 2;
+	/** 等待單格或清格同步的上限(超過仍卡游標時主動歸還再檢查)。 */
+	static final int CELL_SYNC_MAX_TICKS = 20;
+	/** 單格在伺服器回補後數量仍少於本批需求時，最多補填幾次。 */
+	static final int MAX_CELL_RETRIES = 2;
+
+	/** 容器同步推進結果(純資料，供單元測試直接驗證)。 */
+	record SyncProgress(int lastStateId, int quietTicks, boolean settled) {
+	}
+
+	/**
+	 * 推進容器同步判定(純邏輯)：
+	 * 只要游標非空，或伺服器的 {@code stateId} 剛變動(剛收到 SetSlot / ContentPacket)，就歸零安靜計數繼續等；
+	 * 直到游標為空且連續 {@link #CELL_SYNC_QUIET_TICKS} 個 tick 沒再變動才視為穩定。
+	 */
+	static SyncProgress advanceSync(int lastStateId, int currentStateId, boolean carriedEmpty, int quietTicks) {
+		if (!carriedEmpty || currentStateId != lastStateId) {
+			return new SyncProgress(currentStateId, 0, false);
+		}
+		int nextQuiet = quietTicks + 1;
+		return new SyncProgress(currentStateId, nextQuiet, nextQuiet >= CELL_SYNC_QUIET_TICKS);
+	}
+
+	/** 計算目標合成格還差幾個材料才達到本批所需數量(純邏輯)。 */
+	static int cellShortfall(int currentCount, int batch) {
+		return Math.max(0, batch - Math.max(0, currentCount));
+	}
 
 	private final Recipes.Plan plan;
 	private final String target;
@@ -42,7 +71,14 @@ public final class CraftTask extends Task {
 	private int batch;
 	private List<int[]> cells; // {gridIndex, ingredientIndex}
 	private int cellIdx;
+	private int cellRetries;
 	private int waitTicks;
+	private int clearTicks;
+	private int syncLastState;
+	private int syncQuietTicks;
+	private int syncWaitTicks;
+	private int syncTarget = -1;
+	private boolean cleanStarted;
 	private int startTargetCount = -1;
 	private boolean ownTableUsed;
 	/** 剛拿出產物：拿的是什麼、拿之前背包裡有幾個(null 表示這一批還沒拿)。 */
@@ -123,7 +159,10 @@ public final class CraftTask extends Task {
 				return;
 			}
 		}
-		startTargetCount = Inv.count(mc.player, item(target));
+		if (mc.player.containerMenu != mc.player.inventoryMenu
+			|| (mc.player.containerMenu.getCarried().isEmpty() && !hasGridItems(mc.player.containerMenu))) {
+			startTargetCount = Inv.count(mc.player, item(target));
+		}
 	}
 
 	private Recipes.Step step() {
@@ -214,7 +253,9 @@ public final class CraftTask extends Task {
 					Moves.useOn(mc, tablePos, Moves.faceToward(mc.player, tablePos));
 				}
 			}
+			case CLEAN_GRID -> tickCleanGrid(mc);
 			case FILL -> fillOneCell(mc);
+			case SYNC_CELL -> tickSyncCell(mc);
 			case TAKE -> {
 				if (!checkTableMenu(mc)) return;
 				AbstractContainerMenu m = mc.player.containerMenu;
@@ -232,6 +273,7 @@ public final class CraftTask extends Task {
 				MenuOps.quickMove(mc, m, 0);
 				phase = Phase.CLEAR;
 				waitTicks = 0;
+				clearTicks = 0;
 			}
 			case CLEAR -> {
 				if (!checkTableMenu(mc)) return;
@@ -239,7 +281,7 @@ public final class CraftTask extends Task {
 				if (takeItem != null && waitTicks++ < 40 && (waitTicks < 3 || mc.player.containerMenu.getStateId() == takeState)) return;
 				if (!settleTake(mc)) return;
 				AbstractContainerMenu m = mc.player.containerMenu;
-				for (int g : gridSlots(m)) if (m.getSlot(g).hasItem()) MenuOps.quickMove(mc, m, g);
+				if (clearGrid(mc, m) && ++clearTicks <= 3) return;
 				if (craftsLeft > 0) beginBatch(mc);
 				else phase = Phase.NEXT_STEP;
 			}
@@ -306,8 +348,77 @@ public final class CraftTask extends Task {
 			for (int i = 0; i < r.grid().size(); i++) cells.add(new int[]{1 + i, i});
 		}
 		cellIdx = 0;
-		phase = Phase.FILL;
+		cellRetries = 0;
+		syncTarget = -1;
 		waitTicks = 0;
+		if (!m.getCarried().isEmpty() || hasGridItems(m)) {
+			// 開工前先清掉殘留在合成格或游標上的物品，避免混進本批配方導致結果格為空
+			cleanStarted = false;
+			syncLastState = m.getStateId();
+			syncQuietTicks = 0;
+			syncWaitTicks = 0;
+			phase = Phase.CLEAN_GRID;
+		} else {
+			if (startTargetCount < 0) startTargetCount = Inv.count(mc.player, item(target));
+			phase = Phase.FILL;
+		}
+	}
+
+	private static boolean hasGridItems(AbstractContainerMenu m) {
+		for (int g : gridSlots(m)) if (m.getSlot(g).hasItem()) return true;
+		return false;
+	}
+
+	private static boolean clearGrid(Minecraft mc, AbstractContainerMenu m) {
+		boolean cleared = false;
+		for (int g : gridSlots(m)) {
+			if (m.getSlot(g).hasItem()) {
+				MenuOps.quickMove(mc, m, g);
+				cleared = true;
+			}
+		}
+		return cleared;
+	}
+
+	private void tickCleanGrid(Minecraft mc) {
+		if (!checkTableMenu(mc)) return;
+		AbstractContainerMenu m = mc.player.containerMenu;
+		if (!cleanStarted) {
+			cleanStarted = true;
+			MenuOps.returnCarried(mc, m, -1);
+			clearGrid(mc, m);
+			syncLastState = m.getStateId();
+			syncQuietTicks = 0;
+			syncWaitTicks = 0;
+			return;
+		}
+		syncWaitTicks++;
+		SyncProgress sp = advanceSync(syncLastState, m.getStateId(), m.getCarried().isEmpty(), syncQuietTicks);
+		syncLastState = sp.lastStateId();
+		syncQuietTicks = sp.quietTicks();
+		if (!sp.settled() && syncWaitTicks < CELL_SYNC_MAX_TICKS) return;
+		if (!m.getCarried().isEmpty() || hasGridItems(m)) {
+			if (syncWaitTicks < CELL_SYNC_MAX_TICKS) {
+				MenuOps.returnCarried(mc, m, -1);
+				clearGrid(mc, m);
+				syncLastState = m.getStateId();
+				syncQuietTicks = 0;
+				return;
+			}
+			fail(ErrorCode.INTERRUPTED, "crafting grid is not empty and could not be cleared",
+				"drop or store some items, then craft again");
+			return;
+		}
+		if (startTargetCount < 0) startTargetCount = Inv.count(mc.player, item(target));
+		phase = Phase.FILL;
+	}
+
+	private void enterSyncCell(AbstractContainerMenu m, int targetSlot) {
+		syncTarget = targetSlot;
+		syncLastState = m.getStateId();
+		syncQuietTicks = 0;
+		syncWaitTicks = 0;
+		phase = Phase.SYNC_CELL;
 	}
 
 	/** 這一批綁定的容器畫面若在中途被關掉或換掉(不管是不是 needsTable 的 2×2 配方)，立刻中止，絕不把槽位點進玩家盔甲欄(P3-H7)。 */
@@ -331,15 +442,78 @@ public final class CraftTask extends Task {
 			return;
 		}
 		AbstractContainerMenu m = mc.player.containerMenu;
-		int[] c = cells.get(cellIdx);
-		Recipes.Ingredient ing = step().recipe().grid().get(c[1]);
-		int placed = MenuOps.placeInto(mc, m, c[0], s -> ing.options().contains(BuiltInRegistries.ITEM.getKey(s.getItem()).toString()), batch);
-		if (placed < batch) {
-			for (int g : gridSlots(m)) if (m.getSlot(g).hasItem()) MenuOps.quickMove(mc, m, g);
-			fail(ErrorCode.MISSING_MATERIALS, "not enough " + ing.label().replace("minecraft:", "") + ": short by " + (batch - placed));
+		if (!m.getCarried().isEmpty()) {
+			// 上一格點擊觸發的伺服器回補快照尚未收斂，先等游標清空再填，不要誤判背包缺料
+			enterSyncCell(m, -1);
 			return;
 		}
-		cellIdx++;
+		int[] c = cells.get(cellIdx);
+		Recipes.Ingredient ing = step().recipe().grid().get(c[1]);
+		int existing = m.getSlot(c[0]).getItem().getCount();
+		int need = cellShortfall(existing, batch);
+		if (need == 0) {
+			cellIdx++;
+			cellRetries = 0;
+			if (cellIdx >= cells.size()) {
+				phase = Phase.TAKE;
+				waitTicks = 0;
+			}
+			return;
+		}
+		int placed = MenuOps.placeInto(mc, m, c[0], s -> ing.options().contains(BuiltInRegistries.ITEM.getKey(s.getItem()).toString()), need);
+		if (placed < need) {
+			MenuOps.returnCarried(mc, m, -1);
+			clearGrid(mc, m);
+			fail(ErrorCode.MISSING_MATERIALS, "not enough " + ing.label().replace("minecraft:", "") + ": short by " + (need - placed));
+			return;
+		}
+		// 填完一格後等伺服器狀態對齊再填下一格：放木板等中繼配方會讓伺服器更新結果格並遞增 stateId，
+		// 緊接著發下一格點擊會撞上中途的 ContentPacket(材料還在游標上)導致誤報缺料或漏清合成格。
+		enterSyncCell(m, c[0]);
+	}
+
+	private void tickSyncCell(Minecraft mc) {
+		if (!checkTableMenu(mc)) return;
+		AbstractContainerMenu m = mc.player.containerMenu;
+		syncWaitTicks++;
+		SyncProgress sp = advanceSync(syncLastState, m.getStateId(), m.getCarried().isEmpty(), syncQuietTicks);
+		syncLastState = sp.lastStateId();
+		syncQuietTicks = sp.quietTicks();
+		if (!sp.settled()) {
+			if (syncWaitTicks < CELL_SYNC_MAX_TICKS) return;
+			if (!m.getCarried().isEmpty()) MenuOps.returnCarried(mc, m, -1);
+			if (!m.getCarried().isEmpty()) {
+				clearGrid(mc, m);
+				fail(ErrorCode.INTERRUPTED, "could not return held crafting item to inventory",
+					"drop or store one item, then craft again");
+				return;
+			}
+		}
+		if (syncTarget < 0) {
+			phase = Phase.FILL;
+			return;
+		}
+		int have = m.getSlot(syncTarget).getItem().getCount();
+		if (have >= batch) {
+			cellIdx++;
+			cellRetries = 0;
+			if (cellIdx >= cells.size()) {
+				phase = Phase.TAKE;
+				waitTicks = 0;
+			} else {
+				phase = Phase.FILL;
+			}
+			return;
+		}
+		if (cellRetries < MAX_CELL_RETRIES) {
+			cellRetries++;
+			phase = Phase.FILL;
+			return;
+		}
+		Recipes.Ingredient ing = step().recipe().grid().get(cells.get(cellIdx)[1]);
+		MenuOps.returnCarried(mc, m, -1);
+		clearGrid(mc, m);
+		fail(ErrorCode.MISSING_MATERIALS, "not enough " + ing.label().replace("minecraft:", "") + ": short by " + cellShortfall(have, batch));
 	}
 
 	@Override
@@ -366,7 +540,7 @@ public final class CraftTask extends Task {
 		batchMenu = null;
 		waitTicks = 0;
 		switch (phase) {
-			case OPEN, FILL, TAKE, CLEAR -> {
+			case OPEN, CLEAN_GRID, FILL, SYNC_CELL, TAKE, CLEAR -> {
 				// 拿出產物後才被暫停：先把這一批算完(暫停期間伺服器已經同步了)
 				if (phase == Phase.CLEAR && !settleTake(mc)) return;
 				if (craftsLeft <= 0) {
@@ -406,16 +580,9 @@ public final class CraftTask extends Task {
 		Bari.stopAll();
 		if (mc.player != null && mc.player.containerMenu != null) {
 			AbstractContainerMenu m = mc.player.containerMenu;
-			if (!m.getCarried().isEmpty()) {
-				int free = -1;
-				for (int i : MenuOps.playerSlots(m)) if (!m.getSlot(i).hasItem()) {
-					free = i;
-					break;
-				}
-				if (free >= 0) Inv.click(mc, m, free, 0, net.minecraft.world.inventory.ContainerInput.PICKUP);
-			}
+			MenuOps.returnCarried(mc, m, -1);
 			boolean craftingGrid = m instanceof CraftingMenu || m == mc.player.inventoryMenu;
-			if (status != Status.DONE && craftingGrid) for (int g : gridSlots(m)) if (m.getSlot(g).hasItem()) MenuOps.quickMove(mc, m, g);
+			if (status != Status.DONE && craftingGrid) clearGrid(mc, m);
 		}
 		if (openedContainer) MenuOps.close(mc);
 	}
