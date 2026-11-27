@@ -60,6 +60,7 @@ import java.util.UUID;
 public final class Observation {
 	/** 一般摘要的上限(S3.1)。英文 KV 比中文長，但 token 少，所以字元數放寬。 */
 	public static final int MAX_CHARS = 2400;
+	private static final int LOW_LIGHT_NOTICE_TICKS = 60;
 
 	/** 其他玩家最近的行為(S3.4)，保留 30 秒。 */
 	private record Seen(String what, long tick) {
@@ -101,6 +102,8 @@ public final class Observation {
 	private boolean nightReported;
 	/** 已經發過 danger_rising，降回 low 之前不重發(S9.1c)。 */
 	private boolean dangerReported;
+	/** 開始連續觀察到低光照的 tick。 */
+	private long darkSince = -1;
 	private boolean sleepReadyReported;
 	/** 這次觀察到天黑過(黃昏到天亮前)，跨進白天時發一次 daybreak(M17)。 */
 	private boolean sawDark;
@@ -156,34 +159,46 @@ public final class Observation {
 
 	// ---- get_self(S3.2、M1.1、A5) ----
 
-	/**
-	 * 危險程度(S9.1c)：附近會不會生怪(夜裡在戶外，或在室內/地底而且腳下光照 0)、24 格內幾隻威脅、血量、備戰程度。
-	 */
-	public CombatPolicy.Danger danger(Minecraft mc) {
-		return danger(mc, CombatPolicy.readiness(Combat.assess(mc.player)));
+	private record LocalLight(BlockPos pos, boolean outdoors, int blockLight, int skyLight, boolean dark) {
+		Kv values() {
+			return Kv.of().put("block_light", blockLight).put("sky_light", skyLight).put("sky_visible", outdoors);
+		}
 	}
 
-	private CombatPolicy.Danger danger(Minecraft mc, CombatPolicy.Readiness r) {
-		LocalPlayer p = mc.player;
-		BlockPos feet = p.blockPosition();
+	private static LocalLight localLight(Minecraft mc) {
+		BlockPos feet = mc.player.blockPosition();
 		boolean outdoors = mc.level.canSeeSky(feet.above());
+		int blockLight = mc.level.getBrightness(LightLayer.BLOCK, feet);
+		int skyLight = mc.level.getBrightness(LightLayer.SKY, feet);
 		boolean night = mc.level.dimension().equals(Level.OVERWORLD) && DayClock.phase(mc.level.getOverworldClockTime()).equals("night");
-		boolean unlit = mc.level.getBrightness(LightLayer.BLOCK, feet) == 0 && mc.level.getBrightness(LightLayer.SKY, feet) <= 7;
-		boolean dark = (outdoors && night) || (!outdoors && unlit);
+		boolean dark = blockLight == 0 && (outdoors ? night : skyLight <= 7);
+		return new LocalLight(feet, outdoors, blockLight, skyLight, dark);
+	}
+
+	public CombatPolicy.Danger danger(Minecraft mc) {
+		return danger(mc, CombatPolicy.readiness(Combat.assess(mc.player)), localLight(mc));
+	}
+
+	private CombatPolicy.Danger danger(Minecraft mc, CombatPolicy.Readiness r, LocalLight light) {
+		LocalPlayer p = mc.player;
 		Entity attacker = recentAttacker(mc, 100);
 		int hostiles = 0;
 		for (Entity e : mc.level.getEntities(p, p.getBoundingBox().inflate(24), e -> Threats.isThreat(e, p, attacker))) {
 			if (e.distanceTo(p) <= 24) hostiles++;
 		}
-		return CombatPolicy.danger(dark, outdoors, hostiles, p.getHealth(), r.gear());
+		return CombatPolicy.danger(light.dark(), light.outdoors(), hostiles, p.getHealth(), r.gear());
 	}
 
-	/** 例如 {@code danger=high reasons=dark,outdoors,gear_weak gear=weak missing=shield,armor}。 */
 	private Kv dangerKv(Minecraft mc) {
+		LocalLight light = localLight(mc);
 		CombatPolicy.Readiness r = CombatPolicy.readiness(Combat.assess(mc.player));
-		CombatPolicy.Danger d = danger(mc, r);
+		return dangerKv(danger(mc, r, light), r, light);
+	}
+
+	private static Kv dangerKv(CombatPolicy.Danger d, CombatPolicy.Readiness r, LocalLight light) {
 		return Kv.of().put("danger", d.label()).put("reasons", d.reasons().isEmpty() ? "none" : String.join(",", d.reasons()))
-			.put("gear", r.label()).put("missing", r.missing().isEmpty() ? "none" : String.join(",", r.missing()));
+			.put("gear", r.label()).put("missing", r.missing().isEmpty() ? "none" : String.join(",", r.missing()))
+			.add(light.values());
 	}
 
 	public String self(Minecraft mc) {
@@ -757,17 +772,7 @@ public final class Observation {
 			}
 		}
 
-		if (t % 20 == 0 && !p.getAbilities().invulnerable) {
-			CombatPolicy.DangerLevel level = danger(mc).level();
-			if (level == CombatPolicy.DangerLevel.HIGH && !dangerReported) {
-				dangerReported = true;
-				agent.events.add("danger_rising", Event.Level.PROMPT, dangerKv(mc)
-					+ " | hint=head to shelter" + (dimension.equals(Level.OVERWORLD) ? " or a bed" : "")
-					+ ", light the area up, or wall yourself in; make what missing lists");
-			} else if (level == CombatPolicy.DangerLevel.LOW) {
-				dangerReported = false;
-			}
-		}
+		tickDanger(mc, t, firstOrResumed || changedDimension);
 		if (t % 20 == 0) {
 			Set<Integer> now = new HashSet<>();
 			Entity attacker = recentAttacker(mc, 100);
@@ -782,6 +787,43 @@ public final class Observation {
 			reportedHostiles.retainAll(now);
 			reportedHostiles.addAll(now);
 		}
+	}
+
+	private void tickDanger(Minecraft mc, long tick, boolean resetLight) {
+		boolean invulnerable = mc.player.getAbilities().invulnerable;
+		LocalLight light = localLight(mc);
+		if (darkSince >= 0 && (resetLight || invulnerable || !light.dark())) {
+			darkSince = -1;
+			agent.events.removeType("low_light");
+		}
+		if (invulnerable) return;
+		if (light.dark() && darkSince < 0) darkSince = tick;
+		boolean lightNotice = darkSince >= 0 && tick - darkSince == LOW_LIGHT_NOTICE_TICKS;
+		if (!lightNotice && tick % 20 != 0) return;
+
+		CombatPolicy.Readiness readiness = CombatPolicy.readiness(Combat.assess(mc.player));
+		CombatPolicy.Danger danger = danger(mc, readiness, light);
+		if (danger.level() == CombatPolicy.DangerLevel.LOW) {
+			dangerReported = false;
+			return;
+		}
+
+		String type;
+		String hint;
+		if (danger.level() == CombatPolicy.DangerLevel.HIGH) {
+			if (dangerReported) return;
+			dangerReported = true;
+			type = "danger_rising";
+			hint = "respond to nearby threats first; find cover or gain distance as needed";
+		} else if (lightNotice) {
+			type = "low_light";
+			hint = "use the next lit stretch if passing through; light the area and keep a clear exit if staying";
+		} else {
+			return;
+		}
+		String details = dangerKv(danger, readiness, light).put("pos", Fmt.pos(light.pos())).toString();
+		agent.log.log(ActionLog.Source.system, type, details);
+		agent.events.add(type, Event.Level.PROMPT, details + " | hint=" + hint);
 	}
 
 	/** 原版床的使用規則以床頭的位置為準，草床和普通床也各有自己的規則。 */
@@ -811,6 +853,7 @@ public final class Observation {
 		healthLowReported = false;
 		nightReported = false;
 		dangerReported = false;
+		darkSince = -1;
 		sleepReadyReported = false;
 		sawDark = false;
 		lastFreeSlots = -1;

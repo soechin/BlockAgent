@@ -159,8 +159,9 @@ class CombatPolicyTest {
 
 	@Test
 	void dangerLevels() {
-		assertEquals(CombatPolicy.DangerLevel.HIGH, CombatPolicy.danger(true, true, 0, 20, CombatPolicy.Gear.WEAK).level());
+		assertEquals(CombatPolicy.DangerLevel.MEDIUM, CombatPolicy.danger(true, true, 0, 20, CombatPolicy.Gear.WEAK).level());
 		assertEquals(CombatPolicy.DangerLevel.MEDIUM, CombatPolicy.danger(true, true, 0, 20, CombatPolicy.Gear.STRONG).level());
+		assertEquals(CombatPolicy.DangerLevel.MEDIUM, CombatPolicy.danger(true, false, 0, 20, CombatPolicy.Gear.WEAK).level());
 		assertEquals(CombatPolicy.DangerLevel.LOW, CombatPolicy.danger(false, true, 0, 20, CombatPolicy.Gear.WEAK).level());
 		assertEquals(CombatPolicy.DangerLevel.HIGH, CombatPolicy.danger(false, true, 1, 10, CombatPolicy.Gear.STRONG).level());
 		assertEquals(CombatPolicy.DangerLevel.HIGH, CombatPolicy.danger(false, false, 3, 20, CombatPolicy.Gear.STRONG).level());

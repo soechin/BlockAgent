@@ -520,7 +520,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
   | 等級 | 傳送方式 | 事件 |
   |---|---|---|
   | 緊急 | 立刻讓 `wait_events` 返回 | `health_low`(≤ 6)、`attacked`(被生物或玩家打)、`reflex`(保命、撤退類)、`user_paused`、`user_resumed`、`user_took_over`、`session_ended` |
-  | 即時 | 2 秒內返回(讓同時發生的事一起送) | `task_done`、`task_failed`、`rule_blocked`、`dimension_changed`、`player_sleeping`、`daybreak`(觀察到天黑後跨進白天時送一次，附天氣；下雨時不死系不會自燃)、`danger_rising`(危險程度升到 `high` 時送一次，降回 `low` 前不重發；見 S9.1c)、`destination_hostile`(`goto` 的目的地在遠程怪射程或近戰怪 8 格內，附怪物種類和數量；見 S9.1b) |
+  | 即時 | 2 秒內返回(讓同時發生的事一起送) | `task_done`、`task_failed`、`rule_blocked`、`dimension_changed`、`player_sleeping`、`daybreak`(觀察到天黑後跨進白天時送一次，附天氣；下雨時不死系不會自燃)、`low_light`(持續昏暗的照明提醒)、`danger_rising`(危險程度升到 `high` 時送一次，降回 `low` 前不重發；見 S9.1c)、`destination_hostile`(`goto` 的目的地在遠程怪射程或近戰怪 8 格內，附怪物種類和數量；見 S9.1b) |
   | 合併 | 累積起來，最多每 15 秒送一則合併摘要 | `chat`、`task_progress`、`night_falling`(黃昏開始，離地表生怪約 1 分鐘；附備戰程度 `gear=`、`missing=`，見 S9.1c)、`hostile_near`(16 格內出現威脅，還沒攻擊；威脅的定義見 S9.1b，沒生氣的中立生物不算)、`damaged`(輕傷)、`inventory_full`(主背包空格從 > 0 降至 0 時送一次，再次 > 0 前不重發；提示用 `chest` 存物或 `drop` 丟棄多餘物品)、`reflex`(進食、脫困這類輕微的) |
 
   合併時同組事件合成一行(S3.0e)，例如 `[BATCH] chat(3): Ming="好餓"; Ming="有人要鐵嗎"; Amy="哈哈"`、`[BATCH] damaged(2): lost=1 hp=17; lost=2 hp=15`。
@@ -771,8 +771,8 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
   - `died` 事件附上伺服器的死亡訊息(`ClientboundPlayerCombatKillPacket`)，讓 AI 知道是被什麼打死的。[M7.3, M7.7]
 - **S9.1c** 戰前評估(2026-11-26)：模組算出危險程度和備戰程度給 AI 看，要不要收工、回家、點火把或挖洞躲起來由 AI 決定。
   - 備戰程度 `gear`：沒有傷害 ≥ 4 的武器，或護甲 < 5 又沒有盾牌是 `weak`；石劍以上 + 盾 + 護甲 ≥ 15 是 `strong`；其他是 `ok`。`missing` 依序列出 `sword`、`shield`、`armor`、`bow`、`food`。
-  - 危險程度 `danger`：`dark`(夜裡在戶外，或在室內/地底而且腳下方塊光照 0、天空光 ≤ 7)、`outdoors`、`hostiles:N`(24 格內的威脅)、`gear_weak`、`hp_low`(≤ 10)。`dark` 而且 `gear=weak`、或 3 隻以上威脅、或血量 ≤ 10 而且有威脅時是 `high`；`dark` 或有威脅是 `medium`；其他是 `low`。
-  - `get_self`(和規劃服務的 `[self]`)多一行 `danger=… reasons=… gear=… missing=…`；升到 `high` 時發 `danger_rising` 事件；`night_falling` 附上 `gear`、`missing`。創造模式不評估。
+  - 危險程度 `danger`：3 隻以上威脅、或血量 ≤ 10 而且有威脅時是 `high`；其餘有 `dark` 或有威脅是 `medium`；其他是 `low`。威脅統計範圍為 24 格。腳下方塊光照為 0，而且處於主世界戶外夜間或有遮蔽處的天空光 ≤ 7 時標記 `dark`。`gear_weak` 顯示備戰資訊。
+  - `get_self`(和規劃服務的 `[self]`)回報 `danger`、`reasons`、`gear`、`missing` 和腳下的 `block_light`、`sky_light`、`sky_visible`。`medium` 下連續昏暗 60 tick 時發一次 `low_light`，回到亮處後重新計時。升到 `high` 時發 `danger_rising`，依威脅判斷。兩種事件都附觸發座標與光照。`night_falling` 附上 `gear`、`missing`。創造模式不評估。
 - **S9.1a** 創造模式(2026-11-20 試玩發現：AI 站在踏台上蓋屋頂時，自衛反射把它拉下去打殭屍，屋頂就搆不到了)：玩家無敵(`abilities.invulnerable`，創造和旁觀模式)時不會受傷也不會餓，所以只有 `unstuck` 會觸發，其他反射都不評估；正在執行的其他反射也會立刻結束(「已經是創造模式，不需要」)。反射狀態的摘要會註明這件事。[M7.1–M7.5, M2.4]
 - **S9.2** 優先順序：保命 > 撤退 > 自衛 > 進食 > 脫困。同一時間只執行一個反射，高優先的可以打斷低優先的。[M7.1–M7.5]
   - 岩漿排在著火前面：碰到岩漿一定也著火，著火反射只會原地找水，留在岩漿裡會燒死。

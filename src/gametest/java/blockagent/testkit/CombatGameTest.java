@@ -47,8 +47,8 @@ public class CombatGameTest implements FabricClientGameTest {
 			k.cmd("gamerule mob_griefing false");
 			k.start();
 			// 情境名稱給 -PtestCase= 用，例如 -PtestCase=route,group_geared 只跑這兩個
-			if (TestKit.runCase("danger")) dangerWhenUnarmedAtNight(k);
-			else k.cmd("time set 18000");
+			if (TestKit.runCase("danger")) darknessIsAdvisory(k, c);
+			k.cmd("time set 18000");
 			if (TestKit.runCase("unarmed_skeleton")) unarmedDoesNotChargeSkeleton(k, c);
 			if (TestKit.runCase("unarmed_two_zombies")) unarmedDisengagesFromTwoZombies(k, c);
 			if (TestKit.runCase("unarmed_one_zombie")) unarmedBeatsOneZombie(k, c);
@@ -94,22 +94,62 @@ public class CombatGameTest implements FabricClientGameTest {
 
 	// ---- 情境 ----
 
-	/** S9.1c：夜裡在戶外、空手沒甲：danger=high、gear=weak。 */
-	private void dangerWhenUnarmedAtNight(TestKit k) {
+	/** S9.1c：短暫進出暗處、持續昏暗、補光，以及黑暗中遇到威脅的事件。 */
+	private void darknessIsAdvisory(TestKit k, BlockPos c) {
 		k.clearInventory();
-		// 先在白天待一下(danger=low，重設 danger_rising)，再入夜：夜裡不死系才不會自燃；不會自然生怪(TestKit 關掉了)
-		k.ctx.waitTicks(30);
+		BlockPos dark = c.east(12);
+		String bounds = TestKit.pos(dark.offset(-1, 0, -1)) + " " + TestKit.pos(dark.offset(1, 2, 1));
+		k.cmd("fill " + bounds + " minecraft:stone");
+		k.cmd("fill " + TestKit.pos(dark) + " " + TestKit.pos(dark.above()) + " minecraft:air");
+		k.ctx.waitTicks(20);
 		k.agent().events.drainAll();
+
+		k.cmd("tp @p " + TestKit.pos(dark));
+		k.ctx.waitTicks(25);
+		String brief = k.ai.call(k.ctx, "get_self").text();
+		check(brief.contains("danger=medium reasons=dark,gear_weak")
+			&& brief.contains("block_light=0 sky_light=0 sky_visible=false"), "白天的暗處應是中度風險：" + brief);
+		check(!brief.contains("low_light:") && !brief.contains("danger_rising:"), "短暫昏暗不應發出告警：" + brief);
+
+		k.cmd("tp @p " + TestKit.pos(c));
+		k.ctx.waitTicks(10);
+		k.cmd("tp @p " + TestKit.pos(dark));
+		k.ctx.waitTicks(40);
+		String early = k.ai.call(k.ctx, "get_self").text();
+		check(!early.contains("low_light:"), "回到亮處後應重新計算昏暗時間：" + early);
+		k.ctx.waitTicks(25);
+		String sustained = k.ai.call(k.ctx, "get_self").text();
+		check(sustained.lines().anyMatch(line -> line.contains("low_light: danger=medium")
+				&& line.contains("pos=" + TestKit.pos(dark).replace(' ', ','))
+				&& line.contains("block_light=0 sky_light=0 sky_visible=false"))
+			&& !sustained.contains("danger_rising:"),
+			"持續昏暗應送出附光照與座標的提醒：" + sustained);
+		k.ctx.waitTicks(25);
+		String repeated = k.ai.call(k.ctx, "get_self").text();
+		check(!repeated.contains("low_light:"), "同一段昏暗只提醒一次：" + repeated);
+		k.setBlock(dark, Blocks.TORCH.defaultBlockState());
+		k.ctx.waitTicks(15);
+		String lit = k.ai.call(k.ctx, "get_self").text();
+		check(lit.contains("danger=low"), "補光後應回到低度風險：" + lit);
+
+		k.cmd("tp @p " + TestKit.pos(c));
+		k.cmd("fill " + bounds + " minecraft:air");
 		k.cmd("time set 18000");
-		k.ctx.waitTicks(30);
-		var self = k.ai.call(k.ctx, "get_self");
-		check(self.ok(), "get_self 失敗：" + self.text());
-		check(self.text().contains("danger=high") && self.text().contains("gear=weak") && self.text().contains("dark"),
-			"夜裡空手在戶外應該是 danger=high gear=weak：" + self.text());
-		// 待送的事件會跟著工具回應一起送出(S3.0e)：可能已經附在 get_self 的回應裡
-		String ev = self.text().contains("danger_rising") ? self.text() : k.eventsUntil("danger_rising", 4);
-		check(ev.contains("danger_rising"), "應該收到 danger_rising：" + self.text() + "\n" + ev);
-		System.out.println("[ok] S9.1c 夜裡空手：danger=high、gear=weak、發出 danger_rising");
+		k.setBlock(c.east(), Blocks.TORCH.defaultBlockState());
+		k.ctx.waitTicks(15);
+		String outdoorLit = k.ai.call(k.ctx, "get_self").text();
+		check(outdoorLit.contains("danger=low reasons=outdoors,gear_weak"), "夜間露天的火把應照亮腳下：" + outdoorLit);
+
+		k.setBlock(c.east(), Blocks.AIR.defaultBlockState());
+		for (int z = 0; z < 3; z++) {
+			k.cmd("execute at @p run summon minecraft:zombie ~20 ~ ~" + z + " {NoAI:1b,PersistenceRequired:1b}");
+		}
+		k.ctx.waitTicks(22);
+		String high = k.ai.call(k.ctx, "get_self").text();
+		check(high.contains("danger_rising: danger=high") && high.contains("hostiles:3")
+			&& !high.contains("low_light:"), "遇到怪群應直接告警：" + high);
+		k.cmd("kill @e[type=minecraft:zombie]");
+		System.out.println("[ok] S9.1c 短暫昏暗、持續提醒、補光與怪群告警");
 	}
 
 	/** R7：空手沒盾遇到骷髏，不衝過去(不出現 charge、也沒有出手)，改成躲或拉開距離。 */

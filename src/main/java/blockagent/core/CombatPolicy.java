@@ -229,7 +229,7 @@ public final class CombatPolicy {
 	/**
 	 * 危險程度(給 AI 看，讓牠決定要不要收工)。
 	 *
-	 * @param dark     附近會生怪：夜裡在戶外，或在室內/地底而且腳下光照 0
+	 * @param dark     目前位置缺少照明
 	 * @param outdoors 頭上看得到天空
 	 * @param hostiles 24 格內的威脅數量
 	 */
@@ -241,7 +241,7 @@ public final class CombatPolicy {
 		if (gear == Gear.WEAK) reasons.add("gear_weak");
 		if (hp <= RECOVERED_HP) reasons.add("hp_low");
 		DangerLevel level;
-		if ((dark && gear == Gear.WEAK) || hostiles >= 3 || (hp <= RECOVERED_HP && hostiles >= 1)) level = DangerLevel.HIGH;
+		if (hostiles >= 3 || (hp <= RECOVERED_HP && hostiles >= 1)) level = DangerLevel.HIGH;
 		else if (dark || hostiles >= 1) level = DangerLevel.MEDIUM;
 		else level = DangerLevel.LOW;
 		return new Danger(level, List.copyOf(reasons));
