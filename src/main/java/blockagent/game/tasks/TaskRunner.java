@@ -22,6 +22,9 @@ public final class TaskRunner {
 	private volatile Task current;
 	// Give waiters a stable identity until the completion event has been queued.
 	private volatile Task pendingResult;
+	/** client thread 更新的進度快照，供 MCP 執行緒在 WAIT task_running 讀取。 */
+	private volatile String progressSnapshot = "";
+	private int snapshotProgressCount = -1;
 
 	public TaskRunner(Agent agent) {
 		this.agent = agent;
@@ -37,6 +40,10 @@ public final class TaskRunner {
 
 	public Task pendingResult() {
 		return pendingResult;
+	}
+
+	public String progressSnapshot() {
+		return progressSnapshot;
 	}
 
 	public String describeCurrent() {
@@ -91,7 +98,9 @@ public final class TaskRunner {
 		} catch (RuntimeException e) {
 			t.fail(ErrorCode.INTERNAL, "error while starting: " + e);
 		}
-		agent.log.log(ActionLog.Source.ai, "task_start", t.name() + " " + t.progress());
+		progressSnapshot = t.progress();
+		snapshotProgressCount = t.progressCount();
+		agent.log.log(ActionLog.Source.ai, "task_start", t.name() + " " + progressSnapshot);
 		agent.idle.touch();
 		JsonObject data = new JsonObject();
 		data.addProperty("task", t.name());
@@ -123,8 +132,14 @@ public final class TaskRunner {
 		}
 		if (!t.running()) {
 			finish(mc, true);
-		} else if (t.elapsed() > 0 && t.elapsed() % PROGRESS_INTERVAL_TICKS == 0) {
-			agent.events.add(EventQueue.TASK_PROGRESS, Event.Level.BATCH, Kv.of().put("task", t.name()).raw(t.progress()).toString());
+		} else {
+			if (t.progressCount() != snapshotProgressCount || t.elapsed() % 20 == 0) {
+				progressSnapshot = t.progress();
+				snapshotProgressCount = t.progressCount();
+			}
+			if (t.elapsed() > 0 && t.elapsed() % PROGRESS_INTERVAL_TICKS == 0) {
+				agent.events.add(EventQueue.TASK_PROGRESS, Event.Level.BATCH, Kv.of().put("task", t.name()).raw(progressSnapshot).toString());
+			}
 		}
 	}
 
@@ -139,6 +154,8 @@ public final class TaskRunner {
 	private void finishCurrent(Minecraft mc, boolean notify) {
 		Task t = current;
 		current = null;
+		progressSnapshot = "";
+		snapshotProgressCount = -1;
 		try {
 			t.onStop(mc);
 		} catch (RuntimeException ignored) {

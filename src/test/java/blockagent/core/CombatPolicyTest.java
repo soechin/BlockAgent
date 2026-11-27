@@ -201,4 +201,20 @@ class CombatPolicyTest {
 		assertFalse(CombatPolicy.canSafelyStopToShield(10, 0, java.util.List.of(
 			new double[]{10, 0}, new double[]{-10, 0})));
 	}
+
+	@Test
+	void unstuckAllowsSlowBreakingBeforeInterrupting() {
+		// 沒在破塊時 200 tick(10 秒)觸發
+		assertNull(CombatPolicy.unstuckTriggerReason(199, 200, 0.1, false));
+		assertEquals("stuck_10s", CombatPolicy.unstuckTriggerReason(200, 200, 0.1, false));
+		assertNull(CombatPolicy.unstuckTriggerReason(200, 200, 0.6, false));
+		// 正在破塊(例如水中浮空徒手砍橡木需約 300 tick)不應在第 10 秒打斷，滿 400 tick(20 秒)才介入
+		assertNull(CombatPolicy.unstuckTriggerReason(200, 200, 0.1, true));
+		assertNull(CombatPolicy.unstuckTriggerReason(350, 200, 0.1, true));
+		assertEquals("stuck_breaking_20s", CombatPolicy.unstuckTriggerReason(400, 200, 0.1, true));
+		// 脫困後退視窗：從開始後退起算滿 UNSTUCK_ESCAPE_TICKS(60 tick)才判逾時
+		assertFalse(CombatPolicy.unstuckEscapeTimedOut(70, -1));
+		assertFalse(CombatPolicy.unstuckEscapeTimedOut(110, 50));
+		assertTrue(CombatPolicy.unstuckEscapeTimedOut(111, 50));
+	}
 }

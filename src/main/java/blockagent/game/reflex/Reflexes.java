@@ -17,6 +17,7 @@ import blockagent.game.combat.Threats;
 import blockagent.game.tasks.BreakTask;
 import blockagent.game.tasks.GotoTask;
 import blockagent.game.tasks.Moves;
+import blockagent.game.tasks.ShoreExit;
 import blockagent.game.tasks.Task;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -109,11 +110,15 @@ public final class Reflexes {
 	/** fall：放水前身上的水桶數；落地的 tick(還沒落地是 -1)。 */
 	private int bucketsBefore;
 	private int landedAt;
-	private int unstuckAttempts;
+	/** MCP 執行緒會在 WAIT task_running 讀取目前任務累計的脫困次數(volatile)。 */
+	private volatile int unstuckAttempts;
 	private int unstuckProgressCount;
 	/** unstuck：開始挖時鎖定的起點與目標格，避免中途被擠偏方向，且挖通後遠離起點 >= 3 格(大於 movedSinceUnstuck 的 2 格門檻)。 */
 	private BlockPos unstuckStart;
 	private BlockPos unstuckFront;
+	private int unstuckRunAwayAt = -1;
+	private Vec3 unstuckOriginPos;
+	private final ShoreExit unstuckShore = new ShoreExit();
 	/** eat：實際在吃的食物和開始時的數量(C5)。 */
 	private net.minecraft.world.item.Item eatingFood;
 	private int eatStartCount;
@@ -188,6 +193,11 @@ public final class Reflexes {
 
 	public Kind active() {
 		return active;
+	}
+
+	/** 目前任務無進展期間已觸發的脫困次數(MCP 執行緒可讀)。 */
+	public int unstuckAttempts() {
+		return unstuckAttempts;
 	}
 
 	// ---- tick ----
@@ -325,10 +335,11 @@ public final class Reflexes {
 			}
 			case UNSTUCK -> {
 				Task t = agent.tasks.current();
-				// 站著不動但任務有進展(例如站在原地一直放方塊)不算卡住
-				if (t != null && t.moves() && !p.isPassenger() && t.ticksSinceProgress() >= 200 && history.size() >= 200
-					&& history.peekFirst().distanceTo(p.position()) < 0.5) {
-					return "stuck_10s";
+				// 站著不動但任務有進展(例如站在原地一直放方塊)不算卡住；正在破塊時門檻放寬至 20 秒避免打斷水中慢速挖掘
+				if (t != null && t.moves() && !p.isPassenger() && !history.isEmpty()) {
+					boolean destroying = mc.gameMode != null && mc.gameMode.isDestroying();
+					return CombatPolicy.unstuckTriggerReason(t.ticksSinceProgress(), history.size(),
+						history.peekFirst().distanceTo(p.position()), destroying);
 				}
 			}
 		}
@@ -381,8 +392,11 @@ public final class Reflexes {
 		activeTicks = 0;
 		bucketPlaced = false;
 		landedAt = -1;
+		unstuckShore.stop(mc);
 		unstuckStart = null;
 		unstuckFront = null;
+		unstuckRunAwayAt = -1;
+		unstuckOriginPos = mc.player == null ? null : mc.player.position();
 		bucketsBefore = Inv.count(mc.player, Items.WATER_BUCKET);
 		retreatPlannedAt = 0;
 		retreatPhase = RetreatPhase.RUN;
@@ -548,19 +562,13 @@ public final class Reflexes {
 				boolean ate = eatingFood == null || Inv.count(p, eatingFood) < eatStartCount;
 				yield ate || (!p.isUsingItem() && activeTicks > 5) || activeTicks > 60;
 			}
-			case UNSTUCK -> activeTicks > 30 && movedSinceUnstuck();
+			case UNSTUCK -> !unstuckShore.active() && activeTicks > 20 && movedSinceUnstuck();
 		};
 	}
 
 	private boolean movedSinceUnstuck() {
-		return history.size() < 2 || history.peekLast().distanceTo(positionAgo(Math.min(activeTicks, 60))) > 2;
-	}
-
-	private Vec3 positionAgo(int ticks) {
-		int idx = Math.max(0, history.size() - 1 - ticks);
-		int i = 0;
-		for (Vec3 v : history) if (i++ == idx) return v;
-		return history.peekFirst();
+		if (unstuckOriginPos == null || history.isEmpty()) return false;
+		return history.peekLast().distanceTo(unstuckOriginPos) > 2;
 	}
 
 	private void act(Minecraft mc) {
@@ -607,54 +615,81 @@ public final class Reflexes {
 				}
 				combat.tick(mc);
 			}
-			case UNSTUCK -> {
-				// 0–9 tick 跳；第 10 tick 開始挖擋在頭前的可破壞天然固體方塊(鎖定起點與目標格並換最快的工具)，
-				// 挖通後遠離起點至少 3 格(> movedSinceUnstuck 的 2 格門檻)，不然往後退；
-				// 挖到第 50 tick 還沒開就放棄並遠離起點。第 70 tick 還沒移動就算這次失敗(H12、P3-M1)
-				if (activeTicks < 10) {
-					mc.options.keyJump.setDown(true);
-				} else if (activeTicks == 10) {
-					mc.options.keyJump.setDown(false);
-					unstuckStart = p.blockPosition().immutable();
-					BlockPos front = unstuckStart.relative(p.getDirection()).above();
-					BlockState st = mc.level.getBlockState(front);
-					boolean diggable = !st.isAir() && st.getFluidState().isEmpty() && st.getDestroySpeed(mc.level, front) >= 0
-						&& agent.guard.isNatural(st) && agent.guard.canBreak(mc.level, front).allowed();
-					// 只挖天然方塊：自己放的方塊(例如剛蓋的牆)也可以挖，但脫困時不該拆掉
-					if (diggable) {
-						BreakTask.equipBestTool(mc, st);
-						mc.gameMode.startDestroyBlock(front, Moves.faceToward(p, front));
-						unstuckFront = front;
-					} else {
-						path(new GoalRunAway(3, unstuckStart));
-					}
-				} else if (activeTicks < 50) {
-					if (unstuckFront != null) {
-						BlockState st = mc.level.getBlockState(unstuckFront);
-						boolean diggable = !st.isAir() && st.getFluidState().isEmpty() && st.getDestroySpeed(mc.level, unstuckFront) >= 0
-							&& agent.guard.isNatural(st) && agent.guard.canBreak(mc.level, unstuckFront).allowed();
-						if (diggable) {
-							mc.gameMode.continueDestroyBlock(unstuckFront, Moves.faceToward(p, unstuckFront));
-						} else {
-							// 已經挖通：停下挖掘並走離起點至少 3 格，讓 movedSinceUnstuck(> 2) 看得到成功脫困
-							mc.gameMode.stopDestroyBlock();
-							unstuckFront = null;
-							path(new GoalRunAway(3, unstuckStart != null ? unstuckStart : p.blockPosition()));
-						}
-					}
-				} else if (activeTicks == 50) {
-					if (unstuckFront != null) {
-						mc.gameMode.stopDestroyBlock();
-						unstuckFront = null;
-						path(new GoalRunAway(3, unstuckStart != null ? unstuckStart : p.blockPosition()));
-					}
-				} else if (activeTicks > 70) {
-					end(mc, "still_stuck");
-				}
-			}
+			case UNSTUCK -> actUnstuck(mc);
 			default -> {
 			}
 		}
+	}
+
+	/**
+	 * 脫困步驟：
+	 * - 水中不跳躍浮空，優先走淺水上岸(不受樹冠遮蔽限制)，找不到岸才改 GoalRunAway。
+	 * - 陸地 0–9 tick 跳；第 10 tick 起挖頭前可破壞天然方塊(最多 UNSTUCK_DIG_LIMIT_TICKS)，
+	 *   挖通或超時後再給足 UNSTUCK_ESCAPE_TICKS(3 秒)走離起點(H12、P3-M1)。
+	 */
+	private void actUnstuck(Minecraft mc) {
+		LocalPlayer p = mc.player;
+		if (unstuckShore.active()) {
+			switch (unstuckShore.tick(mc, agent.tick(), agent.control.userLooking(), null)) {
+				case ARRIVED -> end(mc, "done");
+				case FAILED -> startUnstuckRunAway(p);
+				case WALKING -> {
+				}
+			}
+			return;
+		}
+		if (unstuckRunAwayAt >= 0) {
+			if (CombatPolicy.unstuckEscapeTimedOut(activeTicks, unstuckRunAwayAt)) end(mc, "still_stuck");
+			return;
+		}
+		if (activeTicks == 1 && p.isInWater()) {
+			unstuckStart = p.blockPosition().immutable();
+			if (!unstuckShore.start(mc, agent.tick() + 100, null, false)) startUnstuckRunAway(p);
+			return;
+		}
+		int digDeadline = 10 + CombatPolicy.UNSTUCK_DIG_LIMIT_TICKS;
+		if (activeTicks < 10) {
+			mc.options.keyJump.setDown(true);
+		} else if (activeTicks == 10) {
+			mc.options.keyJump.setDown(false);
+			unstuckStart = p.blockPosition().immutable();
+			BlockPos front = unstuckStart.relative(p.getDirection()).above();
+			BlockState st = mc.level.getBlockState(front);
+			boolean diggable = !st.isAir() && st.getFluidState().isEmpty() && st.getDestroySpeed(mc.level, front) >= 0
+				&& agent.guard.isNatural(st) && agent.guard.canBreak(mc.level, front).allowed();
+			// 只挖天然方塊：自己放的方塊(例如剛蓋的牆)也可以挖，但脫困時不該拆掉
+			if (diggable) {
+				BreakTask.equipBestTool(mc, st);
+				mc.gameMode.startDestroyBlock(front, Moves.faceToward(p, front));
+				unstuckFront = front;
+			} else {
+				startUnstuckRunAway(p);
+			}
+		} else if (activeTicks < digDeadline) {
+			if (unstuckFront != null) {
+				BlockState st = mc.level.getBlockState(unstuckFront);
+				boolean diggable = !st.isAir() && st.getFluidState().isEmpty() && st.getDestroySpeed(mc.level, unstuckFront) >= 0
+					&& agent.guard.isNatural(st) && agent.guard.canBreak(mc.level, unstuckFront).allowed();
+				if (diggable) {
+					mc.gameMode.continueDestroyBlock(unstuckFront, Moves.faceToward(p, unstuckFront));
+				} else {
+					mc.gameMode.stopDestroyBlock();
+					unstuckFront = null;
+					startUnstuckRunAway(p);
+				}
+			}
+		} else {
+			if (unstuckFront != null) {
+				mc.gameMode.stopDestroyBlock();
+				unstuckFront = null;
+			}
+			startUnstuckRunAway(p);
+		}
+	}
+
+	private void startUnstuckRunAway(LocalPlayer p) {
+		unstuckRunAwayAt = activeTicks;
+		path(new GoalRunAway(3, unstuckStart != null ? unstuckStart : p.blockPosition()));
 	}
 
 	/**
@@ -757,8 +792,11 @@ public final class Reflexes {
 		}
 		if (k == Kind.RETREAT && mc.player != null && mc.gameMode != null) ShieldGuard.lower(mc);
 		if (k == Kind.UNSTUCK && mc.gameMode != null) mc.gameMode.stopDestroyBlock();
+		unstuckShore.stop(mc);
 		unstuckStart = null;
 		unstuckFront = null;
+		unstuckRunAwayAt = -1;
+		unstuckOriginPos = null;
 		if (k == Kind.SELF_DEFENSE && combat != null && combat.target() != null && combat.target().isAlive()) {
 			defenseCooldown.put(combat.target().getId(), agent.tick(), DEFENSE_COOLDOWN_TICKS, how.startsWith("preempted_by_"));
 			// 打不贏而拉開距離：一起追來的也冷卻，不然換另一隻馬上又觸發(遊戲測試：2 隻殭屍輪流觸發)。
@@ -868,8 +906,11 @@ public final class Reflexes {
 			agent.log.log(ActionLog.Source.reflex, active.id() + "_stopped", "暫停");
 			active = null;
 		}
+		unstuckShore.stop(mc);
 		unstuckStart = null;
 		unstuckFront = null;
+		unstuckRunAwayAt = -1;
+		unstuckOriginPos = null;
 		suspendedTask = false;
 		if (combat != null) combat.release(mc, "paused");
 		combat = null;

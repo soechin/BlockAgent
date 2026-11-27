@@ -290,21 +290,46 @@ final class Blueprints {
 	/** 用藍圖記下的參數加上這次給的參數，重新量地形、重算構件(S4.8b)。 */
 	private static Regenerated regenerated(Agent agent, Minecraft mc, Saved old, Args args) {
 		if (old.source() == null) throw new Args.BadArgument("blueprint " + old.id() + " was not made by build_house; modify it with build_blueprint action=update");
-		JsonObject merged = old.source().deepCopy();
-		// 舊版存檔把預設的地板、屋頂(= 牆的材質)也存了：只換 material 時跟著換(M12)
-		if (args.has("material") && merged.has("material")) {
-			for (String key : new String[]{"floor", "roof"}) {
-				if (!args.has(key) && merged.has(key) && merged.get(key).equals(merged.get("material"))) merged.remove(key);
+		JsonObject merged = mergeHouseSource(old.source(), args);
+		var house = Houses.generate(agent, mc, new Args(merged));
+		String name = args.has("name") ? name(args, old.name()) : old.name();
+		return new Regenerated(new Saved(old.id(), name, old.dimension(), Fmt.pos(house.origin()), house.parts(),
+			house.source(), carriedPrevious(old)), house.note());
+	}
+
+	/** 合併舊屋藍圖參數與本次修改參數，並將舊版地板層 y 存檔平滑轉成站立高度語意。 */
+	static JsonObject mergeHouseSource(JsonObject oldSource, Args args) {
+		JsonObject merged = oldSource.deepCopy();
+		boolean legacy = !merged.has("y_mode") || !Houses.Y_MODE_STANDING.equals(merged.get("y_mode").getAsString());
+		if (legacy) {
+			if (!args.has("from")) shiftLegacyCornerY(merged, "from", "corner1");
+			if (!args.has("to")) shiftLegacyCornerY(merged, "to", "corner2");
+			// 舊版省略 floor 時預設等同 material；若未另傳 floor，換 material 時地板一起跟著換
+			boolean floorWasDefault = !merged.has("floor")
+				|| (merged.has("material") && merged.get("floor").equals(merged.get("material")));
+			if (!args.has("floor") && floorWasDefault) {
+				if (args.has("material")) merged.add("floor", args.json().get("material"));
+				else if (merged.has("material")) merged.add("floor", merged.get("material"));
 			}
+			merged.addProperty("y_mode", Houses.Y_MODE_STANDING);
+		}
+		// 舊版存檔把預設屋頂(= 牆的材質)也存了：只換 material 時屋頂跟著換(M12)
+		if (args.has("material") && merged.has("material") && !args.has("roof")
+			&& merged.has("roof") && merged.get("roof").equals(merged.get("material"))) {
+			merged.remove("roof");
 		}
 		for (var entry : args.json().entrySet()) {
 			if (Set.of("id", "replace", "wait_sec", "dry_run", "offset").contains(entry.getKey())) continue;
 			merged.add(entry.getKey(), entry.getValue());
 		}
-		var house = Houses.generate(agent, mc, new Args(merged));
-		String name = args.has("name") ? name(args, old.name()) : old.name();
-		return new Regenerated(new Saved(old.id(), name, old.dimension(), Fmt.pos(house.origin()), house.parts(),
-			house.source(), carriedPrevious(old)), house.note());
+		return merged;
+	}
+
+	private static void shiftLegacyCornerY(JsonObject source, String primary, String fallback) {
+		String key = source.has(primary) ? primary : source.has(fallback) ? fallback : null;
+		if (key == null) return;
+		BlockPos p = Tools.corner(new Args(source), key);
+		source.addProperty(key, p.getX() + "," + (p.getY() + 1) + "," + p.getZ());
 	}
 
 	private static ToolResult note(ToolResult result, String note) {

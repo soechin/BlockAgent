@@ -3,7 +3,6 @@ package blockagent.game;
 import blockagent.Config;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.core.BlockPos;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -16,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** 規劃結果送回遊戲、plan 工具和事件上的步驟提醒(docs/SPEC.md S5.6、S11.7)。 */
 class PlanFlowTest {
-	private static final Agent.PlanLocation HERE = new Agent.PlanLocation(1, "minecraft:overworld", new BlockPos(1, 64, 2));
+	private static final Agent.PlanLocation HERE = new Agent.PlanLocation(1, "minecraft:overworld");
 	@TempDir
 	Path tmp;
 
@@ -123,17 +122,21 @@ class PlanFlowTest {
 		assertEquals("蓋屋", a.plan.current());
 
 		incoming.add("basis", HERE.basis(2));
-		assertNull(a.acceptPlan(incoming, new Agent.PlanLocation(1, "minecraft:the_nether", HERE.position())));
+		assertNull(a.acceptPlan(incoming, new Agent.PlanLocation(1, "minecraft:the_nether")));
 		assertTrue(a.unreadSummary("get_self").contains("reason=dimension_changed"));
-		assertNull(a.acceptPlan(incoming, new Agent.PlanLocation(1, HERE.dimension(), HERE.position().offset(9, 0, 0))));
-		assertTrue(a.unreadSummary("get_self").contains("reason=moved_from_snapshot"));
-		assertEquals("snapshot belongs to another world", a.acceptPlan(incoming, new Agent.PlanLocation(2, HERE.dimension(), HERE.position())));
+		assertEquals("snapshot belongs to another world", a.acceptPlan(incoming, new Agent.PlanLocation(2, HERE.dimension())));
 		assertEquals("蓋屋", a.plan.current());
 
 		incoming.remove("basis");
 		assertNull(a.acceptPlan(incoming, HERE));
 		assertTrue(a.unreadSummary("get_self").contains("reason=snapshot_unavailable"));
 		assertEquals("蓋屋", a.plan.current());
+
+		// 同世界、同維度且計畫版本未變時直接套用為新計畫(不因玩家移動而作廢)
+		incoming.add("basis", HERE.basis(2));
+		assertNull(a.acceptPlan(incoming, HERE));
+		assertTrue(a.unreadSummary("get_self").contains("plan_ready:"));
+		assertEquals("去找煤", a.plan.goal());
 	}
 
 	@Test

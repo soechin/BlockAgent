@@ -286,6 +286,27 @@ public final class CombatPolicy {
 		return hasClearShot && hasBow;
 	}
 
+	/** 脫困觸發門檻：沒在挖方塊時 10 秒(200 tick)；正在破塊(例如水中浮空徒手砍樹需 15 秒)放寬至 20 秒(400 tick)，避免挖到一半被打斷歸零。 */
+	public static final int UNSTUCK_STILL_TICKS = 200;
+	public static final int UNSTUCK_BREAKING_TICKS = 400;
+	/** 陸地脫困挖頭前方塊的上限(70 tick = 3.5 秒，足以徒手砍斷原木)。 */
+	public static final int UNSTUCK_DIG_LIMIT_TICKS = 70;
+	/** 脫困開始後退/跑離起點後，給尋路的移動時間窗(60 tick = 3 秒)。 */
+	public static final int UNSTUCK_ESCAPE_TICKS = 60;
+
+	/** 是否應觸發脫困反射；未達門檻回傳 null，否則回傳原因字串。 */
+	public static String unstuckTriggerReason(long ticksSinceProgress, int historySize, double movedDistance, boolean destroying) {
+		if (historySize < UNSTUCK_STILL_TICKS || movedDistance >= 0.5) return null;
+		int threshold = destroying ? UNSTUCK_BREAKING_TICKS : UNSTUCK_STILL_TICKS;
+		if (ticksSinceProgress < threshold) return null;
+		return destroying ? "stuck_breaking_20s" : "stuck_10s";
+	}
+
+	/** 脫困後退階段是否已逾時仍未脫離起點。 */
+	public static boolean unstuckEscapeTimedOut(int activeTicks, int runAwayAt) {
+		return runAwayAt >= 0 && activeTicks - runAwayAt > UNSTUCK_ESCAPE_TICKS;
+	}
+
 	/**
 	 * 脫困反射結束時，是否應算作在任務無進展下累計達 3 次而中斷原任務。
 	 * 即使當次脫困後退成功，只要任務本身仍未推進、反覆卡住達 3 次就必須中斷，避免「卡住 10 秒 → 後退 3 格 → 又卡回原點」死循環。

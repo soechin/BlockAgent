@@ -8,7 +8,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** 不依賴 Minecraft 的核心邏輯(docs/SPEC.md S5、S6、S7、S8.1、S8.6)。 */
+/** 不依賴 Minecraft 的核心邏輯(docs/SPEC.md S5、S6、S7、S8.1)。 */
 class CoreLogicTest {
 	static final class FakeClock implements Clock {
 		final AtomicLong now = new AtomicLong(1_000_000);
@@ -23,12 +23,11 @@ class CoreLogicTest {
 		}
 	}
 
-	// ---- Session(S8.1、S8.6) ----
+	// ---- Session(S8.1) ----
 
 	@Test
 	void sessionLifecycle() {
-		FakeClock c = new FakeClock();
-		Session s = new Session(c, 10 * 60_000);
+		Session s = new Session();
 		assertEquals(Session.State.NO_WORLD, s.state());
 		s.enterWorld();
 		assertEquals(Session.State.READY, s.state());
@@ -45,45 +44,6 @@ class CoreLogicTest {
 		s.enterWorld();
 		assertEquals(Session.State.READY, s.state());
 		assertNull(s.endReason());
-	}
-
-	@Test
-	void timeLimitCountsPausedTime() {
-		FakeClock c = new FakeClock();
-		Session s = new Session(c, 10 * 60_000);
-		s.enterWorld();
-		s.toggle("start");
-		c.advance(4 * 60_000);
-		s.toggle("pause");
-		c.advance(60_000);
-		assertTrue(s.tick(), "剩 5 分鐘時提醒一次");
-		assertFalse(s.tick());
-		c.advance(5 * 60_000);
-		s.tick();
-		assertEquals(Session.State.ENDED, s.state());
-		assertEquals(Session.EndReason.TIME_LIMIT, s.endReason());
-	}
-
-	@Test
-	void zeroMeansNoTimeLimit() {
-		FakeClock c = new FakeClock();
-		Session s = new Session(c, 0);
-		s.enterWorld();
-		s.toggle("start");
-		c.advance(24 * 60 * 60_000L);
-		assertFalse(s.tick(), "不限時不提醒");
-		assertEquals(Session.State.RUNNING, s.state(), "不限時不會結束");
-		assertFalse(s.hasTimeLimit());
-	}
-
-	@Test
-	void timeLimitNotStartedUntilFirstRun() {
-		FakeClock c = new FakeClock();
-		Session s = new Session(c, 1000);
-		s.enterWorld();
-		c.advance(5000);
-		s.tick();
-		assertEquals(Session.State.READY, s.state());
 	}
 
 	// ---- EventQueue(S5.2、S5.4) ----

@@ -14,8 +14,6 @@ import java.util.List;
  * config/blockagent.json。只有使用者能改，AI 改不了(沒有對應的工具)。
  */
 public final class Config {
-	/** 工作階段時間上限(分鐘)，S8.6。0 表示不限時(預設)。 */
-	public int sessionMinutes = 0;
 	/** 發言間隔下限(秒)，S6.4。 */
 	public int chatIntervalSeconds = 15;
 	/** 是否允許發言，S6.5。 */
@@ -53,7 +51,6 @@ public final class Config {
 	}
 
 	private void sanitize() {
-		sessionMinutes = Math.max(0, sessionMinutes);
 		chatIntervalSeconds = Math.max(0, chatIntervalSeconds);
 		idleReminderSeconds = Math.max(10, idleReminderSeconds);
 		taskTimeoutMinutes = Math.max(1, taskTimeoutMinutes);

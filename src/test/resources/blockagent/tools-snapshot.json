@@ -1204,13 +1204,13 @@
   },
   {
     "name": "build_house",
-    "description": "Build a livable house (foundation, floor, walls, windows, flat roof, door) fitted to the terrain; refuses if the ground varies more than 3. Saved as a blueprint: the id is in the result, resume with build_blueprint. Pass id to regenerate it with changed params. Touches only natural blocks and its own blocks. dry_run\u003dtrue previews.",
+    "description": "Build a livable house (walls, windows, flat roof, door; keeps natural ground by default and fills only dips, pass floor to pave) fitted to the terrain; refuses if the ground varies more than 3. Saved as a blueprint: the id is in the result, resume with build_blueprint. Pass id to regenerate it with changed params. Touches only natural blocks and its own blocks. dry_run\u003dtrue previews.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "from": {
           "type": "string",
-          "description": "Outer wall corner \"x,y,z\"; y \u003d floor level"
+          "description": "Outer wall corner \"x,y,z\"; y \u003d interior standing level (floor sits at y-1)"
         },
         "to": {
           "type": "string",
@@ -1229,7 +1229,7 @@
         },
         "floor": {
           "type": "string",
-          "description": "Floor and foundation block; default material"
+          "description": "Optional floor block to pave the whole floor; omitted keeps natural ground and fills only dips with material"
         },
         "roof": {
           "type": "string",

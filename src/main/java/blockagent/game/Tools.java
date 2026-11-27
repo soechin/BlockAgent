@@ -183,7 +183,7 @@ public final class Tools {
 			if (taskOnly && !ended && keepWaiting.getAsBoolean()) {
 				var cur = a.tasks.current();
 				if (cur != null) {
-					return text + "\n" + Kv.of("WAIT task_running").put("task", cur.name())
+					return text + "\n" + waitRunningLine(cur.name(), a.tasks.progressSnapshot(), -1, a.reflexes.unstuckAttempts())
 						+ " | hint=task still running; wait_events task_only=true to keep waiting";
 				}
 			}
@@ -192,9 +192,18 @@ public final class Tools {
 		if (!keepWaiting.getAsBoolean()) return "OK no_task";
 		var cur = a.tasks.current();
 		return taskOnly
-			? Kv.of("WAIT task_running").put("task", cur == null ? null : cur.name()).put("waited", sec + "s")
+			? waitRunningLine(cur == null ? null : cur.name(), a.tasks.progressSnapshot(), sec, a.reflexes.unstuckAttempts())
 				+ " | hint=wait_events task_only=true to keep waiting"
 			: Kv.of("OK no_events").put("waited", sec + "s").toString();
+	}
+
+	/** WAIT task_running 一行摘要：帶上目前進度與脫困次數，避免 AI 盲等看不出任務是否停滯。 */
+	static String waitRunningLine(String taskName, String progress, int waitedSec, int unstuckAttempts) {
+		Kv kv = Kv.of("WAIT task_running").put("task", taskName);
+		if (progress != null && !progress.isBlank() && !"-".equals(progress)) kv.raw(progress);
+		if (waitedSec >= 0) kv.put("waited", waitedSec + "s");
+		if (unstuckAttempts > 0) kv.put("unstuck", unstuckAttempts);
+		return kv.toString();
 	}
 
 	static final int STATUS_TEXT_MAX = 30;
@@ -987,15 +996,15 @@ public final class Tools {
 				}
 				return act(a, "build_wall", args, mc -> build(a, mc, "build_wall", "牆", design, g.bool("replace", false)));
 			});
-		taskTool(t, a, "build_house", "Build a livable house (foundation, floor, walls, windows, flat roof, door) fitted to the "
+		taskTool(t, a, "build_house", "Build a livable house (walls, windows, flat roof, door; keeps natural ground by default and fills only dips, pass floor to pave) fitted to the "
 				+ "terrain; refuses if the ground varies more than 3. Saved as a blueprint: the id is in the result, resume with "
 				+ "build_blueprint. Pass id to regenerate it with changed params. Touches only natural blocks and its own blocks. "
 				+ "dry_run=true previews.",
-			Hints.DESTRUCTIVE, Schema.object().string("from", "Outer wall corner \"x,y,z\"; y = floor level", false)
+			Hints.DESTRUCTIVE, Schema.object().string("from", "Outer wall corner \"x,y,z\"; y = interior standing level (floor sits at y-1)", false)
 				.string("to", "Opposite outer wall corner \"x,y,z\"", false)
 				.string("material", "Wall block id", false)
 				.integer("height", "Interior height (3-8, default 4)", false).range(3, 8).def(4)
-				.string("floor", "Floor and foundation block; default material", false)
+				.string("floor", "Optional floor block to pave the whole floor; omitted keeps natural ground and fills only dips with material", false)
 				.string("roof", "Roof block; default material", false)
 				.enumString("door_side", null, false, "north", "south", "east", "west").def("north")
 				.string("door", "Wooden door id, or none for an opening; omitted: use a wooden door from inventory if any", false)

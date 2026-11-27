@@ -96,4 +96,14 @@ class WaitEventsTest {
 		assertEquals(net.minecraft.tags.BlockTags.LEAVES, Tools.blockGroupTag("leaves"));
 		assertNull(Tools.blockGroupTag("stone"));
 	}
+
+	@Test
+	void waitRunningLineIncludesProgressAndUnstuckCount() {
+		assertEquals("WAIT task_running task=mine block=log mined=11/12 waited=30s",
+			Tools.waitRunningLine("mine", "block=log mined=11/12", 30, 0));
+		assertEquals("WAIT task_running task=mine block=log mined=11/12 waited=30s unstuck=2",
+			Tools.waitRunningLine("mine", "block=log mined=11/12", 30, 2));
+		assertEquals("WAIT task_running task=goto",
+			Tools.waitRunningLine("goto", "-", -1, 0));
+	}
 }

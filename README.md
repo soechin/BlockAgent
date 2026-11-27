@@ -66,7 +66,7 @@ AI 面板依序顯示目前動作、目標和 AI 回報的想法摘要。長期�
 
 AI 端只能用模組的工具：碰不到你電腦上的其他檔案和程式，也不能上網(docs/SPEC.md S11)。
 
-設定檔在 `.minecraft/config/blockagent.json`(時間上限、發言間隔、要鎖定開啟的反射等)。AI 改不了它。時間上限 `sessionMinutes` 預設 0=不限時，填分鐘數才會時間到自動停。
+設定檔在 `.minecraft/config/blockagent.json`(發言間隔、閒置提醒、要鎖定開啟的反射等)。AI 改不了它。
 每個世界的記憶、目前計畫、所有權帳本和紀錄在 `.minecraft/blockagent/`。
 
 ## 測試(都不呼叫 AI)

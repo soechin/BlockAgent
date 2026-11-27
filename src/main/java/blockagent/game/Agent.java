@@ -24,7 +24,6 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import net.minecraft.client.Minecraft;
-import net.minecraft.core.BlockPos;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -102,7 +101,7 @@ public final class Agent {
 		this.gameDir = gameDir;
 		this.dataDir = gameDir.resolve("blockagent");
 		Clock clock = Clock.SYSTEM;
-		this.session = new Session(clock, config.sessionMinutes * 60_000L);
+		this.session = new Session();
 		this.events = new EventQueue(clock);
 		this.idle = new IdleTracker(clock, config.idleReminderSeconds * 1000L);
 		this.chatPolicy = new ChatPolicy(clock, config.chatEnabled, config.chatIntervalSeconds * 1000L);
@@ -228,7 +227,6 @@ public final class Agent {
 		}
 		log.open(dataDir.resolve("logs").resolve(worldKey));
 		log.log(ActionLog.Source.system, "join", worldKey);
-		session.setTimeLimitMs(config.sessionMinutes * 60_000L);
 		reflexes.resetEnabled();
 		observation.resetWorld();
 		danger.clear();
@@ -359,13 +357,12 @@ public final class Agent {
 		}
 	}
 
-	record PlanLocation(long world, String dimension, BlockPos position) {
+	record PlanLocation(long world, String dimension) {
 		JsonObject basis(long revision) {
 			JsonObject out = new JsonObject();
 			out.addProperty("world", world);
 			out.addProperty("revision", revision);
 			out.addProperty("dimension", dimension);
-			out.addProperty("position", position.asLong());
 			return out;
 		}
 	}
@@ -373,7 +370,7 @@ public final class Agent {
 	private PlanLocation planLocation() {
 		Minecraft mc = Minecraft.getInstance();
 		return mc.player == null || mc.level == null || worldKey == null || pendingDisconnect ? null
-			: new PlanLocation(worldEpoch, mc.level.dimension().identifier().toString(), mc.player.blockPosition());
+			: new PlanLocation(worldEpoch, mc.level.dimension().identifier().toString());
 	}
 
 	/** 規劃文字及其依據在同一個 client tick 取樣，避免把已變動的計畫版本附到舊快照。 */
@@ -478,9 +475,7 @@ public final class Agent {
 	private static String stalePlanReason(JsonObject basis, PlanLocation here, long revision) {
 		if (basis == null) return "snapshot_unavailable";
 		if (!here.dimension().equals(basis.get("dimension").getAsString())) return "dimension_changed";
-		if (basis.get("revision").getAsLong() != revision) return "plan_advanced";
-		BlockPos old = BlockPos.of(basis.get("position").getAsLong());
-		return here.position().distSqr(old) > 64 ? "moved_from_snapshot" : null;
+		return basis.get("revision").getAsLong() != revision ? "plan_advanced" : null;
 	}
 
 	/** plan_ready 事件的一行：目標、建議和所有步驟。 */
@@ -518,8 +513,7 @@ public final class Agent {
 				control.releaseMouse();
 				Bari.applySettings();
 				if (from == Session.State.READY) {
-					events.add("session_started", Event.Level.URGENT, "time_limit=" + (session.hasTimeLimit() ? config.sessionMinutes + "min" : "none")
-						+ " | hint=get_self, get_surroundings, memory_read" + planSuffix());
+					events.add("session_started", Event.Level.URGENT, "AI started | hint=get_self, get_surroundings, memory_read" + planSuffix());
 				} else {
 					events.add("user_resumed", Event.Level.URGENT, "AI resumed | hint=get_self and get_surroundings again" + planSuffix());
 				}
@@ -528,9 +522,7 @@ public final class Agent {
 			case PAUSED -> control.restoreMouse();
 			case ENDED -> {
 				control.stopEverything("session ended");
-				if (session.endReason() == Session.EndReason.TIME_LIMIT) control.restoreMouse();
 				String why = switch (session.endReason()) {
-					case TIME_LIMIT -> "reason=time_limit";
 					case LEFT_WORLD -> "reason=left_world";
 					case DISCONNECTED -> "reason=disconnected" + (disconnectReason != null ? " detail=" + blockagent.mcp.Kv.quote(disconnectReason) : "");
 					case null -> "reason=ended";
@@ -553,9 +545,6 @@ public final class Agent {
 		archery.tick(mc.level, tick);
 		// 暫停、待命時使用者自己放的方塊也要定期存檔(M5)
 		if (tick % 200 == 0 && ledger.takeDirty()) saveLedger();
-		if (session.tick()) {
-			events.add("time_warning", Event.Level.BATCH, "left_min=5 | hint=save progress to memory and wrap up");
-		}
 		// ENDED 時的停止只在狀態改變那一刻做一次(onSessionChange)。之後角色交還給使用者，
 		// 不能每個 tick 都 stopEverything：裡面的 KeyMapping.releaseAll() 會一直放開使用者按住的移動鍵。
 		if (!session.isRunning()) return;

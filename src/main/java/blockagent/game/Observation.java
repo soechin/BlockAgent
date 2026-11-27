@@ -233,8 +233,7 @@ public final class Observation {
 		}
 		var task = agent.tasks.current();
 		sb.append('\n').append(task == null ? "task=none" : Kv.of().put("task", task.name()).raw(task.progress()).toString());
-		sb.append('\n').append(Kv.of().put("session", agent.session.state())
-			.put("left_min", agent.session.hasTimeLimit() ? String.valueOf(agent.session.remainingMs() / 60_000) : "unlimited"));
+		sb.append('\n').append(Kv.of().put("session", agent.session.state()));
 		sb.append("\nreflexes=").append(agent.reflexes.summary());
 		if (mc.level.dimension().equals(Level.OVERWORLD)) sb.append('\n').append(timeOfDay(mc));
 		if (agent.memory.size() > 0) sb.append('\n').append(Kv.of().put("memory", agent.memory.size()).put("hint", "memory_read"));

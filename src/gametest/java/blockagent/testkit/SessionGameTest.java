@@ -22,8 +22,8 @@ import static blockagent.testkit.TestKit.check;
 
 /**
  * T5(暫停鍵 1 秒內停下、滑鼠與接手、暫停時反射不動，M6.1、M6.7、M7.10)、
- * T6(失焦不暫停，M6.6)、T7(a)(b)(時間到、離開世界時停止並通知，M6.8、M6.9)。
- * T7(c)(專用伺服器斷線)併在 ServerAndCreativeGameTest 共用同一台專用伺服器。
+ * T6(失焦不暫停，M6.6)、T7(離開世界時停止並通知，M6.9)。
+ * 專用伺服器斷線情境併在 ServerAndCreativeGameTest 共用同一台專用伺服器。
  */
 @SuppressWarnings("UnstableApiUsage")
 public class SessionGameTest implements FabricClientGameTest {
@@ -41,7 +41,7 @@ public class SessionGameTest implements FabricClientGameTest {
 				craftAndSmelt(k);
 				offhandCraftAndEquip(k);
 				t6(k, c);
-				t7TimeLimit(k);
+				endSessionAndVerifyHandback(k);
 				t6Control(k);
 			}
 			t7LeftWorld(ctx);
@@ -332,22 +332,16 @@ public class SessionGameTest implements FabricClientGameTest {
 		check(everUnfocused, "T6 視窗的焦點狀態沒有變成 false，模擬失焦無效");
 	}
 
-	private void t7TimeLimit(TestKit k) {
-		var a = k.agent();
-		a.session.setTimeLimitMs(a.session.elapsedMs() + 2_000);
-		CompletableFuture<McpTestClient.Result> wait = k.ai.callAsync("wait_events", args("max_wait_sec", 60));
-		for (int i = 0; i < 20 * 8 && !wait.isDone(); i++) k.ctx.waitTick();
-		check(wait.isDone(), "T7(a) 時間到後 wait_events 沒有返回");
-		String text = wait.join().text();
-		check(text.contains("time_limit"), "T7(a) 應該收到 time_limit：" + text);
-		check(k.ctx.computeOnClient(mc -> mc.mouseHandler.isMouseGrabbed()), "T7(a) 時間到後應交還滑鼠視角");
-		k.expectError(k.ai.call(k.ctx, "goto", args("x", 0, "y", 0, "z", 0)), "SESSION_ENDED", "T7(a) 時間到後不接受動作");
+	/** 結束工作階段後：停止接受動作且不再放開使用者按住的移動鍵(供接著跑 T6 對照組)。 */
+	private void endSessionAndVerifyHandback(TestKit k) {
+		k.ctx.runOnClient(_ -> k.agent().session.end(blockagent.core.Session.EndReason.LEFT_WORLD));
+		k.ctx.waitTicks(2);
+		k.expectError(k.ai.call(k.ctx, "goto", args("x", 0, "y", 0, "z", 0)), "SESSION_ENDED", "工作階段結束後不接受動作");
 
-		// 結束後角色交還給使用者：按住前進鍵要能一直走
 		var start = k.ctx.computeOnClient(mc -> mc.player.position());
 		k.ctx.getInput().holdKeyFor(o -> o.keyUp, 20);
 		double moved = k.ctx.computeOnClient(mc -> mc.player.position().distanceTo(start));
-		check(moved > 2.0, "T7(a) 結束後使用者按住前進鍵 1 秒只移動了 " + moved + " 格(按鍵被放開了？)");
+		check(moved > 2.0, "結束後使用者按住前進鍵 1 秒只移動了 " + moved + " 格(按鍵被放開了？)");
 	}
 
 	private void t7LeftWorld(ClientGameTestContext ctx) throws Exception {

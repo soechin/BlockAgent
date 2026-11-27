@@ -407,7 +407,7 @@ flowchart TD
 
 - **S4.3** 高階命令和 `goto` 類的命令是**背景任務**：[M2.7, M2.10]
   - 工具呼叫開始任務後回傳 `OK started task=<name> <事前檢查的鍵值>`(S3.0c)。
-  - 背景任務的工具都有可選的 `replace`(預設 `false`)和 `wait_sec`(0 到 120，**預設 30**；使用者決定，2026-11-23，A10：原本預設 0，模型漏帶時白白多一輪 `wait_events`)。大於 0 時，任務開始後依 `wait_events(task_only=true)` 的規則等到任務結束或逾時，把等到的事件接在 `OK started` 後面一起回傳；等不到時多一行 `WAIT task_running task=<name> waited=<秒>s | hint=wait_events task_only=true ...`。`0` 表示開始後立刻回傳。每次模型呼叫都要重送整段脈絡，省下一次 `wait_events` 呼叫就省下一次重送。
+  - 背景任務的工具都有可選的 `replace`(預設 `false`)和 `wait_sec`(0 到 120，**預設 30**；使用者決定，2026-11-23，A10：原本預設 0，模型漏帶時白白多一輪 `wait_events`)。大於 0 時，任務開始後依 `wait_events(task_only=true)` 的規則等到任務結束或逾時，把等到的事件接在 `OK started` 後面一起回傳；等不到時多一行 `WAIT task_running task=<name> <進度> waited=<秒>s [unstuck=N] | hint=wait_events task_only=true ...`。`0` 表示開始後立刻回傳。每次模型呼叫都要重送整段脈絡，省下一次 `wait_events` 呼叫就省下一次重送。
   - 任務一開始就結束時(例如創造模式一碰就碎、花草一下就打掉、那格本來就是空的)，工具的回應直接寫出結果(`OK done task=break_block pos=... state=broken hp=... food=... pos=...` 或 `ERR`)，不另外送 `task_done` 事件。
   - 同一時間只有一個任務。已經有任務在跑時，新命令回傳 `BUSY`；加上 `replace=true` 會取消舊任務，並在事件裡說明舊任務做到哪裡。坐在載具上不能開始會走路的任務，這個檢查在取消舊任務之前。
   - 反射(脫困以外)正在接手時不開始新任務，回 `BUSY reflex=<名稱>`、`hint=wait_events a few seconds until the reflex event, then try again`，免得跟反射搶 Baritone 和按鍵(docs/REVIEW.md H7)。換掉任務時，舊任務的脫困反射也一起結束。
@@ -469,16 +469,15 @@ flowchart TD
   - 生存模式透過 Baritone 施工，並用玩家背包操作補給快捷列。具指令權限的創造模式使用狀態篩選指令。
   - **門**可以放進藍圖：構件寫門的下半格，例如 `spruce_door[facing=north,hinge=left]`，上半格由遊戲自己長出來，設計裡這格不能是別的方塊。門在其他格子都處理完之後，用一般放置(跟 `place_block` 同一條路)一格一格放，創造模式也一樣，不用指令。床和其他多格物品仍不支援。
 - **S4.8b** `build_house`(使用者決定，2026-11-22：取代原本的 `build_box`。`build_box` 只蓋單一材料、沒有地板的方盒子，AI 選了斜坡就蓋成懸空的盒子；而 `build_blueprint` 要 AI 自己寫每個構件，幾乎不會被用到)。一個呼叫蓋好一間能住的房子：[M2.2, M2.8, M2.9]
-  - `from`、`to` 是外牆的兩個對角，y 是**地板那一層**(兩個 y 不同時取低的)。外牆最小 5×5、最大 15×15。`height` 是室內淨高(地板上一格到屋頂下一格)，預設 4，範圍 3–8。
-  - 材料：`material` 是牆；`floor` 是地板和地基，預設同 `material`；`roof` 是屋頂，預設同 `material`。都要是可以單格放置的方塊(門、床、高草這類佔兩格的回傳 `INVALID_ARGUMENT`)。沒指定的 `floor`/`roof` 不記進藍圖，之後用 `id` 只換 `material` 時地板和屋頂跟著換(舊版存檔記下的地板、屋頂跟牆相同時也照這樣處理)。
+  - `from`、`to` 是外牆的兩個對角，y 是**屋內站立高度**(兩個 y 不同時取低的，地板與填平層在 `y-1`)。外牆最小 5×5、最大 15×15。`height` 是室內淨高(站立層到屋頂下一格)，預設 4，範圍 3–8。
+  - 材料：`material` 是牆；`floor` 選填，指定時整層鋪滿地板並補下方空隙，省略時保留原本的天然實心地面、只對低窪凹洞與非實心表層用 `material` 補平到 `y-1`；`roof` 是屋頂，預設同 `material`。都要是可以單格放置的方塊(門、床、高草這類佔兩格的回傳 `INVALID_ARGUMENT`)。沒指定的 `floor`/`roof` 不記進藍圖，之後用 `id` 只換 `material` 時屋頂跟著換；舊版存檔(未標記 `y_mode=standing`)重算時自動把舊座標升級成站立高度並保留原地板語意。
   - 構件由下往上：
-    1. **地基**：地板每一格底下，到地面之前的空格，都用 `floor` 填滿。
-    2. **地板**：corner 那一層整層鋪 `floor`，原本的天然方塊照 S4.8c 挖掉再鋪。
-    3. **牆**：地板上一格開始、`height` 格高的外圈。
-    4. **室內**：牆裡面、地板上到屋頂下設成 `air`，所以斜坡比較高那側擋在室內的天然方塊會被挖掉；自己放的家具不受影響(S4.8c)。
-    5. **窗戶**：有給 `window`(例如 `glass_pane`)才開。門以外的三面牆各一格，在牆的中間、地板上 2 格高的地方。
-    6. **屋頂**：牆頂上一層，整片鋪 `roof`，平的。
-    7. **門**：開在 `door_side`(`north`/`south`/`east`/`west`，預設 `north`)那面牆的中間，佔地板上 2 格。`door` 指定門的物品；省略時，門口已經裝了木門就沿用那扇(重算時才不會把裝好的門拆掉)，否則背包裡有木門就用那一種，都沒有就只留門口，結果裡會提醒。門朝外。門口外面那一格的地面比地板低的話，也從地面補到地板那一層，出門不會踩空。
+    1. **地基與地板**：指定 `floor` 時，在 `y-1` 整層鋪 `floor`，並把地板底下到地面之間的空格補滿。省略 `floor` 時，保留 `y-1` 原本的天然實心方塊，只對地面低於 `y-1` 的凹洞或非完整實心表層(如草徑、耕地)用 `material` 補齊至 `y-1`。
+    2. **牆**：從 `y` 開始、`height` 格高的外圈。
+    3. **室內**：牆裡面、站立層到屋頂下設成 `air`，所以斜坡比較高那側擋在室內的天然方塊會被挖掉；自己放的家具不受影響(S4.8c)。
+    4. **窗戶**：有給 `window`(例如 `glass_pane`)才開。門以外的三面牆各一格，在牆的中間、站立層上一格(`y+1`)的地方。
+    5. **屋頂**：牆頂上一層，整片鋪 `roof`，平的。
+    6. **門**：開在 `door_side`(`north`/`south`/`east`/`west`，預設 `north`)那面牆的中間，佔站立層起 2 格。`door` 指定門的物品；省略時，門口已經裝了木門就沿用那扇(重算時才不會把裝好的門拆掉)，否則背包裡有木門就用那一種，都沒有就只留門口，結果裡會提醒。門朝外。門口外面那一格的地面比地板(`y-1`)低的話，也從地面補到地板那一層，出門不會踩空。
   - **量地形**：對占地範圍和門口外那一格的每一柱，找地面：從屋頂那層往下找第一個天然的實心方塊，不算原木、樹葉、花草和人造方塊。每一柱的地面都要在地板 y 的**上下 3 格內**，超過就回傳 `INVALID_ARGUMENT`，寫出是哪一邊超出：地板底下超過 3 格都是空的，或地面比地板高超過 3 格(附上最高的 y)，並建議換平一點的地方或把 `from`/`to` 的 y 改成地面那一層，不開工。往下找的途中遇到水或岩漿也回 `INVALID_ARGUMENT`。
   - 算好的構件存成一份藍圖(S4.8a)，名稱預設「房子」，另外記下產生它的 `build_house` 參數，再照 `build_blueprint` 的 `create` 開工。回應附上藍圖 ID；缺料時一樣可以用 `build_blueprint` 的 `resume` 續建。
   - **重算**：給 `id` 時讀出那份藍圖記下的參數，跟這次給的參數合併(這次有給的優先)，重新量地形、重算構件，覆蓋同一個 ID，再照 `update` 開工(S4.8c)。地形被改了、想加高、放大或換材料都用這個；重算可以改 corner，所以原點會跟著變。之前用 `update` 手動加的構件會被重算的結果蓋掉。`id` 不是 `build_house` 產生的藍圖就回傳 `INVALID_ARGUMENT`。因為量地形只算天然方塊，重算時舊房子和屋裡的東西還在，也量得到原本的地面。
@@ -638,7 +637,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 
 ### 8.1 工作階段
 
-- **S8.1** 工作階段狀態：[M6.1, M6.8, M6.9]
+- **S8.1** 工作階段狀態：[M6.1, M6.9]
 
   ```mermaid
   stateDiagram-v2
@@ -649,8 +648,8 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
       READY --> RUNNING: 按暫停鍵
       RUNNING --> PAUSED: 暫停鍵
       PAUSED --> RUNNING: 暫停鍵
-      RUNNING --> ENDED: 時間到/離開/斷線
-      PAUSED --> ENDED: 時間到/離開/斷線
+      RUNNING --> ENDED: 離開/斷線
+      PAUSED --> ENDED: 離開/斷線
       ENDED --> [*]
   ```
 
@@ -667,7 +666,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
   5. 停止所有反射(S9.3)。
   6. 發出 `user_paused` 事件(緊急)。
   - 再按一次：狀態改為 `RUNNING`，發出 `user_resumed` 事件(緊急)，內容包含「請重新查看狀況」。被取消的任務不會自動恢復，由 AI 決定。
-  - 開始或恢復 AI 時釋放游標。AI 進行中關閉工作台等畫面時，游標保持可移出遊戲視窗(使用者自己抓回游標的話照原版抓回去)。暫停、接手或時間到時，若遊戲視窗有焦點且沒有開啟介面，就恢復滑鼠轉視角。
+  - 開始或恢復 AI 時釋放游標。AI 進行中關閉工作台等畫面時，游標保持可移出遊戲視窗(使用者自己抓回游標的話照原版抓回去)。暫停或接手時，若遊戲視窗有焦點且沒有開啟介面，就恢復滑鼠轉視角。
   - 預設鍵不能和原版按鍵衝突(T5 會檢查)。
 - **S8.2a** AI 進行中的游標與鏡頭：
   - 在遊戲畫面點一下會抓回游標(原版行為)，這一下只抓游標：`MouseHandlerMixin` 在 `onButton` 呼叫 `grabMouse` 之後取消後續處理，所以不算攻擊，也不會觸發接手(S8.5)。
@@ -677,8 +676,8 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 ### 8.3 畫面
 
 - **S8.3** 用 Fabric API 的 HUD 繪製介面，在畫面左上角顯示 AI 面板：[M6.2, M6.3, M6.4, M6.5]
-  - 面板最多 2 行，每行都是單行，太長以「…」截短，不折行。最大寬度 340。背景是半透明黑色(`0x60000000`)。只有狀態標頭著色，正文是白色，計數和剩餘時間是淡灰色；各段以空白分開。
-  - 第一行由模組產生：`● 挖 鐵礦 4/10 · 剩 42 分`(剩餘時間接在後面，只在進行中且有時間上限時顯示)或 `❚❚ 暫停 按 ` 恢復`。
+  - 面板最多 2 行，每行都是單行，太長以「…」截短，不折行。最大寬度 340。背景透明(文字帶陰影)。只有狀態標頭著色，正文是白色，計數是淡灰色；各段以空白分開。
+  - 第一行由模組產生：`● 挖 鐵礦 4/10` 或 `❚❚ 暫停 按 ` 恢復`。
   - 狀態標頭和顏色：進行中是綠色 `●`(不寫字)，暫停是黃色 `❚❚ 暫停`，READY 是灰色 `○ 待命`，ENDED 是紅色 `■ 已結束`。[M6.2]
   - 反射接手時(S9)，標頭後面加橘色標籤：換氣、離開岩漿、滅火、防摔、撤退、自衛、進食、脫困。
   - 第一行的正文是任務的描述(中文動作和遊戲裡的名稱，不帶座標)，任務有計數時後面接 `done/total`；沒有任務時依 AI 端狀態顯示預設文字(見下)。AI 寫不進第一行。
@@ -707,9 +706,9 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
   - 觸發後：執行和暫停鍵相同的流程(S8.2)，只是事件改為 `user_took_over`，內容是「使用者接手了，等使用者按暫停鍵恢復」。動作紀錄的 `takeover` 寫上觸發的按鍵名稱(例如 `key.use`)。
   - 這是「可以」優先的需求，可以在設定裡關掉(預設開啟)。
 
-### 8.6 時間上限
+### 8.6 時間上限(已移除)
 
-- **S8.6** 工作階段可以設定時間上限(設定檔 `sessionMinutes`)，預設 **0=不限時**(使用者決定，2026-11-22)。有設定時，從第一次進入 `RUNNING` 開始算(牆上時間，暫停時間也算在內)。只能由使用者在設定檔修改。不限時時，HUD 不顯示剩餘時間，`session_started` 事件寫「不限時間」，也不會發出剩 5 分鐘的提醒。剩 5 分鐘時發出合併類事件；時間到時執行暫停流程的第 2 到 5 步，狀態改為 `ENDED`，發出 `session_ended`(原因 `time_limit`)。[M6.8]
+- **S8.6** 已於 2026-11-27 依使用者決定移除工作階段時間上限(`sessionMinutes`、`time_warning`、`time_limit`)；工作階段不再自動倒數結束，僅於離開世界或斷線時結束。舊設定檔若仍留有 `sessionMinutes` 會被忽略。
 
 ### 8.7 離開世界或斷線
 
@@ -980,7 +979,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
   - 兩個 CLI 程式本身要連到各自的模型 API，這是正常的；「不能上網」指的是 AI 沒有可以上網的工具。
 - **S11.7** 非同步規劃(`request_plan`，`bin/blockagent-planner <codex|claude> <模型> <port>`)：
   - `request_plan(goal?, context?, recent_failures?)` 立刻回 `{"status":"pending"}`，遊玩模型不用等。沒寫 `goal` 時由規劃模型挑下一個目標(生存基礎沒齊就補最缺的，齊了就挑更進一步的專案)，結果的 `goal` 用它挑的；有寫就照用遊玩模型寫的。同時只有一個規劃在跑，第二個回 `BUSY`。規劃逾時 120 秒。
-  - 規劃服務在背景向遊戲讀快照、呼叫規劃模型(Codex 用 `codex exec`；Claude 用 `claude -p --json-schema`，跟遊玩一樣不給內建工具和 MCP、不讀使用者設定，只剩交結果用的 `StructuredOutput`；兩邊都是 effort `low`、固定的工作目錄)，再把結果和快照依據送回遊戲。維度改變、離開快照位置超過 8 格或目前計畫已更新時，結果以 `plan_stale` 提供建議(S5.6)。快照內容：`get_self` 的輸出、工作階段狀態、目前計畫、世界記憶(最多 4,000 字)、最近 6 筆任務失敗和被規則擋下的動作、遊玩工具的名稱清單。
+  - 規劃服務在背景向遊戲讀快照、呼叫規劃模型(Codex 用 `codex exec`；Claude 用 `claude -p --json-schema`，跟遊玩一樣不給內建工具和 MCP、不讀使用者設定，只剩交結果用的 `StructuredOutput`；兩邊都是 effort `low`、固定的工作目錄)，再把結果和快照依據送回遊戲。維度改變或目前計畫已更新時，結果以 `plan_stale` 提供建議(S5.6)。快照內容：`get_self` 的輸出、工作階段狀態、目前計畫、世界記憶(最多 4,000 字)、最近 6 筆任務失敗和被規則擋下的動作、遊玩工具的名稱清單。
   - 遊戲端的 HTTP 伺服器另外開 `GET /plan/context`(回傳 `snapshot` 和 `basis`)和 `POST /plan/result`(`{goal, recommendation, steps, basis}` 或 `{goal, error:{code,message}, basis}`)。這兩個端點用**另一把 token**(`runtime.json` 的 `plan_token`)，它不能用在 `/mcp` 和 `/status`，MCP token 也不能用在這兩個端點。規劃服務拿不到 MCP token，所以不能操作遊戲；它呼叫的 `codex exec`、`claude -p` 拿不到任何 `BLOCKAGENT_*` 環境變數。
   - 啟動腳本從 `runtime.json` 讀 `plan_token`，用 `BLOCKAGENT_PLAN_TOKEN` 交給規劃服務(Codex 用 `env_vars`，Claude 寫在 `mcp.json` 的 `env`)，遊戲的 port 用參數傳。規劃開著但遊戲沒有提供 `plan_token`(舊版模組)時，`codex-config` 和 `blockagent-claude` 都停下並說明。
   - 結果送不回遊戲(遊戲關了、已離開世界)時只記在 `blockagent-planner-usage.jsonl`(`delivered=false`；Codex 在 `CODEX_HOME`，Claude 在 `~/.blockagent/claude`)。
@@ -1013,7 +1012,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 | T4 | `ChatGameTest.t4` | 單元測試 + 遊戲測試 | 伺服器端用 Fabric `ServerMessageEvents` 記錄收到的聊天。依序：`say("你好")`；`say("/give @s diamond")`；`say("  /op me")`；`say("​/kill")`；在 120 秒內再 `say("第二句")`；把發言關掉後 `say("x")`；用 Mixin 測試 hook 讓模組內部試著不加前綴直接呼叫 `sendChat` | 伺服器只收到一則「[AI] 你好」；三個 `/` 變形都回傳 `CHAT_BLOCKED`，伺服器沒收到；第二句回傳 `RATE_LIMITED`；關閉後回傳 `CHAT_DISABLED`；不加前綴的內部呼叫被最後防線丟棄；單元測試涵蓋長度截斷後前綴仍然保留 | M4.2–M4.4(M4.5) |
 | T5 | `SessionGameTest.t5` | 遊戲測試 | 開始一個 `mine(iron_ore, 10)` 任務，等到正在走路或挖掘；用 `TestInput.pressKey` 按暫停鍵，記下當時的 tick；觀察接下來 20 tick(1 秒)；另外檢查暫停鍵和游標鍵與原版按鍵沒有衝突；AI 進行中點遊戲畫面只抓回游標、不觸發接手；游標鍵可切換；停止轉視角後走路時鏡頭朝向前進方向 | 20 tick 內：Baritone `isPathing()` 為 false；所有 `KeyMapping.isDown()` 為 false；沒有送出新的移動以外的操作封包(用 Mixin 計數 `startDestroyBlock`、`useItemOn`、`attack`)，水平速度降到 0.01 以下；任務狀態是 `cancelled`；收到 `user_paused`；按鍵沒有衝突 | M6.1 |
 | T6 | `SessionGameTest.t6` | 遊戲測試 | 開始 `goto` 一個 30 格外的點；呼叫 `Window#onFocus(false)`(S10.1)；等 60 tick(3 秒，超過 500 ms 的門檻) | `minecraft.screen` 是 null(沒有 ESC 選單)，`minecraft.isPaused()` 為 false；玩家位置持續往目標移動；任務仍是 `running`；`options.pauseOnLostFocus` 的值沒有被改。對照組：用測試設定停用 S8.4 的 Mixin，同樣步驟會打開暫停選單，證明測試本身有效 | M6.6 |
-| T7 | `SessionGameTest.t7*` | 遊戲測試(單人+專用伺服器) | (a) 在預設不限時的工作階段中，把上限設成從現在起 5 秒，等 6 秒；(b) 單人世界進行中，用 API 離開世界；(c) `createServer().connect()` 進入專用伺服器，開始工作階段，然後由伺服器 `kick` 把玩家踢掉(真正從伺服器端斷線；需要專用伺服器，執行時以 `-Peula=true` 同意 Minecraft EULA)。每個情境中，AI 端事先呼叫 `wait_events(60)` 等待，結束後再呼叫 `goto` | 三個情境：`wait_events` 都在 1 秒內返回 `session_ended`，原因分別是 `time_limit`、`left_world`、`disconnected`；之後的 `goto` 回傳 `SESSION_ENDED`；MCP 伺服器仍然有回應 | M6.8、M6.9 |
+| T7 | `SessionGameTest.t7*` | 遊戲測試(單人+專用伺服器) | (a) 單人世界進行中，用 API 離開世界；(b) `createServer().connect()` 進入專用伺服器，開始工作階段，然後由伺服器 `kick` 把玩家踢掉(真正從伺服器端斷線；需要專用伺服器，執行時以 `-Peula=true` 同意 Minecraft EULA)。每個情境中，AI 端事先呼叫 `wait_events(60)` 等待，結束後再呼叫 `goto` | 兩個情境：`wait_events` 都在 1 秒內返回 `session_ended`，原因分別是 `left_world`、`disconnected`；之後的 `goto` 回傳 `SESSION_ENDED`；MCP 伺服器仍然有回應 | M6.9 |
 | T8 | `CliPermissionTest`(`./gradlew cliTest`) | CLI 測試 | 用假遊戲後端啟動 MCP 伺服器；分別用 S11.3、S11.4 的設定(改指向 stub)啟動 `claude -p` 和 `codex exec`，各自送出一句話；stub 記錄第一個請求的工具清單，然後回應結束對話 | 兩個 CLI 都完成 MCP `initialize`(伺服器端紀錄有兩次，附上協定版本)；從兩個請求裡取出名稱以 blockagent 開頭的工具(Claude 是 `mcp__blockagent__*`，Codex 是對應的命名空間)，**名稱集合和參數 schema 都和 ToolRegistry 完全相同**；工具清單裡沒有任何測試功能 | A1.1、M8.2 |
 | T9 | `CliPermissionTest`(`./gradlew cliTest`) | CLI 測試 | 準備：在 home 底下建一個內容是隨機字串的 `canary-secret.txt`，再選一個 canary 寫入路徑。**工具清單**：Claude 的請求裡除了 `mcp__blockagent__*` 以外沒有其他工具；Codex 用預設模型時清單和快照完全相同(S11.4)，而且 `codex debug prompt-input` 的結果也相同。**攻擊腳本**：stub 依序要求 CLI 呼叫：Claude 的 `Read(canary)`、`Bash("cat canary")`、`Write(canary 路徑)`、`WebFetch(https://example.com)`、`WebSearch`；Codex 的 `exec` 裡呼叫 `tools.exec_command`、`tools.view_image`、`apply_patch` 寫 canary 路徑、`read_mcp_resource`；並在 `exec` 的 JS 環境裡試 `fetch`(file:// 和 https)、`XMLHttpRequest`、`require`、`process`、`Deno`、`Bun`、動態 `import`(`node:fs`、`fs`、網址) | 每個攻擊呼叫的結果都是「找不到工具」或「被拒絕」；`exec` 環境的每一項都不存在或用了會失敗；canary 寫入路徑沒有被建立；在 stub 收到的所有請求內容中，都找不到 canary 的隨機字串；上網的部分由兩點證明：工具清單裡沒有可以上網的工具，而且 `WebFetch`、`WebSearch` 的攻擊呼叫都失敗 | A1.2 |
 | T10 | `ReflexGameTest` | 遊戲測試 | 情境：溺水(放到深水底，氧氣設 100)、著火(點火，旁邊 5 格有水)、岩漿(腳邊放岩漿)、血量低(血量 4，6 格外生成殭屍)、怪物靠近(3 格外生成殭屍；另一版讓 FakeFriend 站在中間)、肚子餓(飢餓度 6，背包有麵包)、卡住(在 1×1 的坑裡給一個坑外的 `goto`，坑壁一側是朋友的木板、一側是泥土)。每個情境都做一次「暫停中」的版本 | 每個情境在限定時間內反射有作用：氧氣回升/火熄滅/離開岩漿 3 格/和殭屍的距離拉開/殭屍被攻擊；FakeFriend 擋在中間時沒有送出 `attack`；飢餓度上升；卡住時挖的是泥土那側，不是木板；每個情境都收到 `reflex` 事件，內容有原因和動作，有打斷任務的情境也說明了任務的處理方式；伺服器端確認沒有違反規矩；暫停版本中，5 秒內沒有任何 `source=reflex` 的動作 | M7.1–M7.7、M7.10 |
@@ -1054,7 +1053,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 | 9 | 伺服器有自訂配方時，事前檢查可能不準 | M2.9 | 實際失敗時說明可能的原因 |
 | 10 | 別人的箱子能不能拿、能不能放 | M5.3 | 已確認(2026-11-22)：都可以 |
 | 11 | 流浪商人歸為受保護的「村民」 | M5.1 | 已確認(2026-11-19)：受保護 |
-| 12 | 時間上限用牆上時間，暫停時間也算在內 | M6.8 | 已確認(2026-11-19)：暫停時間也算 |
+| 12 | 時間上限用牆上時間，暫停時間也算在內 | M6.8 | 已移除(2026-11-27)：不再限制工作階段時間 |
 | 13 | CLI 改版後內建工具可能增加 | A1.2 | S11.4 的快照比對和 S11.5 的版本檢查 |
 | 14 | Baritone 1.20.0 的執行緒池不是 daemon，關遊戲時 JVM 不會結束，26.3 的 ClientShutdownWatchdog 會產生 crash report | 使用者每次關遊戲 | 已處理：關閉時用反射呼叫 `baritone.Baritone.getExecutor()` 並 `shutdownNow()`(`Bari.shutdownExecutor`) |
 | 15 | Claude Code 會多給模型一個內部佔位工具 `DeferredToolPlaceholder`(說明是 never call this tool，沒有參數) | A1.2 | T9 明確允許它，並實際呼叫一次，確認它做不了事 |
@@ -1103,7 +1102,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 | M6.5 | S8.3 | 12.3 截圖比對 |
 | M6.6 | S8.4 | T6 |
 | M6.7 | S8.5 | 12.3 遊戲測試 |
-| M6.8 | S8.6 | T7 |
+| ~~M6.8~~ | S8.6(已移除) | — |
 | M6.9 | S8.7 | T7 |
 | M6.10 | S8.8 | T10b(`CombatGameTest.respawn`) |
 | M7.1 | S9.1 | T10 |

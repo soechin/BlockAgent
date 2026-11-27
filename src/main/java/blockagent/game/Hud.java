@@ -16,7 +16,7 @@ import java.util.List;
 
 /**
  * 畫面左上角的 AI 面板(docs/SPEC.md S8.3)：最多 2 行，每行都是單行，太長用「…」截短。
- * 第一行由模組產生(狀態、任務和進度、剩餘時間)；第二行是 AI 用 set_status 寫的一句話。
+ * 第一行由模組產生(狀態、任務和進度)；第二行是 AI 用 set_status 寫的一句話。
  * 只有狀態標頭著色，正文用白色。每 10 tick 更新一次內容。
  */
 public final class Hud {
@@ -24,7 +24,6 @@ public final class Hud {
 		GRAY = 0xFFAAAAAA, RED = 0xFFFF5555;
 
 	private static final int BODY_COLOR = 0xFFF2F2F2, DETAIL_COLOR = 0xFFE8E8E8, DIM_COLOR = 0xFF999999;
-	private static final int BACKGROUND = 0x60000000;
 	private static final int MAX_TEXT_WIDTH = 340, PAD = 4, GAP = 4, MARGIN = 2;
 
 	/** 狀態標頭：符號加(異常時的)狀態字。 */
@@ -42,7 +41,6 @@ public final class Hud {
 	private String cachedTag, cachedBody, cachedTrailer, cachedSay;
 	private long lastUpdateTick = -100;
 	private int layoutWidth = -1;
-	private int panelWidth;
 	private List<Row> rows = List.of();
 	private List<String> plainLines = List.of();
 
@@ -127,9 +125,7 @@ public final class Hud {
 		cachedTag = running ? reflexTag(agent.reflexes.active()) : null;
 		cachedBody = body(state, presence, task == null ? null : task.describe());
 		Task.Progress p = running && task != null ? task.hudProgress() : null;
-		String count = p != null && p.total() > 0 ? p.done() + "/" + p.total() : null;
-		String left = running && s.hasTimeLimit() ? "剩 " + (s.remainingMs() + 59_999) / 60_000 + " 分" : null;
-		cachedTrailer = count == null ? left : left == null ? count : count + " · " + left;
+		cachedTrailer = p != null && p.total() > 0 ? p.done() + "/" + p.total() : null;
 		String say = agent.statusText();
 		cachedSay = (running || state == Session.State.PAUSED) && !say.isBlank() ? say : null;
 		layoutWidth = -1;
@@ -161,15 +157,6 @@ public final class Hud {
 		return maxWidth - w;
 	}
 
-	/** 這一行實際畫出來的寬度(跟 render 一樣：每段非空的文字後面接 GAP，最後一段不算)。 */
-	private static int rowWidth(Font font, Row r) {
-		int w = 0;
-		for (String part : new String[]{r.head(), r.tag(), r.body(), r.trailer()}) {
-			if (part != null && !part.isEmpty()) w += font.width(part) + GAP;
-		}
-		return r.indent() + Math.max(0, w - GAP);
-	}
-
 	private void layout(Font font, int maxWidth) {
 		List<Row> result = new ArrayList<>(2);
 		Row first = new Row(0, cachedHead.label(), cachedHead.color(), cachedTag, cachedBody, BODY_COLOR, cachedTrailer);
@@ -179,15 +166,12 @@ public final class Hud {
 			Row say = new Row(font.width(cachedHead.label()) + GAP, "", 0, null, "", DETAIL_COLOR, null);
 			result.add(say.withBody(fitText(font, cachedSay, bodyMaxWidth(font, maxWidth, say))));
 		}
-		int width = 0;
 		List<String> plain = new ArrayList<>(result.size());
 		for (Row r : result) {
-			width = Math.max(width, rowWidth(font, r));
 			plain.add(join(r.head(), r.tag(), r.body(), r.trailer()));
 		}
 		rows = List.copyOf(result);
 		plainLines = List.copyOf(plain);
-		panelWidth = Math.min(maxWidth, width);
 		layoutWidth = maxWidth;
 	}
 
@@ -200,7 +184,6 @@ public final class Hud {
 		}
 		if (cachedHead == null) return;
 		if (agent.control.hudCollapsed()) {
-			g.fill(3, 3, 9, 9, 0x90000000);
 			g.fill(4, 4, 8, 8, cachedHead.color());
 			return;
 		}
@@ -208,8 +191,7 @@ public final class Hud {
 		int maxWidth = Math.min(MAX_TEXT_WIDTH, Math.max(1, g.guiWidth() - 2 * (MARGIN + PAD)));
 		if (layoutWidth != maxWidth) layout(font, maxWidth);
 		int lineHeight = font.lineHeight + 2;
-		int left = MARGIN + PAD, right = left + panelWidth;
-		g.fill(MARGIN, MARGIN, right + PAD, MARGIN + PAD + rows.size() * lineHeight - 2 + PAD, BACKGROUND);
+		int left = MARGIN + PAD;
 		int y = MARGIN + PAD;
 		for (Row r : rows) {
 			int x = left + r.indent();
