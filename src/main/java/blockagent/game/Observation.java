@@ -236,8 +236,40 @@ public final class Observation {
 		sb.append('\n').append(Kv.of().put("session", agent.session.state()));
 		sb.append("\nreflexes=").append(agent.reflexes.summary());
 		if (mc.level.dimension().equals(Level.OVERWORLD)) sb.append('\n').append(timeOfDay(mc));
+		int others = otherOnlinePlayers(mc);
+		if (others > 0) sb.append('\n').append(Kv.of().put("other_players", others));
 		if (agent.memory.size() > 0) sb.append('\n').append(Kv.of().put("memory", agent.memory.size()).put("hint", "memory_read"));
 		return truncate(sb, 0, "output truncated");
+	}
+
+	/** 伺服器上除自己外在線的其他玩家人數(讀連線名單，不受視距限制)。 */
+	private static int otherOnlinePlayers(Minecraft mc) {
+		LocalPlayer p = mc.player;
+		if (p == null) return 0;
+		var conn = mc.getConnection();
+		if (conn != null) {
+			UUID selfId = p.getUUID();
+			int count = 0;
+			for (UUID id : conn.getOnlinePlayerIds()) {
+				if (!selfId.equals(id)) count++;
+			}
+			return count;
+		}
+		return mc.level == null ? 0 : Math.max(0, mc.level.players().size() - 1);
+	}
+
+	static String nightFallingHint(int otherPlayers) {
+		return otherPlayers > 0
+			? "other players are online; keep working safely indoors or in lit mines instead of waiting in bed"
+			: "head to shelter, a bed, or keep working in a safe lit area";
+	}
+
+	static String canSleepEventText(String timeText, int otherPlayers) {
+		if (otherPlayers > 0) {
+			return timeText + " other_players=" + otherPlayers
+				+ " | hint=other players are online; sleeping alone will not skip night, wait for player_sleeping or keep working";
+		}
+		return timeText + " | hint=you can sleep in a bed now";
 	}
 
 	// ---- get_surroundings(S3.2、M1.2、A1) ----
@@ -682,7 +714,8 @@ public final class Observation {
 			sleepingNow.add(other.getUUID());
 			if (!sleepingPlayers.contains(other.getUUID())) {
 				agent.events.add("player_sleeping", Event.Level.PROMPT, Kv.of()
-					.put("player", other.getName().getString()).put("pos", Fmt.pos(other.blockPosition())).toString());
+					.put("player", other.getName().getString()).put("pos", Fmt.pos(other.blockPosition()))
+					+ " | hint=another player is sleeping; sleep in a bed if you want to skip the night together");
 			}
 		}
 		sleepingPlayers.retainAll(sleepingNow);
@@ -691,6 +724,7 @@ public final class Observation {
 		if (dimension.equals(Level.OVERWORLD)) {
 			long clock = mc.level.getOverworldClockTime();
 			String phase = DayClock.phase(clock);
+			int others = otherOnlinePlayers(mc);
 			var rule = mc.level.environmentAttributes().getValue(EnvironmentAttributes.BED_RULE, p.blockPosition());
 			boolean sleepable = bedUsable(rule) && rule.canSleep(mc.level);
 			if (firstOrResumed || changedDimension) sleepReadyReported = sleepable;
@@ -701,13 +735,14 @@ public final class Observation {
 				CombatPolicy.Readiness r = CombatPolicy.readiness(Combat.assess(p));
 				agent.events.add("night_falling", Event.Level.BATCH,
 					DayClock.describe(clock) + (sleepIn != null ? " " + sleepIn : "") + " " + Kv.of().put("gear", r.label())
-						.put("missing", r.missing().isEmpty() ? "none" : String.join(",", r.missing())) + " | hint=head to shelter or a bed");
+						.put("missing", r.missing().isEmpty() ? "none" : String.join(",", r.missing()))
+						+ " | hint=" + nightFallingHint(others));
 			} else if (phase.equals("day")) {
 				nightReported = false;
 			}
 			if (sleepable && !sleepReadyReported) {
 				sleepReadyReported = true;
-				agent.events.add("can_sleep", Event.Level.PROMPT, DayClock.describe(clock) + " | hint=you can sleep in a bed now");
+				agent.events.add("can_sleep", Event.Level.PROMPT, canSleepEventText(DayClock.describe(clock), others));
 			} else if (!sleepable) {
 				sleepReadyReported = false;
 			}

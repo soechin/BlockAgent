@@ -62,4 +62,18 @@ class ObservationTest {
 		assertTrue(dropAgain.fire());
 		assertTrue(dropAgain.reported());
 	}
+
+	@Test
+	void sleepEventsAdaptWhenOtherPlayersAreOnline() {
+		String soloCanSleep = Observation.canSleepEventText("time=night", 0);
+		assertEquals("time=night | hint=you can sleep in a bed now", soloCanSleep);
+
+		String multiCanSleep = Observation.canSleepEventText("time=night", 2);
+		assertTrue(multiCanSleep.contains("other_players=2"));
+		assertTrue(multiCanSleep.contains("player_sleeping"));
+		assertFalse(multiCanSleep.contains("you can sleep in a bed now"));
+
+		assertTrue(Observation.nightFallingHint(0).contains("keep working"));
+		assertTrue(Observation.nightFallingHint(1).contains("other players are online"));
+	}
 }

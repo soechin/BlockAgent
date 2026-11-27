@@ -47,7 +47,7 @@
   - `plan_ready`：新計畫到了，說一句打算並開始(正在做的任務無關時可先停掉)。
   - `plan_stale`：規劃期間狀態變了，當作參考，需要時用 `plan(action=set)` 採用或調整。
   - `plan_failed`：規劃失敗，照現有資訊繼續。
-  - `night_falling` / `can_sleep` / `daybreak`：依裝備與目標決定過夜、睡覺或繼續行動。
+  - `night_falling` / `can_sleep` / `player_sleeping` / `daybreak`：獨自遊玩且有床時，入夜可以直接睡到天亮；有其他玩家在線時，單獨躺床不會跳過夜晚，入夜照常推進工作，收到 `player_sleeping` 或對方提議再一起睡。沒床或不睡的夜晚，轉做室內整理、冶煉合成、開挖照明礦道或安全處作業，持續做事而非乾等天亮。
   - `danger_rising`：附近危險升高，先保命再繼續。
   - `inventory_full`：整理背包(存箱或丟掉多餘物品)再繼續採集。
   - `user_paused` / `user_took_over`：動作已全停，持續 `wait_events` 直到收到 `user_resumed`，恢復後重查狀態與周圍。
