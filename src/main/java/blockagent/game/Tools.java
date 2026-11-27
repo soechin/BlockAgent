@@ -1296,7 +1296,7 @@ public final class Tools {
 		return switch (Facing.solve(mc.level, mc.player, p, bi, facing)) {
 			case Facing.Found f -> a.tasks.start(new PlaceTask(a, mc.level, p, item, facing, f.plan()), replace,
 				Kv.of().put("against", Fmt.pos(f.plan().hit().getBlockPos())).put("click", f.plan().hit().getDirection().getSerializedName()).toString());
-			case Facing.NoFacing n -> noFacing(at, bi.getBlock().defaultBlockState());
+			case Facing.NoFacing _ -> noFacing(at, bi.getBlock().defaultBlockState());
 			case Facing.NoWay w -> ToolResult.error(ErrorCode.INVALID_ARGUMENT, at.putIf(!w.possible().isEmpty(), "possible", w.possible()),
 				"no adjacent face here can give that facing",
 				"place a supporting block on the side that facing needs, or pick another facing");

@@ -352,7 +352,7 @@ public final class Reflexes {
 	}
 
 	/** 剛收手、還在冷卻的怪物；只有在冷卻開始之後又打了自己的才提早解除(H8、P3-M2)。 */
-	private java.util.function.Predicate<Entity> coolingDown(Minecraft mc) {
+	private java.util.function.Predicate<Entity> coolingDown() {
 		long now = agent.tick();
 		defenseCooldown.prune(now);
 		if (defenseCooldown.isEmpty()) return e -> false;
@@ -362,7 +362,7 @@ public final class Reflexes {
 	}
 
 	private Combat.Threat nextThreat(Minecraft mc) {
-		var ignore = coolingDown(mc);
+		var ignore = coolingDown();
 		if (agent.tasks.current() instanceof blockagent.game.tasks.HuntTask hunt) {
 			ignore = ignore.or(e -> e == hunt.target());
 		}

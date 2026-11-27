@@ -56,8 +56,17 @@
 
 ---
 
-## 6. 不留多餘的 import 與死碼
+## 6. 不留多餘的 import、死碼與棄用 API
 
-- **Java 改完先跑 `./gradlew spotlessApply`**：Spotless 只負責刪掉沒用到的 import(含 `import static`)，不改其他排版；`./gradlew build` 會跑 `spotlessCheck`，有漏掉的就失敗。`javac` 本身不會警告未使用的 import，不要靠編譯通過判斷。
-- **Python 要自己檢查**：`bin/`、`src/test/python` 沒有接工具，刪除、搬移或改寫程式碼後，回頭看 import 清單，把不再使用的一起刪掉。
-- **連帶清掉沒人用的私有成員**：改動後不再被呼叫的 `private` 方法、欄位、區域變數一併刪除，不要留著「以後可能用到」。
+Java 由工具把關，`./gradlew build` 任一項不過就失敗：
+
+| 問題 | 工具 | 怎麼處理 |
+|---|---|---|
+| 沒用到的 import(含 `import static`) | Spotless `removeUnusedImports` | 跑 `./gradlew spotlessApply` 自動刪掉 |
+| 沒用到的區域變數、`private` 欄位/方法、`private` 方法參數 | PMD(`config/pmd/unused.xml`) | 依 `./gradlew pmdMain pmdTest pmdGametest` 列出的位置刪掉 |
+| 被棄用或即將移除的 API | `javac -Xlint:deprecation,removal -Werror` | 改用替代 API，先用 `javap` 確認替代方法的行為(見 §2) |
+
+- **刪不掉的就用 `_`**：型別模式、`for` 迴圈、lambda 參數必須存在但用不到時，寫成 `_`；方法參考要配合固定簽章時改成 lambda(例：`(g, _) -> render(g)`)。
+- **`mixin` 套件不跑 PMD**：handler 由 Mixin 依註解呼叫，參數也得照目標方法簽章，PMD 會全部誤報。改 Mixin 時自己檢查有沒有留下沒用到的東西。
+- **Python 要自己檢查**：`bin/`、`src/test/python` 沒有接工具，刪除、搬移或改寫程式碼後，回頭看 import 和變數，把不再使用的一起刪掉。
+- **不要留著「以後可能用到」**：改動後不再被呼叫的程式碼直接刪除，需要時從 git 歷史找回。

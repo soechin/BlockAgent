@@ -81,7 +81,7 @@ public final class CoverRoute {
 
 	private BlockPos find(Minecraft mc, BlockPos start, List<? extends Entity> shooters) {
 		Level level = mc.level;
-		if (!level.hasChunkAt(start)) return null;
+		if (!level.isLoaded(start)) return null;
 		BlockPos origin = resolveOrigin(start, canStand(level, start), mc.player.onGround(),
 			mc.player.isInWater(), canStand(level, start.below()));
 		if (origin == null) return null;
@@ -126,7 +126,7 @@ public final class CoverRoute {
 	}
 
 	private static boolean canStand(Level level, BlockPos pos) {
-		if (!level.hasChunkAt(pos) || !passable(level, pos) || !passable(level, pos.above())) return false;
+		if (!level.isLoaded(pos) || !passable(level, pos) || !passable(level, pos.above())) return false;
 		BlockPos below = pos.below();
 		var floor = level.getBlockState(below);
 		return floor.getFluidState().isEmpty() && !floor.is(Blocks.MAGMA_BLOCK)

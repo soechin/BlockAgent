@@ -6,7 +6,6 @@ import blockagent.game.tasks.Task;
 import blockagent.mcp.AiPresence;
 import blockagent.mcp.McpServer;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
-import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -52,7 +51,7 @@ public final class Hud {
 	}
 
 	public void register() {
-		HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("blockagent", "status"), this::render);
+		HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("blockagent", "status"), (g, _) -> render(g));
 	}
 
 	/** 第一行的文字(測試用)。 */
@@ -192,7 +191,7 @@ public final class Hud {
 		layoutWidth = maxWidth;
 	}
 
-	private void render(GuiGraphicsExtractor g, DeltaTracker delta) {
+	private void render(GuiGraphicsExtractor g) {
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.gui.hud.isHidden() || agent.session.state() == Session.State.NO_WORLD) return;
 		if (agent.tick() - lastUpdateTick >= 10 || agent.tick() < lastUpdateTick) {

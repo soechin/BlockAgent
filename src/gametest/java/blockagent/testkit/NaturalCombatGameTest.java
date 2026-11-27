@@ -380,7 +380,7 @@ public class NaturalCombatGameTest implements FabricClientGameTest {
 		return k.server.computeOnServer(s -> {
 			int n = 0;
 			for (var t : List.of(EntityTypes.ZOMBIE, EntityTypes.SKELETON, EntityTypes.CREEPER, EntityTypes.SPIDER)) {
-				for (var e : s.overworld().getEntities(t, x -> x.isAlive() && x.position().distanceTo(me) <= radius)) n++;
+				for (var _ : s.overworld().getEntities(t, x -> x.isAlive() && x.position().distanceTo(me) <= radius)) n++;
 			}
 			return n;
 		});

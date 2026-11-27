@@ -61,7 +61,6 @@ public final class UseEntityTask extends EntityTask {
 
 	@Override
 	protected void tick(Minecraft mc) {
-		var p = mc.player;
 		if (usedTick >= 0) {
 			collect(mc);
 			return;

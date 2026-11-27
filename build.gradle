@@ -1,6 +1,7 @@
 plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 	id 'com.diffplug.spotless' version '8.12.0'
+	id 'pmd'
 }
 
 base {
@@ -111,6 +112,8 @@ tasks.named('jar') {
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 25
 	it.options.encoding = 'UTF-8'
+	// 用到被棄用或即將移除的 API 就編譯失敗(docs/DEV_RULES.md §6)
+	it.options.compilerArgs += ['-Xlint:deprecation,removal', '-Werror']
 }
 
 java {
@@ -125,6 +128,18 @@ spotless {
 		target 'src/**/*.java'
 		removeUnusedImports()
 	}
+}
+
+// 抓沒用到的區域變數、私有欄位、私有方法與參數；./gradlew build 會跑，有就失敗(docs/DEV_RULES.md §6)
+pmd {
+	toolVersion = '7.29.0'
+	ruleSets = []
+	ruleSetFiles = files('config/pmd/unused.xml')
+	consoleOutput = true
+}
+// Mixin 的 handler 由 Mixin 依註解呼叫，參數也得照目標方法簽章，PMD 會全部誤報成沒用到
+tasks.withType(Pmd).configureEach {
+	exclude '**/mixin/**'
 }
 
 test {

@@ -501,7 +501,7 @@ public final class BuildTask extends Task {
 	}
 
 	/** 蓋完或失敗：有鷹架就先拆，拆完才真的結束。 */
-	private void finish(Minecraft mc, ErrorCode code, String text) {
+	private void finish(ErrorCode code, String text) {
 		endCode = code;
 		endText = text;
 		if (scaffold.isEmpty()) {
@@ -654,7 +654,7 @@ public final class BuildTask extends Task {
 				building = false;
 			}
 			if (!doors.tick(mc, this::path)) return;
-			finish(mc, null, "result=" + verb + summary());
+			finish(null, "result=" + verb + summary());
 			return;
 		}
 		if (!building) startBuilder();
@@ -664,13 +664,13 @@ public final class BuildTask extends Task {
 			lastPlaced = n;
 		}
 		if (ticksSinceProgress() > STALL_TICKS) {
-			finish(mc, ErrorCode.PATH_BLOCKED, "no new block placed for " + (STALL_TICKS / 20) + " s (leaves, terrain or standing spot in the way; "
+			finish(ErrorCode.PATH_BLOCKED, "no new block placed for " + (STALL_TICKS / 20) + " s (leaves, terrain or standing spot in the way; "
 				+ "clear nearby obstacles or move, then call again); " + remaining(mc));
 			return;
 		}
 		if (!Bari.b().getBuilderProcess().isActive()) {
 			if (++idleTicks > 40) {
-				finish(mc, ErrorCode.PATH_BLOCKED, "builder stopped midway (out of materials, unreachable cells, or blocked by a rule); " + remaining(mc));
+				finish(ErrorCode.PATH_BLOCKED, "builder stopped midway (out of materials, unreachable cells, or blocked by a rule); " + remaining(mc));
 			}
 		} else {
 			idleTicks = 0;

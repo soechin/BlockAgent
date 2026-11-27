@@ -246,7 +246,6 @@ public final class CraftTask extends Task {
 			case DONE -> {
 				MenuOps.close(mc);
 				markOpenedContainer(false);
-				int made = Inv.count(mc.player, item(target)) - startTargetCount;
 				done(ownTableUsed ? "placed_table=" + blockagent.game.Fmt.pos(tablePos) : "");
 			}
 		}
