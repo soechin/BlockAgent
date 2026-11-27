@@ -32,7 +32,7 @@ public final class CoverRoute {
 	private BlockPos goal;
 	private BlockPos lastPosition;
 	private long movedAt;
-	private long searchedAt = Long.MIN_VALUE / 2;
+	private long failedAt = Long.MIN_VALUE / 2;
 
 	private record Step(BlockPos pos, int cost, int exposed) {
 	}
@@ -41,14 +41,15 @@ public final class CoverRoute {
 		rejected.clear();
 		goal = null;
 		lastPosition = null;
-		searchedAt = Long.MIN_VALUE / 2;
+		failedAt = Long.MIN_VALUE / 2;
 	}
 
 	/** 射手或玩家移動時驗證掩體；無路可走時節流重試。 */
 	public BlockPos choose(Minecraft mc, List<? extends Entity> shooters, long now) {
 		if (shooters.isEmpty()) return null;
 		BlockPos position = mc.player.blockPosition();
-		if (goal != null) {
+		boolean hadGoal = goal != null;
+		if (hadGoal) {
 			if (!position.equals(lastPosition)) movedAt = now;
 			lastPosition = position;
 			if (!position.equals(goal) && now - movedAt >= STALL_TICKS) {
@@ -60,37 +61,50 @@ public final class CoverRoute {
 				goal = null;
 			}
 		}
-		if (now - searchedAt < RETRY_TICKS) return null;
-		searchedAt = now;
+		if (shouldThrottleRetry(hadGoal, now, failedAt)) return null;
 		goal = find(mc, position, shooters);
+		failedAt = goal == null ? now : Long.MIN_VALUE / 2;
 		lastPosition = position;
 		movedAt = now;
 		return goal;
 	}
 
+	static boolean shouldThrottleRetry(boolean hadGoal, long now, long failedAt) {
+		return !hadGoal && now - failedAt < RETRY_TICKS;
+	}
+
+	static BlockPos resolveOrigin(BlockPos start, boolean standStart, boolean onGround, boolean inWater, boolean standBelow) {
+		if (standStart) return start;
+		if (!onGround && standBelow) return start.below();
+		return (onGround || inWater) ? start : null;
+	}
+
 	private BlockPos find(Minecraft mc, BlockPos start, List<? extends Entity> shooters) {
 		Level level = mc.level;
-		if (!canStand(level, start)) return null;
-		double minGap = nearestShooter(start, shooters) + 1;
+		if (!level.hasChunkAt(start)) return null;
+		BlockPos origin = resolveOrigin(start, canStand(level, start), mc.player.onGround(),
+			mc.player.isInWater(), canStand(level, start.below()));
+		if (origin == null) return null;
+		double minGap = nearestShooter(origin, shooters) + 1;
 		PriorityQueue<Step> open = new PriorityQueue<>(Comparator.comparingInt(Step::cost));
 		Map<BlockPos, Integer> costs = new HashMap<>();
 		Map<BlockPos, Integer> visibility = new HashMap<>();
-		open.add(new Step(start, 0, exposure(mc, start, shooters)));
-		costs.put(start, 0);
+		open.add(new Step(origin, 0, exposure(mc, origin, shooters)));
+		costs.put(origin, 0);
 		int expanded = 0;
 		while (!open.isEmpty() && expanded < SEARCH_LIMIT) {
 			Step current = open.remove();
 			if (current.cost() != costs.get(current.pos())) continue;
 			expanded++;
-			if (current.exposed() == 0 && !current.pos().equals(start) && !rejected.contains(current.pos())
+			if (current.exposed() == 0 && !current.pos().equals(origin) && !rejected.contains(current.pos())
 				&& nearestShooter(current.pos(), shooters) >= minGap && !lavaNearby(level, current.pos())) {
 				return current.pos();
 			}
 			for (Direction direction : Direction.Plane.HORIZONTAL) {
 				BlockPos next = adjacentStep(level, current.pos(), direction);
-				if (next == null || Math.abs(next.getX() - start.getX()) > SEARCH_RADIUS
-					|| Math.abs(next.getY() - start.getY()) > SEARCH_HEIGHT
-					|| Math.abs(next.getZ() - start.getZ()) > SEARCH_RADIUS) continue;
+				if (next == null || Math.abs(next.getX() - origin.getX()) > SEARCH_RADIUS
+					|| Math.abs(next.getY() - origin.getY()) > SEARCH_HEIGHT
+					|| Math.abs(next.getZ() - origin.getZ()) > SEARCH_RADIUS) continue;
 				int exposed = visibility.computeIfAbsent(next, b -> exposure(mc, b, shooters));
 				int cost = current.cost() + 1 + Math.abs(next.getY() - current.pos().getY())
 					+ EXPOSURE_COST * exposed;

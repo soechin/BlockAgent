@@ -280,6 +280,20 @@ public final class Inv {
 		mc.gameMode.handleContainerInput(menu.containerId, slot, button, type, mc.player);
 	}
 
+	/** 把背包第 idx 格拿到手上(已在快捷列就直接切過去，否則跟目前選的快捷列格交換)。 */
+	public static boolean selectSlotInHand(Minecraft mc, int idx) {
+		if (idx < 0 || idx >= MAIN_SIZE) return false;
+		Player p = mc.player;
+		Inventory inv = p.getInventory();
+		if (idx < 9) {
+			inv.setSelectedSlot(idx);
+			return true;
+		}
+		if (p.containerMenu != p.inventoryMenu) return false;
+		click(mc, p.inventoryMenu, menuSlot(idx), inv.getSelectedSlot(), ContainerInput.SWAP);
+		return true;
+	}
+
 	/** 把符合條件的物品拿到手上(必要時從主背包換到目前選的快捷列格)。 */
 	public static boolean selectInHand(Minecraft mc, Predicate<ItemStack> pred) {
 		Player p = mc.player;

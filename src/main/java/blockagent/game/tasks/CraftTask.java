@@ -84,7 +84,8 @@ public final class CraftTask extends Task {
 	}
 
 	private static boolean localPlacementVisible(Minecraft mc, BlockPos pos) {
-		var hit = mc.level.clip(new ClipContext(mc.player.getEyePosition(), Vec3.atCenterOf(pos.below()),
+		Vec3 top = Vec3.atCenterOf(pos.below()).add(0, 0.49, 0);
+		var hit = mc.level.clip(new ClipContext(mc.player.getEyePosition(), top,
 			ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, mc.player));
 		return hit.getBlockPos().equals(pos.below()) && hit.getDirection() == Direction.UP;
 	}
@@ -190,6 +191,7 @@ public final class CraftTask extends Task {
 				boolean inReach = tableInReach(mc, tablePos);
 				if (!inReach && avoidWalkingForTable(agent, mc)) {
 					Bari.stopAll();
+					tablePos = null;
 					phase = Phase.PLACE_TABLE;
 					waitTicks = 0;
 				} else if (inReach) {

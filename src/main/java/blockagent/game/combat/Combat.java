@@ -96,6 +96,7 @@ public final class Combat {
 	private long crossbowAimStart;
 	private long crossbowAimTick = -1;
 	private float crossbowAimYaw;
+	private float crossbowAimPitch;
 	private final ShieldGuard guard = new ShieldGuard();
 	/** 這個 tick 有遠程攻擊需要戒備(擋箭空檔可平砍但不跳劈)。 */
 	private boolean guardActive;
@@ -208,7 +209,13 @@ public final class Combat {
 	public void engage(LivingEntity e) {
 		if (e == target) return;
 		if (target != null) {
-			if (targetDied() && recentlyAttackedTarget()) kills++;
+			boolean died = targetDied();
+			if (died && recentlyAttackedTarget()) kills++;
+			// 舊目標已死或原本只是避開深水目標時，換目標後重新評估勝算，不沿用舊的脫身狀態。
+			if (shouldResetOutmatchedOnRetarget(died, escapeTactic)) {
+				outmatched = false;
+				escapeTactic = "disengage_outmatched";
+			}
 			cancelDraw(Minecraft.getInstance(), "target_changed");
 		}
 		target = e;
@@ -276,7 +283,8 @@ public final class Combat {
 		LocalPlayer p = mc.player;
 		if (gone(mc)) return true;
 		double d = target.distanceTo(p);
-		Threats.Kind k = targetKind(mc, Bow.ready(p));
+		boolean canShoot = readyToShoot(p);
+		Threats.Kind k = targetKind(mc, canShoot);
 		if (k == Threats.Kind.AVOID) return d > 24;
 		// 脫身要甩掉整群：最近的威脅超過 18 格，或超過 12 格而且 3 秒都沒有一隻看得到自己。
 		// 只看目標、躲到牆後就收手的話，牠們繞過來或追上來又觸發自衛(遊戲測試：被 2 隻殭屍追 30 秒觸發 8 次)
@@ -288,7 +296,7 @@ public final class Combat {
 		if (d > TRIGGER_RANGE + 2 || lostSightTicks > sightLimit) return true;
 		return switch (k) {
 			case EXPLODER -> d > 10;
-			case MELEE, NEUTRAL -> d > MELEE_RANGE && !(k == Threats.Kind.MELEE && Bow.ready(p) && lostSightTicks == 0);
+			case MELEE, NEUTRAL -> d > MELEE_RANGE && !(k == Threats.Kind.MELEE && canShoot && lostSightTicks == 0);
 			default -> false;
 		};
 	}
@@ -319,7 +327,7 @@ public final class Combat {
 		boolean los = p.hasLineOfSight(target);
 		lostSightTicks = los ? 0 : lostSightTicks + 1;
 		boolean hostile = target instanceof Enemy;
-		boolean bow = hostile && Bow.canShoot(target) && Bow.ready(p);
+		boolean bow = hostile && Bow.canShoot(target) && readyToShoot(p);
 		Threats.Kind k = targetKind(mc, bow);
 		agent.danger.setIgnoredEntity(outmatched ? -1 : target.getId());
 		shooting = false;
@@ -549,7 +557,7 @@ public final class Combat {
 	// ---- 戰術 ----
 
 	private void melee(Minecraft mc, double d, boolean los) {
-		CombatPolicy.Fighter me = assess(mc.player);
+		CombatPolicy.Fighter me = assessSelf(mc.player);
 		int others = meleeNear(mc);
 		if (los && target instanceof Enemy && Bow.canShoot(target) && (d > 6 || keepDrawing(mc.player, d, 3.5))
 			&& CombatPolicy.worthShooting(me, target.getHealth(), others, archersSeeingMe(mc).size())
@@ -673,7 +681,7 @@ public final class Combat {
 	}
 
 	private void ranged(Minecraft mc, double d, boolean los) {
-		CombatPolicy.Fighter me = assess(mc.player);
+		CombatPolicy.Fighter me = assessSelf(mc.player);
 		List<LivingEntity> archers = archersSeeingMe(mc);
 		int melee = meleeNear(mc), exposed = rangedExposed(mc, archers);
 		int shooters = archers.size();
@@ -989,24 +997,41 @@ public final class Combat {
 		return mc.level.getBlockState(head).getCollisionShape(mc.level, head).isEmpty();
 	}
 
+	private CombatPolicy.Fighter assessSelf(LocalPlayer p) {
+		CombatPolicy.Fighter me = assess(p);
+		return me.bow() && !readyToShoot(p)
+			? new CombatPolicy.Fighter(me.hp(), me.weaponDamage(), me.attackInterval(), me.armor(), me.shield(), false, me.food(), me.canCrit())
+			: me;
+	}
+
 	private boolean worthShooting(Minecraft mc) {
-		return CombatPolicy.worthShooting(assess(mc.player), target.getHealth(), meleeNear(mc), archersSeeingMe(mc).size());
+		return CombatPolicy.worthShooting(assessSelf(mc.player), target.getHealth(), meleeNear(mc), archersSeeingMe(mc).size());
 	}
 
 	private static boolean keepDrawing(LocalPlayer player, double distance, double minimum) {
 		return drawingBow(player) && CombatPolicy.canContinueDraw(distance, minimum, player.getTicksUsingItem());
 	}
 
-	private boolean loadedCrossbowReady(LocalPlayer p) {
-		// 發射後，客戶端要等伺服器同步，快捷列上的弩才會從已裝填變成空弩。
-		if (firedCrossbowSlot >= 0 && agent.tick() - crossbowFiredAt <= ArcheryLog.SPAWN_WAIT_TICKS
-			&& Bow.loadedArrowCrossbow(p.getInventory().getItem(firedCrossbowSlot))) return false;
-		firedCrossbowSlot = -1;
-		return Inv.find(p, Bow::loadedArrowCrossbow) >= 0;
+	private int findLoadedCrossbow(LocalPlayer p) {
+		// 發射後，客戶端要等伺服器同步，快捷列上的弩才會從已裝填變成空弩；若有第二把已裝填的弩仍可使用。
+		boolean skipFired = firedCrossbowSlot >= 0 && agent.tick() - crossbowFiredAt <= ArcheryLog.SPAWN_WAIT_TICKS
+			&& Bow.loadedArrowCrossbow(p.getInventory().getItem(firedCrossbowSlot));
+		if (!skipFired) firedCrossbowSlot = -1;
+		var inv = p.getInventory();
+		for (int i = 0; i < Inv.MAIN_SIZE; i++) {
+			if (skipFired && i == firedCrossbowSlot) continue;
+			var stack = inv.getItem(i);
+			if (!stack.isEmpty() && Bow.loadedArrowCrossbow(stack)) return i;
+		}
+		return -1;
+	}
+
+	private boolean readyToShoot(LocalPlayer p) {
+		return findLoadedCrossbow(p) >= 0 || Bow.bowAndAmmo(p);
 	}
 
 	private double shotSpeed(LocalPlayer p) {
-		return loadedCrossbowReady(p) ? Bow.CROSSBOW_SPEED : Ballistics.FULL_BOW_SPEED;
+		return findLoadedCrossbow(p) >= 0 ? Bow.CROSSBOW_SPEED : Ballistics.FULL_BOW_SPEED;
 	}
 
 	private boolean clearShot(LocalPlayer p) {
@@ -1030,7 +1055,8 @@ public final class Combat {
 			shooting = true;
 			return true;
 		}
-		boolean crossbow = loadedCrossbowReady(p);
+		int crossbowSlot = findLoadedCrossbow(p);
+		boolean crossbow = crossbowSlot >= 0;
 		if (!crossbow && !Bow.bowAndAmmo(p)) return false;
 		double speed = crossbow ? Bow.CROSSBOW_SPEED : Ballistics.FULL_BOW_SPEED;
 		if (!Bow.hasClearShot(p, target, speed) || !Bow.aim(p, target, speed)) return false;
@@ -1038,7 +1064,14 @@ public final class Combat {
 			if (p.getUsedItemHand() != InteractionHand.OFF_HAND) return false;
 			lowerShield(mc);
 		}
-		if (!Inv.selectInHand(mc, crossbow ? Bow::loadedArrowCrossbow : Bow::isBow)) return false;
+		if (crossbow) {
+			if (crossbowSlot >= 9 && firedCrossbowSlot >= 0 && p.getInventory().getSelectedSlot() == firedCrossbowSlot) {
+				p.getInventory().setSelectedSlot((firedCrossbowSlot + 1) % 9);
+			}
+			if (!Inv.selectSlotInHand(mc, crossbowSlot)) return false;
+		} else if (!Inv.selectInHand(mc, Bow::isBow)) {
+			return false;
+		}
 		halt();
 		tactic(label);
 		if (crossbow) {
@@ -1058,14 +1091,23 @@ public final class Combat {
 		return shooting;
 	}
 
+	static boolean shouldResetOutmatchedOnRetarget(boolean targetDied, String escapeTactic) {
+		return targetDied || "leave_deep_water".equals(escapeTactic);
+	}
+
+	static boolean crossbowAimChanged(float yaw, float refYaw, float pitch, float refPitch) {
+		return Math.abs(Mth.wrapDegrees(yaw - refYaw)) > 4 || Math.abs(pitch - refPitch) > 4;
+	}
+
 	/** 原版弩使用伺服器上一個實體 tick 的頭部朝向，先同步視角再等伺服器更新。 */
 	private boolean crossbowAimSettled(LocalPlayer player) {
 		long now = agent.tick();
 		if (aimingCrossbowAt != target.getId() || now - crossbowAimTick > 1
-			|| Math.abs(Mth.wrapDegrees(player.getYRot() - crossbowAimYaw)) > 4) {
+			|| crossbowAimChanged(player.getYRot(), crossbowAimYaw, player.getXRot(), crossbowAimPitch)) {
 			aimingCrossbowAt = target.getId();
 			crossbowAimStart = now;
 			crossbowAimYaw = player.getYRot();
+			crossbowAimPitch = player.getXRot();
 			syncShotRotation(player);
 		}
 		crossbowAimTick = now;

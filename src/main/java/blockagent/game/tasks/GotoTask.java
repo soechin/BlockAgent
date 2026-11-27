@@ -26,6 +26,7 @@ import java.util.List;
 public final class GotoTask extends Task {
 	private static final int SHORE_MAX_STEPS = 8;
 	private static final int SHORE_TIMEOUT_TICKS = 160;
+	private static final int MAX_SHORE_ATTEMPTS = 3;
 	private static final int ESCAPE_WATCH_TICKS = 20 * 30;
 	private static final int ESCAPE_REPLAN_INTERVAL = 20;
 	private static final int ESCAPE_REPLAN_LIMIT = 2;
@@ -58,10 +59,11 @@ public final class GotoTask extends Task {
 	private int idleTicks;
 	private double bestHeuristic = Double.POSITIVE_INFINITY;
 	private final ArrayDeque<BlockPos> shoreSteps = new ArrayDeque<>();
-	private boolean triedShore;
+	private int shoreAttempts;
 	private ClientLevel shoreLevel;
 	private BlockPos shoreFrom;
 	private long shoreDeadline;
+	private long escapeWatchArmedAt = Long.MIN_VALUE / 2;
 	private long escapeWatchUntil;
 	private long nextThreatCheck;
 	private int escapeReplans;
@@ -145,8 +147,10 @@ public final class GotoTask extends Task {
 
 	/** 脫身後的第一段路會短暫檢查追兵移動，原本的目的地及任務逾時照舊。 */
 	public void watchThreatsAfterEscape() {
-		escapeWatchUntil = agent.tick() + ESCAPE_WATCH_TICKS;
-		nextThreatCheck = agent.tick() + ESCAPE_REPLAN_INTERVAL;
+		long now = agent.tick();
+		escapeWatchArmedAt = now;
+		escapeWatchUntil = now + ESCAPE_WATCH_TICKS;
+		nextThreatCheck = now + ESCAPE_REPLAN_INTERVAL;
 		escapeReplans = 0;
 	}
 
@@ -195,11 +199,11 @@ public final class GotoTask extends Task {
 	private boolean startShoreExit(Minecraft mc) {
 		var player = mc.player;
 		BlockPos start = player.blockPosition();
-		if (triedShore || player.isEyeInFluid(FluidTags.WATER) || !shallowWater(mc.level, start)) return false;
+		if (shoreAttempts >= MAX_SHORE_ATTEMPTS || player.isEyeInFluid(FluidTags.WATER) || !shallowWater(mc.level, start)) return false;
 
 		if (!planShoreRoute(mc.level, start)) return false;
 		Bari.stopAll();
-		triedShore = true;
+		shoreAttempts++;
 		shoreLevel = mc.level;
 		shoreDeadline = agent.tick() + SHORE_TIMEOUT_TICKS;
 		markProgress();
@@ -322,6 +326,20 @@ public final class GotoTask extends Task {
 			shoreSteps.clear();
 		}
 		Bari.stopAll();
+	}
+
+	static boolean shouldShiftEscapeWatch(long watchUntil, long armedAt, long suspendedAt) {
+		return watchUntil > 0 && armedAt <= suspendedAt;
+	}
+
+	@Override
+	protected void onShiftTimers(long pausedTicks) {
+		if (shouldShiftEscapeWatch(escapeWatchUntil, escapeWatchArmedAt, suspendedAt)) {
+			escapeWatchArmedAt += pausedTicks;
+			escapeWatchUntil += pausedTicks;
+			if (nextThreatCheck > 0) nextThreatCheck += pausedTicks;
+		}
+		if (shoreDeadline > 0) shoreDeadline += pausedTicks;
 	}
 
 	@Override

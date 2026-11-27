@@ -206,13 +206,13 @@
   - **方向**：對具 `BlockStateProperties.OPEN` / `POWERED` / `LIT` 等互動狀態的方塊，在 `use_block` 回傳結果中附上操作後狀態(如 `open=false`)。
   - **處理(2026-11-26)**：`use_block` 回報適用的 `open`、`powered`、`lit`。尚待伺服器更新的按鈕或拉桿先等狀態更新，逾時標記 `state_pending=true`。
 
-- [ ] **R25. 屋內積水/站於床格上導致 `goto` 陷入 `PathNode map size: 1` 鎖死且缺診斷資訊**
+- [x] **R25. 屋內積水/站於床格上導致 `goto` 陷入 `PathNode map size: 1` 鎖死且缺診斷資訊**
   - **位置**：`src/main/java/blockagent/game/tasks/GotoTask.java:89-105`、`src/main/java/blockagent/mixin/CalculationContextMixin.java:19-28`
   - **證據**：新屋內`(101,65,73)` 出現水源積水(AI 本身水桶全程未倒出，旁有 `owner=other` 牆火把 `(101,66,72)`)，AI 在 `20:24:59`(`98,64,76` 水流中)、`20:26:24` 與 `20:26:31`(`97,64,76` 棕色床頭格、旁有 `water[level=5]` 與自有木板牆)連續 3 次 `goto` 均於 `latest.log:471-498` 印出 `22 movements considered / Open set size: 0 / PathNode map size: 1`，在 5×5 屋內完全無法移動，最後由使用者於 `20:26:35` 暫停清掉水源。
   - **問題**：在自有不可拆方塊包圍的室內站於床格/淺水流中時，Baritone 無法產生任何起步節點；且 `GotoTask` 失敗僅回傳通用訊息 `no path to ... (blocked, too far, or chunks not loaded)`，缺乏如 R8 `MineTask` 的周圍阻擋物診斷。
   - **方向**：釐清 Baritone 在床格/室內水流搭配 `canPathBreak` 產生 `PathNode map size: 1` 的成因並修正起步限制；`GotoTask` 失敗時補上當前座標與腳下/周圍阻擋方塊摘要。
-  - **決定(2026-11-26)**：屋內積水與床格案例依使用者指定略過。
-  - **室外驗證與處理(2026-11-26)**：角色站在露天的一格深水流，或站在四周皆為水流的單一水源，均可重現 `PathNode map size: 1`。`goto` 正常尋路失敗時，從仍可踩地的室外淺水找最多 8 步的上岸路線，落地後重新尋路到原目標。遊戲測試驗證同高度的岸、高一格的岸、中止後放開移動鍵，以及有屋頂時沿用原本行為。
+  - **決定(2026-11-26)**：屋內積水與床格案例依使用者指定略過，僅處理野外室外水源情境。
+  - **室外驗證與處理(2026-11-26–2026-11-27)**：角色站在露天的一格深水流，或站在四周皆為水流的單一水源，均可重現 `PathNode map size: 1`。`goto` 正常尋路失敗時，從仍可踩地的室外淺水找最多 8 步的上岸路線，落地後重新尋路到原目標(上岸途中若被反射暫停，恢復後仍允許重試，最多 3 次)。遊戲測試驗證同高度的岸、高一格的岸、中止後放開移動鍵，以及有屋頂時沿用原本行為。
 
 - [x] **R33. 豬布林(`Piglin`)一律歸為 `NEUTRAL` 且受限 6 格距離，遠程開弩或無金甲遇襲皆無自衛反應**
   - **位置**：`src/main/java/blockagent/game/combat/Threats.java:71-76`、`src/main/java/blockagent/game/combat/Combat.java:167-180`、`src/main/java/blockagent/game/combat/ShieldGuard.java:137-148`

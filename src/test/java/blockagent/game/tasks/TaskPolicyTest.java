@@ -102,4 +102,12 @@ class TaskPolicyTest {
 		assertFalse(blockagent.game.RuleGuard.shouldLogBuildBlocked(599, 500));
 		assertTrue(blockagent.game.RuleGuard.shouldLogBuildBlocked(600, 500));
 	}
+
+	/** GotoTask 脫身監控：剛於恢復當下啟用的監控窗不可再加暫停時間，先前啟用者才平移。 */
+	@Test
+	void gotoEscapeWatchShiftsOnlyWhenArmedBeforeSuspension() {
+		assertFalse(GotoTask.shouldShiftEscapeWatch(0, 100, 200));
+		assertFalse(GotoTask.shouldShiftEscapeWatch(850, 250, 100), "剛在 resume 前啟用，不可誤加上剛結束的撤退耗時");
+		assertTrue(GotoTask.shouldShiftEscapeWatch(850, 250, 300), "監控期間被其他反射暫停應平移計時窗");
+	}
 }
