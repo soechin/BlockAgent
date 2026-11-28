@@ -18,12 +18,11 @@ public final class CombatPolicy {
 	public static final float RETREAT_HP = 6f;
 	/** 撤退回血到這裡才算回來了。 */
 	public static final float RECOVERED_HP = 10f;
-	/** 一隻近戰怪實際每秒打掉的血(殭屍一下 3 點、最多每秒一下，被擊退後大約一半)。 */
-	public static final double MELEE_DPS = 1.5;
-	/** 一隻射得到自己(盾牌擋不到)的遠程怪每秒打掉的血(骷髏一般難度 2 秒一箭、平均 3.5 點)。 */
-	public static final double RANGED_DPS = 2.0;
-	/** 每點護甲減免的傷害比例(原版約 4%)。 */
-	public static final double ARMOR_REDUCTION = 0.04;
+	/** 普通難度的估算基準：殭屍一擊 3 點，骷髏每箭以 4 點估算。 */
+	private static final double BASE_MELEE_HIT = 3;
+	private static final double BASE_RANGED_HIT = 4;
+	public static final float HARD_RETREAT_MAX_HP = 14f;
+	private static final int HARD_RECOVERY_CLEAR_TICKS = 40;
 	/** 跳劈暴擊的傷害倍數。 */
 	public static final double CRIT_MULTIPLIER = 1.5;
 	/** 攻擊間隔短於這個(秒)時不跳劈：跳一次的時間比冷卻還長(空手 0.25 秒)，反而打得慢。 */
@@ -51,12 +50,39 @@ public final class CombatPolicy {
 	/** 箭的速度大約 1.6 格/tick。 */
 	public static final double ARROW_SPEED = 1.6;
 
+	public enum Difficulty {
+		PEACEFUL, EASY, NORMAL, HARD;
+
+		double scaledHit(double damage) {
+			return switch (this) {
+				case PEACEFUL -> 0;
+				case EASY -> Math.min(damage / 2 + 1, damage);
+				case NORMAL -> damage;
+				case HARD -> damage * 1.5;
+			};
+		}
+
+		/** 相對於普通模式每 40 tick 射一箭的頻率。 */
+		public double skeletonRate() {
+			return this == HARD ? 2 : 1;
+		}
+	}
+
 	/**
 	 * 自己的戰力：血量、最佳近戰武器的傷害和攻擊間隔(秒)、護甲值、有沒有盾牌、弓箭、可吃的食物，
 	 * 以及這一場能不能跳劈(不在水裡、不在梯子上)。
 	 */
 	public record Fighter(float hp, double weaponDamage, double attackInterval, int armor, boolean shield, boolean bow,
-		boolean food, boolean canCrit) {
+		boolean food, boolean canCrit, Difficulty difficulty, double armorToughness) {
+		public Fighter(float hp, double weaponDamage, double attackInterval, int armor, boolean shield, boolean bow,
+			boolean food, boolean canCrit) {
+			this(hp, weaponDamage, attackInterval, armor, shield, bow, food, canCrit, Difficulty.NORMAL, 0);
+		}
+
+		public boolean hard() {
+			return difficulty == Difficulty.HARD;
+		}
+
 		/** 跳劈划不划算：攻擊間隔夠長(劍、斧)才划算。 */
 		public boolean critWorthIt() {
 			return canCrit && attackInterval >= CRIT_MIN_INTERVAL;
@@ -68,10 +94,10 @@ public final class CombatPolicy {
 	 * 打死要幾秒 = ceil(目標血量 / 每下傷害) × 攻擊間隔，遠程怪每下至少隔 {@link #RANGED_REENGAGE_SECS}、再加上衝過去的時間。
 	 *
 	 * @param meleeNear     6 格內的近戰怪數量(包含目標本身，如果牠是近戰怪)
-	 * @param rangedExposed 看得到自己、而且盾牌擋不到的遠程怪數量：沒盾時是全部；有盾時只算不在正面(跟目標方向差 90 度以上)的
+	 * @param rangedExposed 遠程威脅，以每 2 秒一發的射手為單位，依射速與盾牌角度調整
 	 * @param rangedTarget  目標是遠程怪
 	 */
-	public static double expectedLoss(Fighter me, double targetHp, double distance, int meleeNear, int rangedExposed, boolean rangedTarget) {
+	public static double expectedLoss(Fighter me, double targetHp, double distance, int meleeNear, double rangedExposed, boolean rangedTarget) {
 		double perHit = Math.max(0.5, me.weaponDamage() * (me.critWorthIt() ? CRIT_MULTIPLIER : 1));
 		double interval = rangedTarget ? Math.max(me.attackInterval(), RANGED_REENGAGE_SECS) : me.attackInterval();
 		double secs = Math.ceil(Math.max(1, targetHp) / perHit) * interval;
@@ -80,18 +106,39 @@ public final class CombatPolicy {
 	}
 
 	/** 滿弓算每箭 6 點，並留一點瞄準、箭飛行及換手的時間。拉弓期間無法用盾。 */
-	public static double expectedBowLoss(Fighter me, double targetHp, int meleeNear, int rangedShooters) {
+	public static double expectedBowLoss(Fighter me, double targetHp, int meleeNear, double rangedShooters) {
 		double secs = Math.ceil(Math.max(1, targetHp) / 6.0) * 1.25;
 		return secs * incomingDps(me, meleeNear, rangedShooters);
 	}
 
-	private static double incomingDps(Fighter me, int meleeNear, int rangedExposed) {
-		return (meleeNear * MELEE_DPS + rangedExposed * RANGED_DPS)
-			* Math.max(0, 1 - Math.min(20, me.armor()) * ARMOR_REDUCTION);
+	private static double incomingDps(Fighter me, int meleeNear, double rangedExposed) {
+		// 近戰考慮擊退空檔，每 2 秒算一擊。遠程已按射速和暴露程度換算成相同單位。
+		double meleeHit = me.difficulty().scaledHit(BASE_MELEE_HIT);
+		double rangedHit = me.difficulty().scaledHit(BASE_RANGED_HIT);
+		return (meleeNear * damageAfterArmor(meleeHit, me.armor(), me.armorToughness())
+			+ rangedExposed * damageAfterArmor(rangedHit, me.armor(), me.armorToughness())) / 2;
 	}
 
-	public static boolean worthShooting(Fighter me, double targetHp, int meleeNear, int rangedShooters) {
-		return me.bow() && meleeNear == 0 && me.hp() - expectedBowLoss(me, targetHp, meleeNear, rangedShooters) > RETREAT_HP;
+	private static double damageAfterArmor(double damage, int armor, double toughness) {
+		double effectiveArmor = Math.clamp(armor - damage / (2 + toughness / 4), Math.min(20, armor * 0.2), 20);
+		return damage * (1 - effectiveArmor / 25);
+	}
+
+	public static double hardRetreatHp(int armor, double toughness, int meleeNear, int shooters) {
+		double nextHits = Math.min(2, meleeNear) * damageAfterArmor(Difficulty.HARD.scaledHit(BASE_MELEE_HIT), armor, toughness)
+			+ Math.min(2, shooters) * damageAfterArmor(Difficulty.HARD.scaledHit(BASE_RANGED_HIT), armor, toughness);
+		return Math.min(HARD_RETREAT_MAX_HP, RETREAT_HP + nextHits);
+	}
+
+	private static double fightReserve(Fighter me, int meleeNear, double rangedExposed) {
+		if (!me.hard()) return RETREAT_HP;
+		// 撤離保留至少一擊的餘裕。高射速影響持續掉血，單擊餘裕依攻擊類型計算。
+		return hardRetreatHp(me.armor(), me.armorToughness(), meleeNear > 0 && rangedExposed == 0 ? 1 : 0, rangedExposed > 0 ? 1 : 0);
+	}
+
+	public static boolean worthShooting(Fighter me, double targetHp, int meleeNear, double rangedShooters) {
+		return me.bow() && meleeNear == 0
+			&& me.hp() - expectedBowLoss(me, targetHp, meleeNear, rangedShooters) > fightReserve(me, meleeNear, rangedShooters);
 	}
 
 	/** 跨過開始拉弓的門檻後，保留一段緩衝距離，或在安全時放出已經拉了一段的箭。 */
@@ -100,8 +147,9 @@ public final class CombatPolicy {
 	}
 
 	/** 勝算：打完血量還在撤退線以上才打。 */
-	public static boolean worthFighting(Fighter me, double targetHp, double distance, int meleeNear, int rangedExposed, boolean rangedTarget) {
-		return me.hp() - expectedLoss(me, targetHp, distance, meleeNear, rangedExposed, rangedTarget) > RETREAT_HP;
+	public static boolean worthFighting(Fighter me, double targetHp, double distance, int meleeNear, double rangedExposed, boolean rangedTarget) {
+		return me.hp() - expectedLoss(me, targetHp, distance, meleeNear, rangedExposed, rangedTarget)
+			> fightReserve(me, meleeNear, rangedExposed);
 	}
 
 	public enum RangedStance {
@@ -131,7 +179,7 @@ public final class CombatPolicy {
 	}
 
 	public static RangedStance rangedStance(Fighter me, double distance, boolean clearShot, boolean stalled, double targetHp,
-		int meleeNear, int rangedExposed, int rangedShooters) {
+		int meleeNear, double rangedExposed, double rangedShooters) {
 		boolean preferRange = distance > 8 || (distance > 5 && (stalled || me.weaponDamage() <= 1));
 		if (clearShot && preferRange && worthShooting(me, targetHp, meleeNear, rangedShooters)) {
 			return RangedStance.SHOOT;
@@ -174,6 +222,15 @@ public final class CombatPolicy {
 	/** 撤退 RECOVER → RUN：12 格內有看得到自己的威脅，或 4 格內有威脅逼近。 */
 	public static boolean shouldLeaveRetreatRecover(int visible12, int near4) {
 		return visible12 > 0 || near4 > 0;
+	}
+
+	/** 困難模式保留兩秒連續安全時間，重新暴露時從頭計算。 */
+	public static int hardRecoveryClearTicks(int clearTicks, boolean unsafe) {
+		return unsafe ? 0 : Math.min(HARD_RECOVERY_CLEAR_TICKS, clearTicks + 1);
+	}
+
+	public static boolean canRecoverOnHard(int clearTicks) {
+		return clearTicks >= HARD_RECOVERY_CLEAR_TICKS;
 	}
 
 	/**

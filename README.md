@@ -87,6 +87,7 @@ AI 端只能用模組的工具：碰不到你電腦上的其他檔案和程式�
 - `cliTest`：T8、T9。用本機的假模型伺服器啟動 Claude Code 和 Codex，確認它們只看得到模組的工具、越權的呼叫全部失敗。需要本機裝有兩個 CLI。
 - `runClientGameTest`：核心安全底線與 Mixin 整合測試(`SmokeGameTest`、`ChatGameTest`、`RulesGameTest`、`SessionGameTest`、`ServerAndCreativeGameTest`)。會開一個 Minecraft 視窗自動跑完，可加 `-PtestOnly=ChatGameTest,RulesGameTest` 只跑幾個。
   `ServerAndCreativeGameTest` 會啟動專用伺服器驗證創造模式移動、`/fill` 權限與斷線收尾；執行時需加上 `-Peula=true` 表示同意 Minecraft EULA(`./gradlew runClientGameTest -Peula=true`)。
+  戰鬥測試可指定整場難度，例如 `./gradlew runClientGameTest -PtestOnly=CombatGameTest -PtestDifficulty=hard -PtestCase=difficulty_safety,hard_hunt,mixed,group_geared,group_cover`。
 
 ### 規劃服務測試
 

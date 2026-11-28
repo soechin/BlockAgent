@@ -103,6 +103,16 @@ public final class ShieldGuard {
 		arrowEta = Integer.MAX_VALUE;
 	}
 
+	/** 撤退回血時也要判斷來箭，即使當下沒有盾。 */
+	public static boolean incomingProjectile(Minecraft mc) {
+		LocalPlayer player = mc.player;
+		AABB target = player.getBoundingBox().inflate(0.5);
+		for (Entity projectile : mc.level.getEntities(player, player.getBoundingBox().inflate(PROJECTILE_RANGE), ShieldGuard::blockable)) {
+			if (((Projectile) projectile).getOwner() != player && eta(projectile, target) >= 0) return true;
+		}
+		return false;
+	}
+
 	/** 正在拉弓、拉弩或舉三叉戟的敵對遠程生物(女巫的「使用中」是在喝藥水，不算)。 */
 	private static boolean drawingShooter(Entity e) {
 		return e instanceof LivingEntity le && e instanceof Enemy && e.isAlive() && !(e instanceof Witch)

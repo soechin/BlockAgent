@@ -113,6 +113,10 @@ public final class HuntTask extends Task {
 			fail(ErrorCode.PATH_BLOCKED, "target is in deep water", "use a bow from shore or wait for the target to surface");
 			return;
 		}
+		if (outcome == Combat.Outcome.OUTMATCHED) {
+			fail(ErrorCode.INTERRUPTED, "withdrew from an unsafe fight", "recover or prepare better equipment before hunting again");
+			return;
+		}
 		if (outcome == Combat.Outcome.BLOCKED) {
 			fail(combat.blocked().code(), combat.blocked().reason(), combat.blocked().hint());
 			return;

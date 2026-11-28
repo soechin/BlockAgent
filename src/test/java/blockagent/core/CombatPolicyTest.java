@@ -71,7 +71,47 @@ class CombatPolicyTest {
 		assertTrue(CombatPolicy.worthFighting(fist(20, 0), 20, 2, 1, 0, false), "滿血空手對 1 隻殭屍打得贏");
 		assertFalse(CombatPolicy.worthFighting(fist(12, 0), 20, 2, 1, 0, false), "12 HP 空手打完會掉到撤退線以下");
 		assertFalse(CombatPolicy.worthFighting(fist(20, 0), 20, 2, 2, 0, false), "空手對 2 隻殭屍不打");
-		assertTrue(CombatPolicy.worthFighting(fist(12, 15), 20, 2, 1, 0, false), "鐵甲減傷 60%");
+		assertTrue(CombatPolicy.worthFighting(fist(12, 15), 20, 2, 1, 0, false), "鐵甲能留足撤退血量");
+	}
+
+	@Test
+	void hardDifficultyAccountsForHitSizeAndSkeletonCadence() {
+		var hardUnarmed = new CombatPolicy.Fighter(20, 1, 0.25, 0, false, false, true, true, CombatPolicy.Difficulty.HARD, 0);
+		assertEquals(11.25, CombatPolicy.expectedLoss(hardUnarmed, 20, 2, 1, 0, false), 1e-9);
+		assertFalse(CombatPolicy.worthFighting(hardUnarmed, 20, 2, 1, 0, false));
+		double otherShooter = CombatPolicy.expectedBowLoss(hardUnarmed, 20, 0, 1);
+		assertEquals(otherShooter * 2, CombatPolicy.expectedBowLoss(hardUnarmed, 20, 0, CombatPolicy.Difficulty.HARD.skeletonRate()), 1e-9);
+		assertEquals(12, CombatPolicy.hardRetreatHp(0, 0, 0, 1), 1e-9);
+		assertEquals(11.325, CombatPolicy.hardRetreatHp(15, 0, 1, 1), 1e-9);
+		assertTrue(CombatPolicy.hardRetreatHp(15, 8, 1, 1) < CombatPolicy.hardRetreatHp(15, 0, 1, 1));
+		assertEquals(6, CombatPolicy.hardRetreatHp(0, 0, 0, 0), 1e-9);
+	}
+
+	@Test
+	void normalDifficultyUsesPerHitArmorAndToughness() {
+		var normal = new CombatPolicy.Fighter(20, 1, 0.25, 15, false, false, true, true, CombatPolicy.Difficulty.NORMAL, 0);
+		var tough = new CombatPolicy.Fighter(20, 1, 0.25, 15, false, false, true, true, CombatPolicy.Difficulty.NORMAL, 8);
+		assertEquals(3.45, CombatPolicy.expectedLoss(normal, 20, 2, 1, 0, false), 1e-9);
+		assertEquals(3.225, CombatPolicy.expectedLoss(tough, 20, 2, 1, 0, false), 1e-9);
+		assertEquals(4.8, CombatPolicy.expectedBowLoss(normal, 20, 0, CombatPolicy.Difficulty.NORMAL.skeletonRate()), 1e-9);
+	}
+
+	@Test
+	void easierDifficultiesUseTheirOwnHitSizes() {
+		var easy = new CombatPolicy.Fighter(20, 1, 0.25, 0, false, false, true, true, CombatPolicy.Difficulty.EASY, 0);
+		var peaceful = new CombatPolicy.Fighter(20, 1, 0.25, 0, false, false, true, true, CombatPolicy.Difficulty.PEACEFUL, 0);
+		assertEquals(6.25, CombatPolicy.expectedLoss(easy, 20, 2, 1, 0, false), 1e-9);
+		assertEquals(7.5, CombatPolicy.expectedBowLoss(easy, 20, 0, CombatPolicy.Difficulty.EASY.skeletonRate()), 1e-9);
+		assertEquals(0, CombatPolicy.expectedLoss(peaceful, 20, 2, 1, 1, false), 1e-9);
+	}
+
+	@Test
+	void hardRecoveryRequiresConsecutiveSafeTicks() {
+		int clear = 0;
+		for (int i = 0; i < 39; i++) clear = CombatPolicy.hardRecoveryClearTicks(clear, false);
+		assertFalse(CombatPolicy.canRecoverOnHard(clear));
+		assertEquals(0, CombatPolicy.hardRecoveryClearTicks(clear, true));
+		assertTrue(CombatPolicy.canRecoverOnHard(CombatPolicy.hardRecoveryClearTicks(clear, false)));
 	}
 
 	@Test

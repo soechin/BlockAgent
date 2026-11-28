@@ -9,6 +9,7 @@ import net.fabricmc.fabric.api.client.gametest.v1.context.TestSingleplayerContex
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityType;
@@ -49,6 +50,8 @@ public class CombatGameTest implements FabricClientGameTest {
 			// 情境名稱給 -PtestCase= 用，例如 -PtestCase=route,group_geared 只跑這兩個
 			if (TestKit.runCase("danger")) darknessIsAdvisory(k, c);
 			k.cmd("time set 18000");
+			if (TestKit.runCase("difficulty_safety")) difficultyRetreat(k, c);
+			if (TestKit.runCase("hard_hunt") && k.difficulty() == Difficulty.HARD) hardHuntWithdraws(k, c);
 			if (TestKit.runCase("unarmed_skeleton")) unarmedDoesNotChargeSkeleton(k, c);
 			if (TestKit.runCase("unarmed_two_zombies")) unarmedDisengagesFromTwoZombies(k, c);
 			if (TestKit.runCase("unarmed_one_zombie")) unarmedBeatsOneZombie(k, c);
@@ -76,6 +79,7 @@ public class CombatGameTest implements FabricClientGameTest {
 			if (TestKit.runCase("bow_cancel_close")) logDrawCancelWhenTargetCloses(k, c);
 			if (TestKit.runCase("bow_cancel_blocked")) logDrawCancelWhenTrajectoryCloses(k, c);
 			if (TestKit.runCase("bow_cancel_shield")) logDrawCancelForShield(k, c);
+			if (TestKit.runCase("bow_cancel_client_state")) cancelDrawAfterClientStateClears(k, c);
 			if (TestKit.runCase("bow_cancel_retarget")) logDrawCancelForRetarget(k, c);
 			if (TestKit.runCase("bow_embedded")) logArrowAfterLaunch(k, c, false);
 			if (TestKit.runCase("bow_unconfirmed")) logArrowAfterLaunch(k, c, true);
@@ -152,6 +156,50 @@ public class CombatGameTest implements FabricClientGameTest {
 		System.out.println("[ok] S9.1c 短暫昏暗、持續提醒、補光與怪群告警");
 	}
 
+	private void difficultyRetreat(TestKit k, BlockPos c) throws Exception {
+		reset(k, c);
+		k.difficulty("normal");
+		Difficulty difficulty = k.difficulty();
+		boolean hard = difficulty == Difficulty.HARD;
+		String self = k.ai.call(k.ctx, "get_self").text();
+		check(self.contains("difficulty=" + difficulty.getSerializedName()), "應回報伺服器的難度：" + self);
+		k.give("minecraft:bread", 8);
+		int mark = mark(k);
+		k.cmd("summon minecraft:skeleton " + TestKit.pos(c.east(10)) + " {NoAI:1b,PersistenceRequired:1b}");
+		k.cmd("item replace entity @e[type=minecraft:skeleton] weapon.mainhand with minecraft:bow");
+		k.onServer(s -> {
+			var player = k.me(s);
+			player.setHealth(10);
+			player.getFoodData().setFoodLevel(12);
+			player.getFoodData().setSaturation(0);
+		});
+		k.ctx.waitTicks(24);
+		String started = since(k, mark);
+		check(started.contains("retreat_start") == hard, "10 HP 遇到射手時只有困難會提早撤退：" + started);
+		k.cmd("kill @e[type=minecraft:skeleton]");
+		if (hard) {
+			k.ctx.waitTicks(20);
+			check(!since(k, mark).contains("\"action\":\"retreat_recover\""), "射手消失後仍應留出兩秒安全時間：" + since(k, mark));
+			check(waitLog(k, mark, "\"action\":\"retreat_recover\"", 50), "安全後應進入回血：" + since(k, mark));
+			check(waitFor(k, 20 * 15, () -> !anyReflex(k)), "吃東西回血後應結束撤退：" + since(k, mark));
+		}
+		k.difficulty("easy");
+		System.out.println("[ok] 難度 " + difficulty.getSerializedName() + " 的撤退門檻與回血");
+	}
+
+	private void hardHuntWithdraws(TestKit k, BlockPos c) throws Exception {
+		reset(k, c);
+		int mark = mark(k);
+		k.cmd("summon minecraft:zombie " + TestKit.pos(c.east(3)) + " {NoAI:1b,PersistenceRequired:1b}");
+		k.ctx.waitTicks(5);
+		var result = k.ai.call(k.ctx, "hunt", args("target", "zombie", "wait_sec", 30));
+		String log = since(k, mark);
+		check(result.text().contains("withdrew from an unsafe fight") && log.contains("hunt_odds")
+			&& !log.contains("hunt_attack") && alive(k) && count(k, EntityTypes.ZOMBIE) == 1,
+			"困難模式空手狩獵應先安全脫身：" + result.text() + "\n" + log);
+		System.out.println("[ok] 困難模式的 hunt 會從勝算不足的戰鬥脫身");
+	}
+
 	/** R7：空手沒盾遇到骷髏，不衝過去(不出現 charge、也沒有出手)，改成躲或拉開距離。 */
 	private void unarmedDoesNotChargeSkeleton(TestKit k, BlockPos c) throws Exception {
 		reset(k, c);
@@ -183,6 +231,14 @@ public class CombatGameTest implements FabricClientGameTest {
 		reset(k, c);
 		int mark = mark(k);
 		k.cmd("execute as @p at @s run summon minecraft:zombie ~4 ~ ~ {PersistenceRequired:1b}");
+		if (k.difficulty() == Difficulty.HARD) {
+			boolean escaped = waitFor(k, 20 * 25, () -> nearestGroupMob(k) > 16 && !anyReflex(k));
+			String log = since(k, mark);
+			check(escaped && alive(k) && log.contains("disengage_outmatched") && !log.contains("self_defense_attack"),
+				"困難模式空手對殭屍應拉開距離：" + log);
+			System.out.println("[ok] 困難模式空手甩掉單隻殭屍");
+			return;
+		}
 		boolean dead = waitFor(k, 20 * 40, () -> count(k, EntityTypes.ZOMBIE) == 0);
 		String log = since(k, mark);
 		check(dead, "空手滿血對 1 隻殭屍應該打得死：" + log);
@@ -214,7 +270,7 @@ public class CombatGameTest implements FabricClientGameTest {
 	private void shieldBlocksSkeletonAndAutoEquips(TestKit k, BlockPos c) throws Exception {
 		reset(k, c);
 		// 一般難度：骷髏的箭傷害 ≥ 3，盾牌擋下才會扣耐久，看得出擋到了
-		k.cmd("difficulty normal");
+		k.difficulty("normal");
 		for (String item : List.of("iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots", "shield", "stone_sword")) {
 			k.give("minecraft:" + item, 1);
 		}
@@ -231,7 +287,7 @@ public class CombatGameTest implements FabricClientGameTest {
 		check(alive(k), "全副武裝打骷髏不應該死");
 		check(log.contains("shield_vs_bow"), "骷髏拉弓時應該舉盾：" + log);
 		check(shieldDamage > 0 || log.matches("(?s).*shield_blocks=[1-9].*"), "盾牌應該至少擋下一箭(耐久沒變)：" + log);
-		k.cmd("difficulty easy");
+		k.difficulty("easy");
 		System.out.println("[ok] R1 盾牌擋箭(耐久 -" + shieldDamage + ")、自動備戰、打死骷髏");
 	}
 
@@ -255,7 +311,8 @@ public class CombatGameTest implements FabricClientGameTest {
 	/** 混戰：殭屍貼身、骷髏在遠處射箭；全副武裝要兩隻都打死，血量不能掉太多。 */
 	private void zombieAndSkeletonTogether(TestKit k, BlockPos c) throws Exception {
 		reset(k, c);
-		k.cmd("difficulty normal");
+		k.difficulty("normal");
+		boolean hard = k.difficulty() == Difficulty.HARD;
 		for (String item : List.of("iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots", "shield", "stone_sword")) {
 			k.give("minecraft:" + item, 1);
 		}
@@ -263,12 +320,16 @@ public class CombatGameTest implements FabricClientGameTest {
 		k.cmd("execute as @p at @s run summon minecraft:zombie ~4 ~ ~ {PersistenceRequired:1b}");
 		k.cmd("execute as @p at @s run summon minecraft:skeleton ~-12 ~ ~ {PersistenceRequired:1b}");
 		k.cmd("item replace entity @e[type=minecraft:skeleton] weapon.mainhand with minecraft:bow");
-		boolean cleared = waitFor(k, 20 * 60, () -> count(k, EntityTypes.ZOMBIE) == 0 && count(k, EntityTypes.SKELETON) == 0 && !anyReflex(k));
+		boolean settled = waitFor(k, 20 * 60, () -> (groupCount(k) == 0 || hard && nearestGroupMob(k) > 16) && !anyReflex(k));
 		String log = since(k, mark);
 		float hp = k.ctx.computeOnClient(mc -> mc.player.getHealth());
-		k.cmd("difficulty easy");
-		check(cleared, "全副武裝應該打死殭屍和骷髏：" + log);
+		k.difficulty("easy");
+		check(settled, "全副武裝應該打完混戰或在困難模式安全脫身：" + log);
 		check(alive(k) && hp >= 8, "混戰後血量應該 ≥ 8(剩 " + hp + ")：" + log);
+		if (hard) {
+			System.out.println("[ok] 困難混戰：剩怪=" + groupCount(k) + " hp=" + hp + " | " + summaries(log));
+			return;
+		}
 		// 殭屍被擊退後重新貼上時冷卻總是滿的：滿了也要跳劈，不然實戰打不出暴擊(修正前 0/5)
 		check(summaryOf(log, "zombie").matches(".*crits=[1-9].*"), "自衛打殭屍應該有跳劈暴擊：" + summaries(log));
 		System.out.println("[ok] 混戰：殭屍 + 骷髏都打死，血量 " + hp + " | " + summaries(log));
@@ -303,7 +364,8 @@ public class CombatGameTest implements FabricClientGameTest {
 	/** A1：全副武裝遇到一群(2 隻骷髏分在兩個方向 + 2 隻殭屍)：打得贏就打完、打不贏就脫身；不能死、血量不能掉太多。 */
 	private void gearedVsGroup(TestKit k, BlockPos c) throws Exception {
 		reset(k, c);
-		k.cmd("difficulty normal");
+		k.difficulty("normal");
+		boolean hard = k.difficulty() == Difficulty.HARD;
 		for (String item : List.of("iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots", "shield", "stone_sword")) {
 			k.give("minecraft:" + item, 1);
 		}
@@ -312,10 +374,15 @@ public class CombatGameTest implements FabricClientGameTest {
 		boolean settled = waitFor(k, 20 * 60, () -> (groupCount(k) == 0 || nearestGroupMob(k) > 16) && !anyReflex(k));
 		String log = since(k, mark);
 		float hp = k.ctx.computeOnClient(mc -> mc.player.getHealth());
-		k.cmd("difficulty easy");
+		k.difficulty("easy");
 		System.out.println("[data] A1 全副武裝對一群：剩 " + groupCount(k) + " 隻 hp=" + hp + " | " + odds(log) + summaries(log));
 		check(alive(k), "全副武裝對一群不應該死：" + summaries(log));
 		check(settled, "60 秒內應該打完或甩掉整群：" + summaries(log));
+		check(hp >= 6, "對一群打完血量應該 ≥ 6(剩 " + hp + ")：" + summaries(log));
+		if (hard) {
+			System.out.println("[ok] 困難模式鐵裝對怪群：剩怪=" + groupCount(k) + " hp=" + hp);
+			return;
+		}
 		// 鐵甲 + 盾 + 石劍：勝算夠(兩隻骷髏差 90 度，盾牌對著目標那隻)，應該打而不是跑。
 		// 自衛只處理衝著自己來的；沒靠近的(16 格外、沒打過自己)不追，所以不要求全部打死
 		int kills = TestKit.sumFightMetric(log, "kills=");
@@ -323,7 +390,6 @@ public class CombatGameTest implements FabricClientGameTest {
 		check(odds(log).isEmpty(), "全副武裝不應該決定脫身：" + odds(log) + " | " + summaries(log));
 		check(kills >= 2, "全副武裝應該打死衝過來的(打死 " + kills + " 隻，剩 " + left + ")：" + summaries(log));
 		check(groupCount(k) == 0 || nearestGroupMob(k) > 8, "結束時不應該還有怪貼在身邊(剩 " + left + ")");
-		check(hp >= 6, "對一群打完血量應該 ≥ 6(剩 " + hp + ")：" + summaries(log));
 		System.out.println("[ok] A1 全副武裝對一群：打死 " + kills + " 隻、剩 " + left + "，血量 " + hp);
 	}
 
@@ -392,7 +458,7 @@ public class CombatGameTest implements FabricClientGameTest {
 	private void resumeHomeAfterEscaping(TestKit k, BlockPos c, ShooterBehavior behavior) throws Exception {
 		reset(k, c);
 		k.ctx.runOnClient(mc -> k.agent().danger.clear());
-		k.cmd("difficulty normal");
+		k.difficulty("normal");
 		k.give("minecraft:bread", 8);
 		BlockPos home = c.offset(0, 0, 42);
 		BlockPos west = c.offset(-9, 0, 13);
@@ -451,7 +517,7 @@ public class CombatGameTest implements FabricClientGameTest {
 		}
 		k.ai.call(k.ctx, "stop");
 		k.ctx.runOnClient(mc -> k.agent().danger.clear());
-		k.cmd("difficulty easy");
+		k.difficulty("easy");
 	}
 
 	/** B2：目的地被怪圍住：goto 不卡住，回報 destination_hostile 給 AI。 */
@@ -480,7 +546,7 @@ public class CombatGameTest implements FabricClientGameTest {
 	private void surroundedOnAllSides(TestKit k, BlockPos c, boolean geared) throws Exception {
 		reset(k, c);
 		String label = geared ? "C2 全副武裝被遠程包圍" : "C1 空手被遠程包圍";
-		k.cmd("difficulty normal");
+		k.difficulty("normal");
 		k.give("minecraft:bread", 8);
 		if (geared) {
 			for (String item : List.of("iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots", "shield", "stone_sword")) {
@@ -503,7 +569,7 @@ public class CombatGameTest implements FabricClientGameTest {
 		long secs = (k.agent().tick() - t0) / 20;
 		String log = since(k, mark);
 		float hp = k.ctx.computeOnClient(mc -> mc.player.getHealth());
-		k.cmd("difficulty easy");
+		k.difficulty("easy");
 		int starts = log.split("self_defense_start", -1).length - 1;
 		int retreats = log.split("retreat_start", -1).length - 1;
 		int kills = TestKit.sumFightMetric(log, "kills=");
@@ -628,7 +694,7 @@ public class CombatGameTest implements FabricClientGameTest {
 	 */
 	private void elevatedArcherAndUnreachableCover(TestKit k, BlockPos c) throws Exception {
 		reset(k, c);
-		k.cmd("difficulty normal");
+		k.difficulty("normal");
 		k.give("minecraft:bread", 8);
 		// 東側 10 格蓋 3 格高台放骷髏
 		k.cmd("fill " + (c.getX() + 9) + " " + c.getY() + " " + (c.getZ() - 1) + " "
@@ -644,7 +710,7 @@ public class CombatGameTest implements FabricClientGameTest {
 		boolean escaped = waitFor(k, 20 * 35, () -> nearestGroupMob(k) > 16 && !anyReflex(k));
 		String log = since(k, mark);
 		double nearest = nearestGroupMob(k);
-		k.cmd("difficulty easy");
+		k.difficulty("easy");
 		k.cmd("fill " + (c.getX() - 6) + " " + c.getY() + " " + (c.getZ() - 2) + " "
 			+ (c.getX() + 12) + " " + (c.getY() + 4) + " " + (c.getZ() + 2) + " minecraft:air");
 		check(alive(k), "高台骷髏＋不可達掩體脫身不該死亡：" + summaries(log));
@@ -690,8 +756,8 @@ public class CombatGameTest implements FabricClientGameTest {
 	/** R17、R19：同一場對射要能在箭到前舉盾，也要能還擊。 */
 	private void bowAndShieldDuel(TestKit k, BlockPos c) throws Exception {
 		reset(k, c);
-		k.cmd("difficulty normal");
-		giveIronArmor(k);
+		k.difficulty("normal");
+		giveArmor(k, k.difficulty() == Difficulty.HARD ? "diamond" : "iron");
 		k.give("minecraft:shield", 1);
 		k.give("minecraft:bow", 1);
 		k.give("minecraft:arrow", 24);
@@ -723,7 +789,7 @@ public class CombatGameTest implements FabricClientGameTest {
 		check(shots > 0 && shots == 24 - arrows && summary.contains(" shots=" + shots + " "),
 			"射擊紀錄、伺服器箭數和統計應一致：剩箭=" + arrows + " " + summary);
 		check(summary.matches(".*shield_blocks=[1-9][0-9]*.*"), "對射時盾應擋到至少一箭：" + summary);
-		k.cmd("difficulty easy");
+		k.difficulty("easy");
 		System.out.println("[ok] R17 R19 弓盾對射 " + summary);
 	}
 
@@ -792,6 +858,21 @@ public class CombatGameTest implements FabricClientGameTest {
 		check(waitLog(k, mark, "reason=shield", 40), "來箭時應記錄為舉盾而收弓：" + since(k, mark));
 		k.ai.call(k.ctx, "stop");
 		System.out.println("[ok] 擋來箭時記錄 shield");
+	}
+
+	private void cancelDrawAfterClientStateClears(TestKit k, BlockPos c) throws Exception {
+		int mark = startDrawingAtZombie(k, c, false);
+		check(k.server.computeOnServer(s -> k.me(s).getUseItem().is(Items.BOW)), "伺服器應已收到拉弓");
+		k.ctx.runOnClient(mc -> {
+			// 模擬客戶端先被上一筆使用狀態清掉，伺服器仍在拉弓。
+			mc.player.stopUsingItem();
+			k.agent().tasks.cancel("test stopped hunt");
+		});
+		k.ctx.waitTicks(10);
+		check(k.server.computeOnServer(s -> !k.me(s).isUsingItem() && k.me(s).getInventory().countItem(Items.ARROW) == 16),
+			"收弓應清掉伺服器的拉弓，且維持箭數：" + since(k, mark));
+		check(since(k, mark).contains("hunt_draw_cancel"), "客戶端狀態消失後仍應記錄收弓");
+		System.out.println("[ok] 客戶端使用狀態消失時仍能取消伺服器拉弓");
 	}
 
 	private void logDrawCancelForRetarget(TestKit k, BlockPos c) throws Exception {
@@ -930,7 +1011,7 @@ public class CombatGameTest implements FabricClientGameTest {
 
 	private void respondToPiglinCrossbow(TestKit k, BlockPos c) throws Exception {
 		reset(k, c);
-		k.cmd("difficulty normal");
+		k.difficulty("normal");
 		k.cmd("item replace entity @p armor.head with minecraft:golden_helmet");
 		k.cmd("item replace entity @p weapon.offhand with minecraft:shield");
 		int mark = mark(k);
@@ -945,7 +1026,7 @@ public class CombatGameTest implements FabricClientGameTest {
 		String log = since(k, mark);
 		var start = Pattern.compile("self_defense_start[^\n]*piglin[^\n]*dist=([0-9]+\\.[0-9]+)").matcher(log);
 		check(start.find() && Double.parseDouble(start.group(1)) > 6, "應在舊有六格範圍外觸發自衛：" + log);
-		k.cmd("difficulty easy");
+		k.difficulty("easy");
 		System.out.println("[ok] R33 金甲中立、無金甲時在六格外對弩手舉盾");
 	}
 
@@ -984,7 +1065,7 @@ public class CombatGameTest implements FabricClientGameTest {
 
 	private void avoidCreeperWhileDisengaging(TestKit k, BlockPos c) throws Exception {
 		reset(k, c);
-		k.cmd("difficulty normal");
+		k.difficulty("normal");
 		int mark = mark(k);
 		k.cmd("execute as @p at @s run summon minecraft:skeleton ~12 ~ ~ {PersistenceRequired:1b}");
 		k.cmd("item replace entity @e[type=minecraft:skeleton] weapon.mainhand with minecraft:bow");
@@ -993,7 +1074,7 @@ public class CombatGameTest implements FabricClientGameTest {
 		k.onServer(server -> server.overworld().getEntities(EntityTypes.CREEPER, mob -> mob.isAlive()).forEach(mob -> mob.ignite()));
 		check(waitLog(k, mark, "creeper_run", 30), "正在脫身也要優先躲即將引爆的苦力怕：" + since(k, mark));
 		check(waitFor(k, 80, () -> count(k, EntityTypes.CREEPER) == 0) && alive(k), "應躲過苦力怕爆炸：" + since(k, mark));
-		k.cmd("difficulty easy");
+		k.difficulty("easy");
 		System.out.println("[ok] 脫身時仍優先避開引爆中的苦力怕");
 	}
 
@@ -1037,8 +1118,12 @@ public class CombatGameTest implements FabricClientGameTest {
 	}
 
 	private static void giveIronArmor(TestKit k) {
-		for (String item : List.of("iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots")) {
-			k.give("minecraft:" + item, 1);
+		giveArmor(k, "iron");
+	}
+
+	private static void giveArmor(TestKit k, String material) {
+		for (String part : List.of("helmet", "chestplate", "leggings", "boots")) {
+			k.give("minecraft:" + material + "_" + part, 1);
 		}
 	}
 

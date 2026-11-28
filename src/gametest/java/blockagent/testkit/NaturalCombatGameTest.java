@@ -83,7 +83,7 @@ public class NaturalCombatGameTest implements FabricClientGameTest {
 			TestKit k = new TestKit(ctx, sp);
 			BlockPos spawn = dryLandNear(k, k.myPos().getX(), k.myPos().getZ());
 			k.cmd("tp @p " + TestKit.pos(spawn));
-			k.cmd("difficulty normal");
+			k.difficulty("normal");
 			k.cmd("time set 18000");
 			k.cmd("gamerule mob_griefing false");
 			k.cmd("gamerule spawn_monsters true");

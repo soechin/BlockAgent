@@ -14,6 +14,7 @@ import net.minecraft.network.chat.PlayerChatMessage;
 import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.Difficulty;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.nio.charset.StandardCharsets;
@@ -40,7 +41,7 @@ public final class TestKit {
 		this.server = sp.getServer();
 		sp.getConnection().waitForChunksRender();
 		this.ai = McpTestClient.fromRuntimeFile();
-		cmd("difficulty easy");
+		difficulty("easy");
 		cmd("gamemode survival @a");
 		cmd("gamerule advance_time false");
 		cmd("gamerule advance_weather false");
@@ -114,6 +115,20 @@ public final class TestKit {
 
 	public void cmd(String command) {
 		server.runCommand(command);
+	}
+
+	public void difficulty(String fallback) {
+		String name = System.getProperty("blockagent.test.difficulty", fallback);
+		Difficulty expected = Difficulty.byName(name);
+		check(expected != null, "未知的測試難度 " + name);
+		cmd("difficulty " + expected.getSerializedName());
+		check(difficulty() == expected, "伺服器未套用難度 " + name);
+		check(waitUntil(40, mc -> mc.level.getLevelData().getDifficulty() == expected), "客戶端未同步難度 " + name);
+		System.out.println("[test-difficulty] " + expected.getSerializedName());
+	}
+
+	public Difficulty difficulty() {
+		return server.computeOnServer(s -> s.getWorldData().getDifficulty());
 	}
 
 	public void onServer(Consumer<net.minecraft.server.MinecraftServer> fn) {

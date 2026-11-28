@@ -30,6 +30,7 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.attribute.EnvironmentAttributes;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.food.FoodProperties;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -130,6 +131,7 @@ public final class Reflexes {
 	private enum RetreatPhase {RUN, RECOVER}
 
 	private RetreatPhase retreatPhase;
+	private int retreatClearTicks;
 	private final CoverRoute retreatCover = new CoverRoute();
 	private int recoverSince;
 	/** 這個任務撤退了幾次(第二次回血後就取消任務)。 */
@@ -141,6 +143,9 @@ public final class Reflexes {
 	private static final int RETREAT_QUIET_TICKS = 20 * 20;
 	/** RECOVER 這麼久還回不了血(飢餓度不夠自然回血又沒東西吃)就放棄。 */
 	private static final int CANNOT_HEAL_TICKS = 10 * 20;
+	private static final double HARD_RECOVER_START_RANGE = 20;
+	private static final double HARD_RECOVER_VISIBLE_RANGE = 18;
+	private static final double HARD_RECOVER_CLOSE_RANGE = 10;
 	private final ShieldGuard retreatGuard = new ShieldGuard();
 	/** 已經為哪些怪物自動備戰過(穿甲、換盾)，同一隻只做一次。 */
 	private final java.util.Set<Integer> preparedFor = new HashSet<>();
@@ -316,13 +321,19 @@ public final class Reflexes {
 				}
 			}
 			case RETREAT -> {
-				if (p.getHealth() > LOW_HEALTH || (hostiles(mc, 12).isEmpty() && visibleRangedThreats(mc, Combat.TRIGGER_RANGE) == 0)) return null;
+				if (active == Kind.RETREAT) return null;
+				boolean early = p.getHealth() > LOW_HEALTH;
+				if (early) {
+					if (p.getHealth() > CombatPolicy.HARD_RETREAT_MAX_HP || !Combat.hardDifficulty(p) || !hardRetreatNeeded(mc)) return null;
+				} else if (hostiles(mc, 12).isEmpty() && visibleRangedThreats(mc, Combat.TRIGGER_RANGE) == 0) {
+					return null;
+				}
 				// 正在吃東西、3 格內又沒有怪：讓這一口吃完(R3：吃西瓜吃到一半被撤退打斷)
 				if (p.isUsingItem() && p.getUseItem().has(DataComponents.FOOD) && hostiles(mc, 3).isEmpty()) return null;
 				// 剛因為回不了血放棄撤退：這段時間內不再觸發，除非之後又被打
 				long now = agent.tick();
 				if (now < retreatQuietUntil && agent.observation.lastAttackedTick() <= retreatQuietFrom) return null;
-				return "hp=" + Math.round(p.getHealth()) + " hostiles_near";
+				return "hp=" + Math.round(p.getHealth()) + (early ? " hard_next_hits" : " hostiles_near");
 			}
 			case SELF_DEFENSE -> {
 				Combat.Threat t = nextThreat(mc);
@@ -402,6 +413,7 @@ public final class Reflexes {
 		bucketsBefore = Inv.count(mc.player, Items.WATER_BUCKET);
 		retreatPlannedAt = 0;
 		retreatPhase = RetreatPhase.RUN;
+		retreatClearTicks = 0;
 		retreatGuard.reset();
 		interruptedTask = null;
 		suspendedTask = false;
@@ -481,7 +493,8 @@ public final class Reflexes {
 
 	private void planRetreat(Minecraft mc) {
 		LocalPlayer player = mc.player;
-		List<Entity> threats = hostiles(mc, 16);
+		boolean hard = Combat.hardDifficulty(player);
+		List<Entity> threats = hostiles(mc, hard ? 24 : 16);
 		if (threats.isEmpty()) return;
 		List<Entity> shooters = new ArrayList<>();
 		List<BlockPos> from = new ArrayList<>();
@@ -492,14 +505,14 @@ public final class Reflexes {
 			double distance = player.distanceTo(threat);
 			if (Threats.kind(threat, false, player, attacker) == Threats.Kind.RANGED) {
 				if (distance <= 16 && player.hasLineOfSight(threat)) shooters.add(threat);
-			} else if (distance <= 4) {
+			} else if (distance <= (hard ? 6 : 4)) {
 				meleeClose = true;
 			}
 		}
 		retreatPlannedAt = activeTicks;
 		BlockPos cover = meleeClose ? null : retreatCover.choose(mc, shooters, agent.tick());
 		path(cover != null && !player.blockPosition().equals(cover)
-			? new GoalBlock(cover) : new GoalRunAway(20, from.toArray(new BlockPos[0])));
+			? new GoalBlock(cover) : new GoalRunAway(hard ? 24 : 20, from.toArray(new BlockPos[0])));
 	}
 
 	private void path(Goal g) {
@@ -548,10 +561,13 @@ public final class Reflexes {
 
 	private String retreatFinished(Minecraft mc) {
 		LocalPlayer p = mc.player;
-		if (p.getHealth() > CombatPolicy.RECOVERED_HP) return "recovered";
+		boolean hard = Combat.hardDifficulty(p);
+		if (hard && retreatPhase != RetreatPhase.RECOVER) return null;
+		if (p.getHealth() > CombatPolicy.RECOVERED_HP) return hard && hardRecoveryUnsafe(mc, false) ? null : "recovered";
 		// RECOVER 10 秒還回不了血：飢餓度不夠自然回血(< 18)，又沒東西吃
 		if (retreatPhase == RetreatPhase.RECOVER && activeTicks - recoverSince > CANNOT_HEAL_TICKS && !p.isUsingItem()
-			&& p.getFoodData().getFoodLevel() < 18 && bestFood(p, p.getFoodData().getFoodLevel()) == null) {
+			&& p.getFoodData().getFoodLevel() < 18 && bestFood(p, p.getFoodData().getFoodLevel()) == null
+			&& (!hard || !hardRecoveryUnsafe(mc, false))) {
 			return "cannot_heal";
 		}
 		return null;
@@ -736,11 +752,15 @@ public final class Reflexes {
 	 */
 	private void retreat(Minecraft mc) {
 		LocalPlayer p = mc.player;
+		boolean hard = Combat.hardDifficulty(p);
+		boolean unsafe = hard && hardRecoveryUnsafe(mc, retreatPhase == RetreatPhase.RUN);
+		if (hard) retreatClearTicks = CombatPolicy.hardRecoveryClearTicks(retreatClearTicks, unsafe);
 		boolean meleeClose = false;
-		for (Entity e : hostiles(mc, 4)) meleeClose |= Threats.kind(e, false, mc.player, agent.observation.recentAttacker(mc, 100)) != Threats.Kind.RANGED;
+		for (Entity e : hostiles(mc, hard ? 6 : 4)) meleeClose |= Threats.kind(e, false, p, agent.observation.recentAttacker(mc, 100)) != Threats.Kind.RANGED;
 		if (!meleeClose && retreatGuard.update(mc, agent.tick())
 			&& ShieldGuard.canSafelyStop(mc, agent.observation.recentAttacker(mc, 100), retreatGuard.faceAt())) {
 			stopEating(mc);
+			if (hard) retreatPhase = RetreatPhase.RUN;
 			Bari.stopAll();
 			if (retreatGuard.faceAt() != null) Moves.lookAt(p, retreatGuard.faceAt());
 			ShieldGuard.raise(mc);
@@ -749,19 +769,20 @@ public final class Reflexes {
 		}
 		if (p.isUsingItem() && p.getUsedItemHand() == InteractionHand.OFF_HAND) ShieldGuard.lower(mc);
 		if (retreatPhase == RetreatPhase.RUN) {
-			if (CombatPolicy.shouldEnterRetreatRecover(visibleThreats(mc, 16), hostiles(mc, 6).size())) {
+			if (hard ? CombatPolicy.canRecoverOnHard(retreatClearTicks)
+				: CombatPolicy.shouldEnterRetreatRecover(visibleThreats(mc, 16), hostiles(mc, 6).size())) {
 				retreatPhase = RetreatPhase.RECOVER;
 				recoverSince = activeTicks;
 				Bari.stopAll();
 				agent.log.log(ActionLog.Source.reflex, "retreat_recover", "hp=" + Math.round(p.getHealth()) + " food=" + p.getFoodData().getFoodLevel());
 				return;
 			}
-			boolean close = !hostiles(mc, 4).isEmpty();
+			boolean close = !hostiles(mc, hard ? 6 : 4).isEmpty();
 			if (activeTicks - retreatPlannedAt >= (close ? 10 : 40)) planRetreat(mc);
 			return;
 		}
 		// RECOVER
-		if (CombatPolicy.shouldLeaveRetreatRecover(visibleThreats(mc, 12), hostiles(mc, 4).size())) {
+		if (hard ? unsafe : CombatPolicy.shouldLeaveRetreatRecover(visibleThreats(mc, 12), hostiles(mc, 4).size())) {
 			stopEating(mc);
 			retreatPhase = RetreatPhase.RUN;
 			planRetreat(mc);
@@ -801,6 +822,34 @@ public final class Reflexes {
 		if (eatingFood == null) return;
 		UseKey.release(mc);
 		eatingFood = null;
+	}
+
+	private boolean hardRetreatNeeded(Minecraft mc) {
+		LocalPlayer player = mc.player;
+		Entity attacker = agent.observation.recentAttacker(mc, 100);
+		int melee = 0, shooters = 0;
+		for (Entity threat : hostiles(mc, Combat.TRIGGER_RANGE)) {
+			double distance = player.distanceTo(threat);
+			if (distance > Combat.TRIGGER_RANGE || !player.hasLineOfSight(threat)) continue;
+			if (Threats.kind(threat, false, player, attacker) == Threats.Kind.RANGED) shooters++;
+			else if (distance <= 5) melee++;
+		}
+		if (shooters == 0 && ShieldGuard.incomingProjectile(mc)) shooters = 1;
+		return player.getHealth() <= CombatPolicy.hardRetreatHp(Inv.wornArmor(player),
+			player.getAttributeValue(Attributes.ARMOR_TOUGHNESS), melee, shooters);
+	}
+
+	private boolean hardRecoveryUnsafe(Minecraft mc, boolean entering) {
+		LocalPlayer player = mc.player;
+		if (player.hurtTime > 0 || ShieldGuard.incomingProjectile(mc)) return true;
+		// 先跑出追兵射程才停下，避免追兵剛跨出去就馬上跟進、一直打斷進食。
+		double scan = entering ? HARD_RECOVER_START_RANGE : HARD_RECOVER_VISIBLE_RANGE;
+		double close = entering ? HARD_RECOVER_START_RANGE : HARD_RECOVER_CLOSE_RANGE;
+		for (Entity threat : hostiles(mc, scan)) {
+			double distance = player.distanceTo(threat);
+			if (distance <= close || (distance <= scan && player.hasLineOfSight(threat))) return true;
+		}
+		return false;
 	}
 
 	/** 這麼多格內看得到自己的威脅數量。 */

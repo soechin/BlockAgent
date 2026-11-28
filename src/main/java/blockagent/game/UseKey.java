@@ -60,13 +60,24 @@ public final class UseKey {
 		var p = mc.player;
 		if (p == null || !p.isUsingItem()) return;
 		if (p.getUsedItemHand() == InteractionHand.MAIN_HAND) {
-			p.getInventory().setSelectedSlot((p.getInventory().getSelectedSlot() + 1) % 9);
-			if (mc.gameMode != null) ((MultiPlayerGameModeInvoker) mc.gameMode).blockagent$ensureHasSentCarriedItem();
+			cancelMainHandUse(mc, p.getInventory().getSelectedSlot());
+			return;
 		} else if (mc.getConnection() != null && !p.isSpectator()) {
 			var swap = new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.SWAP_ITEM_WITH_OFFHAND, BlockPos.ZERO, Direction.DOWN);
 			mc.getConnection().send(swap);
 			mc.getConnection().send(swap);
 		}
 		p.stopUsingItem();
+	}
+
+	/** 取消已送出的主手使用，即使舊同步封包暫時清掉了客戶端的使用狀態。 */
+	public static void cancelMainHandUse(Minecraft mc, int usedSlot) {
+		mc.options.keyUse.setDown(false);
+		var player = mc.player;
+		if (player == null) return;
+		var inventory = player.getInventory();
+		if (inventory.getSelectedSlot() == usedSlot) inventory.setSelectedSlot((usedSlot + 1) % 9);
+		if (mc.gameMode != null) ((MultiPlayerGameModeInvoker) mc.gameMode).blockagent$ensureHasSentCarriedItem();
+		player.stopUsingItem();
 	}
 }

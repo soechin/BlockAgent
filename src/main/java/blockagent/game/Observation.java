@@ -207,6 +207,7 @@ public final class Observation {
 		BlockPos pos = p.blockPosition();
 		Kv where = Kv.of().put("pos", Fmt.pos(pos)).put("dim", mc.level.dimension().identifier().getPath())
 			.put("biome", biomeName(mc, pos)).put("face", Fmt.facing(p.getYRot()))
+			.put("difficulty", mc.level.getLevelData().getDifficulty().getSerializedName())
 			.put("mode", Creative.modeName(mc.gameMode.getPlayerMode())).putIf(p.getAbilities().flying, "flying", true)
 			.put("portal_cooldown", p.getPortalCooldown());
 		if (p.isOnPortalCooldown()) where.put("portal_hint", "Stay outside the portal until portal_cooldown reaches 0 (ticks)");
