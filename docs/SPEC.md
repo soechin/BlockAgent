@@ -377,7 +377,8 @@ flowchart TD
   - `break_block`、`mine`、`dig_tunnel` 新增選填參數 `tool_match`，語法沿用 `ItemMatcher`(S4.2d，如 `fortune`、`silk_touch`、`efficiency:3;best_dur`)。
   - 事前檢查(非創造模式)：驗證背包(含副手)存在符合 `tool_match` 且能正確開採目標方塊(`isCorrectToolForDrops` 或不需特定工具)的物品；找不到時回 `ERR MISSING_TOOL` 並附 `tool_match=`；僅在副手時於開工前換回主背包。
   - `BreakTask` 與 `dig_tunnel` 在指定 `tool_match` 時直接裝備符合條件的最佳工具，不退回未符合條件的普通工具。
-  - `MineTask` 將編譯後的 `ItemMatcher` 存於 `volatile` 不可變欄位(供 Baritone 背景執行緒安全讀取，DEV_RULES §3)，開工與恢復時確保該工具位於快捷列；`ToolSetMixin` **僅當該方塊符合 `MineTask.isMineTarget(state)` 時**才強制選取符合 `tool_match` 的快捷列槽位，開路途中挖掘其他石頭或泥土仍沿用一般最快工具，避免將時運或絲綢鑽石鎬耗損在開路上。
+  - `MineTask` 將編譯後的 `ItemMatcher` 存於 `volatile` 不可變欄位(供 Baritone 背景執行緒安全讀取，DEV_RULES §3)，開工與恢復時確保該工具位於快捷列；`ToolSetMixin` **僅當該方塊符合 `MineTask.isMineTarget(state)` 時**才強制選取符合 `tool_match` 的快捷列槽位，開路途中挖掘其他石頭或泥土仍沿用下述預設保護規則，避免將時運或絲綢鑽石鎬耗損在開路上。
+  - **預設挖掘工具保護規則**(未指定 `tool_match` 時，`BreakTask.equipBestTool`、`Inv.ensureHotbarTool` 與 `ToolSetMixin` 共用同一套優先順序)：先過濾出能正常掉落該方塊的合格工具(例如黑曜石、遠古殘骸仍會自動選用鑽石／獄髓鎬)，再依層級排序：無附魔普通材質(鐵／石／木等，同層取最快) → 一般附魔普通材質 → 無附魔珍貴材質(鑽石／獄髓) → 一般附魔珍貴材質 → 時運 → 絲綢之觸 → 殘餘耐久 ≤ 10 的珍貴／附魔工具(只要有其他合格工具就不挖爆)。當 Baritone 實際挖掘時快捷列只有珍貴／附魔工具但主背包有無附魔普通工具，會在 client thread 自動把普通工具換上快捷列使用。
 - **S4.2j 系統性地下挖礦(`dig_tunnel`)**(2026-11-27，第二棒 2B)：[M2.1, M2.8, M2.9, M5.2]
   - 參數：
     - `mode`：必填，`stairs_down`(1×3 階梯下挖)、`stairs_up`(1×3 階梯上挖)或 `flat`(1×2 水平礦道)。

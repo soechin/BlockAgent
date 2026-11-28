@@ -47,28 +47,14 @@ public final class BreakTask extends Task {
 		return at + (started ? " state=breaking" : " state=pending");
 	}
 
-	/** 換上挖這個方塊最快的工具(背包裡有的話)。 */
+	/** 換上挖這個方塊的預設最佳工具(優先無附魔普通工具，保留鑽石／附魔／低耐久珍貴工具)。 */
 	public static void equipBestTool(Minecraft mc, BlockState state) {
 		var p = mc.player;
-		// 以徒手為基準：只有比徒手快、或掉落需要正確工具時才拿工具。速度一樣就不拿會耗損耐久的東西，
+		// 以徒手為基準：只有比徒手快、或掉落需要正確工具時才拿工具；速度一樣就不拿會耗損耐久的東西，
 		// 劍只在真的比較快時(蜘蛛網、竹子)才用(2026-11-22 試玩：拿鐵劍砍樹、挖石頭)。
-		boolean needsTool = state.requiresCorrectToolForDrops();
-		ItemStack best = null;
-		float bestSpeed = 1.0f;
-		for (int i = 0; i < Inv.MAIN_SIZE; i++) {
-			ItemStack s = p.getInventory().getItem(i);
-			if (s.isEmpty()) continue;
-			float sp = s.getDestroySpeed(state);
-			boolean correct = needsTool && s.isCorrectToolForDrops(state);
-			boolean bestCorrect = best != null && needsTool && best.isCorrectToolForDrops(state);
-			if ((correct && !bestCorrect) || (correct == bestCorrect && sp > bestSpeed + 0.01f)) {
-				best = s;
-				bestSpeed = sp;
-			}
-		}
-		if (best != null) {
-			ItemStack target = best;
-			Inv.selectInHand(mc, s -> s == target);
+		int slot = Inv.ensureHotbarTool(mc, state);
+		if (slot >= 0) {
+			p.getInventory().setSelectedSlot(slot);
 		} else if (!Inv.worthDigging(p.getMainHandItem(), state)) {
 			// 沒有更好的工具：換成空手或不會耗損的東西，不要用手上的劍或工具硬挖
 			if (!Inv.selectInHand(mc, ItemStack::isEmpty)) Inv.selectInHand(mc, s -> !s.isDamageableItem());

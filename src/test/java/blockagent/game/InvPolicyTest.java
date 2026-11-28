@@ -61,4 +61,71 @@ class InvPolicyTest {
 		blocksAttacks[3] = true;
 		assertEquals(-1, Inv.chooseOffhandShieldSwapSlot(occupied, blocksAttacks, 1));
 	}
+
+	@Test
+	void isPreciousToolIdIdentifiesDiamondAndNetherite() {
+		assertTrue(Inv.isPreciousToolId("diamond_pickaxe"));
+		assertTrue(Inv.isPreciousToolId("netherite_axe"));
+		assertFalse(Inv.isPreciousToolId("iron_pickaxe"));
+		assertFalse(Inv.isPreciousToolId("stone_pickaxe"));
+		assertFalse(Inv.isPreciousToolId("wooden_shovel"));
+		assertFalse(Inv.isPreciousToolId("golden_pickaxe"));
+		assertFalse(Inv.isPreciousToolId("shears"));
+		assertFalse(Inv.isPreciousToolId(null));
+	}
+
+	@Test
+	void effectiveMiningSpeedAppliesEfficiencyOnlyWhenToolIsEffective() {
+		// 有效工具(速度 > 1)加上效率附魔：base + lvl^2 + 1
+		assertEquals(8.0f, Inv.effectiveMiningSpeed(8.0f, 0), 0.001f);
+		assertEquals(25.0f, Inv.effectiveMiningSpeed(8.0f, 4), 0.001f);
+		assertEquals(34.0f, Inv.effectiveMiningSpeed(8.0f, 5), 0.001f);
+		// 對無效方塊(速度 1.0)不加效率
+		assertEquals(1.0f, Inv.effectiveMiningSpeed(1.0f, 5), 0.001f);
+	}
+
+	@Test
+	void defaultMiningToolPrefersOrdinaryUnenchantedOverPreciousAndEnchanted() {
+		int ironPlain = Inv.defaultMiningToolTier(false, false, false, false, 250, 250);
+		int ironEff = Inv.defaultMiningToolTier(false, true, false, false, 250, 250);
+		int diaPlain = Inv.defaultMiningToolTier(true, false, false, false, 1561, 1561);
+		int diaEff = Inv.defaultMiningToolTier(true, true, false, false, 1561, 1561);
+		int diaFortune = Inv.defaultMiningToolTier(true, true, true, false, 1561, 1561);
+		int diaSilk = Inv.defaultMiningToolTier(true, true, false, true, 1561, 1561);
+		int diaLowDur = Inv.defaultMiningToolTier(true, true, false, false, 10, 1561);
+
+		assertEquals(0, ironPlain);
+		assertEquals(1, ironEff);
+		assertEquals(2, diaPlain);
+		assertEquals(3, diaEff);
+		assertEquals(4, diaFortune);
+		assertEquals(5, diaSilk);
+		assertEquals(6, diaLowDur);
+
+		// 無附魔鐵鎬(速度 6)優於效率 IV 鑽石鎬(速度 25)、無附魔鑽石鎬(速度 8)、時運/絲綢鑽石鎬
+		assertTrue(Inv.compareDefaultMiningTools(ironPlain, false, 6.0f, diaEff, true, 25.0f) < 0);
+		assertTrue(Inv.compareDefaultMiningTools(ironPlain, false, 6.0f, diaPlain, true, 8.0f) < 0);
+		assertTrue(Inv.compareDefaultMiningTools(ironPlain, false, 6.0f, diaFortune, true, 25.0f) < 0);
+		assertTrue(Inv.compareDefaultMiningTools(ironPlain, false, 6.0f, diaSilk, true, 25.0f) < 0);
+
+		// 同為無附魔普通工具：鐵鎬(6)優於石鎬(4)優於木鎬(2)
+		assertTrue(Inv.compareDefaultMiningTools(ironPlain, false, 6.0f, ironPlain, false, 4.0f) < 0);
+		assertTrue(Inv.compareDefaultMiningTools(ironPlain, false, 4.0f, ironPlain, false, 2.0f) < 0);
+
+		// 無附魔鑽石鎬優於附魔鑽石鎬(即使附魔鎬更快)
+		assertTrue(Inv.compareDefaultMiningTools(diaPlain, true, 8.0f, diaEff, true, 34.0f) < 0);
+		assertTrue(Inv.compareDefaultMiningTools(diaPlain, true, 8.0f, diaFortune, true, 34.0f) < 0);
+		// 一般附魔鑽石鎬優於時運，時運優於絲綢之觸
+		assertTrue(Inv.compareDefaultMiningTools(diaEff, true, 10.0f, diaFortune, true, 34.0f) < 0);
+		assertTrue(Inv.compareDefaultMiningTools(diaFortune, true, 8.0f, diaSilk, true, 34.0f) < 0);
+
+		// 瀕臨損壞的珍貴/附魔工具(殘餘 ≤ 10)退居最後，避免挖爆；無附魔鐵鎬殘餘低仍可繼續用到壞
+		assertTrue(Inv.compareDefaultMiningTools(diaSilk, true, 8.0f, diaLowDur, true, 34.0f) < 0);
+		int ironLowDur = Inv.defaultMiningToolTier(false, false, false, false, 3, 250);
+		assertEquals(0, ironLowDur);
+		int ironEffLowDur = Inv.defaultMiningToolTier(false, true, false, false, 5, 250);
+		assertEquals(6, ironEffLowDur);
+		// 同在低耐久層時，普通附魔工具優於鑽石附魔工具(優先保護鑽石)
+		assertTrue(Inv.compareDefaultMiningTools(ironEffLowDur, false, 10.0f, diaLowDur, true, 34.0f) < 0);
+	}
 }

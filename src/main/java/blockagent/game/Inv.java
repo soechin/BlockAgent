@@ -122,30 +122,113 @@ public final class Inv {
 		return fallback;
 	}
 
+	/** 珍貴或附魔工具的殘餘耐久保護門檻：低於等於此值時，只要背包還有其他合格工具就避開，避免挖爆。 */
+	static final int PRECIOUS_LOW_DURABILITY = 10;
+
+	/** 鑽石／獄髓材質的工具視為珍貴工具，預設挖掘時優先留給必要方塊或明確指定的 {@code tool_match}。 */
+	static boolean isPreciousToolId(String itemId) {
+		return itemId != null && (itemId.startsWith("diamond_") || itemId.startsWith("netherite_"));
+	}
+
 	/**
-	 * 確保挖 {@code state} 用的最佳工具在快捷列(0–8)上，讓只看快捷列的 Baritone 用得到。
-	 * 已在快捷列回傳該格索引；在主背包時透過正常背包交換換上快捷列並回傳目標格；沒有合適工具或開著容器無法換時回傳 -1。
+	 * 預設挖掘工具優先層級(數字越小越優先，未指定 {@code tool_match} 時套用)：
+	 * 0=無附魔普通材質 → 1=一般附魔普通材質 → 2=無附魔珍貴材質 → 3=一般附魔珍貴材質 →
+	 * 4=時運 → 5=絲綢之觸 → 6=瀕臨損壞的珍貴／附魔工具(殘餘耐久 ≤ 10)。
+	 */
+	static int defaultMiningToolTier(boolean preciousMaterial, boolean enchanted, boolean fortune, boolean silkTouch,
+									 int remainingDurability, int maxDurability) {
+		boolean precious = preciousMaterial || enchanted;
+		if (precious && maxDurability > PRECIOUS_LOW_DURABILITY && remainingDurability <= PRECIOUS_LOW_DURABILITY) {
+			return 6;
+		}
+		if (silkTouch) return 5;
+		if (fortune) return 4;
+		if (!preciousMaterial) return enchanted ? 1 : 0;
+		return enchanted ? 3 : 2;
+	}
+
+	/** 原版效率附魔只在工具本身對該方塊有效(速度 > 1)時加上 {@code level^2 + 1}。 */
+	static float effectiveMiningSpeed(float baseSpeed, int efficiencyLevel) {
+		if (baseSpeed <= 1.01f || efficiencyLevel <= 0) return baseSpeed;
+		return baseSpeed + efficiencyLevel * efficiencyLevel + 1;
+	}
+
+	/**
+	 * 比較兩把合格挖掘工具的預設優先順序(回傳負數表示 {@code a} 較優先)：
+	 * 先比保護層級，再比同層普通材質優於珍貴材質，最後比有效挖掘速度。
+	 */
+	static int compareDefaultMiningTools(int tierA, boolean preciousMatA, float speedA,
+										 int tierB, boolean preciousMatB, float speedB) {
+		if (tierA != tierB) return Integer.compare(tierA, tierB);
+		if (preciousMatA != preciousMatB) return preciousMatA ? 1 : -1;
+		if (speedA > speedB + 0.01f) return -1;
+		if (speedB > speedA + 0.01f) return 1;
+		return 0;
+	}
+
+	private record DefaultToolScore(int slot, int tier, boolean preciousMaterial, float speed) {}
+
+	private static DefaultToolScore scoreDefaultMiningTool(int slot, ItemStack s, BlockState state) {
+		if (s.isEmpty()) return null;
+		boolean needsTool = state.requiresCorrectToolForDrops();
+		if (needsTool && !s.isCorrectToolForDrops(state)) return null;
+		float baseSpeed = s.getDestroySpeed(state);
+		if (!needsTool && (baseSpeed <= 1.01f || (s.is(ItemTags.SWORDS) && baseSpeed < 10f))) return null;
+		ItemEnchantments ench = s.getEnchantments();
+		boolean enchanted = !ench.isEmpty();
+		boolean silkTouch = false;
+		boolean fortune = false;
+		int efficiency = 0;
+		if (enchanted) {
+			for (var entry : ench.entrySet()) {
+				String name = shortHolderName(entry.getKey());
+				if ("silk_touch".equals(name)) silkTouch = true;
+				else if ("fortune".equals(name)) fortune = true;
+				else if ("efficiency".equals(name)) efficiency = entry.getIntValue();
+			}
+		}
+		boolean preciousMat = isPreciousToolId(id(s));
+		int maxDur = s.getMaxDamage();
+		int remDur = maxDur > 0 ? Math.max(0, maxDur - s.getDamageValue()) : 0;
+		int tier = defaultMiningToolTier(preciousMat, enchanted, fortune, silkTouch, remDur, maxDur);
+		return new DefaultToolScore(slot, tier, preciousMat, effectiveMiningSpeed(baseSpeed, efficiency));
+	}
+
+	private static DefaultToolScore findBestDefaultMiningToolInRange(Inventory inv, BlockState state, int startSlot, int endExclusive) {
+		DefaultToolScore best = null;
+		int limit = Math.min(endExclusive, MAIN_SIZE);
+		for (int i = startSlot; i < limit; i++) {
+			DefaultToolScore cand = scoreDefaultMiningTool(i, inv.getItem(i), state);
+			if (cand == null) continue;
+			if (best == null || compareDefaultMiningTools(
+				cand.tier(), cand.preciousMaterial(), cand.speed(),
+				best.tier(), best.preciousMaterial(), best.speed()) < 0) {
+				best = cand;
+			}
+		}
+		return best;
+	}
+
+	/**
+	 * 依預設保護規則在前 {@code maxSlot} 格(9=僅快捷列、{@link #MAIN_SIZE}=全主背包)找最適合挖 {@code state} 的工具索引；
+	 * 找不到回傳 -1。可安全在 Baritone 尋路執行緒呼叫(僅讀取快捷列)。
+	 */
+	public static int findDefaultMiningTool(Player p, BlockState state, int maxSlot) {
+		DefaultToolScore best = findBestDefaultMiningToolInRange(p.getInventory(), state, 0, maxSlot);
+		return best == null ? -1 : best.slot();
+	}
+
+	/**
+	 * 確保挖 {@code state} 用的預設最佳工具在快捷列(0–8)上，讓只看快捷列的 Baritone 用得到。
+	 * 已在快捷列回傳該格索引；在主背包時透過正常背包交換換上快捷列並回傳目標格；沒有合適工具時回傳 -1。
 	 */
 	public static int ensureHotbarTool(Minecraft mc, BlockState state) {
 		Player p = mc.player;
 		Inventory inv = p.getInventory();
-		boolean needsTool = state.requiresCorrectToolForDrops();
-		int bestIdx = -1;
-		float bestSpeed = needsTool ? 0f : 1.01f;
-		for (int i = 0; i < MAIN_SIZE; i++) {
-			ItemStack s = inv.getItem(i);
-			if (s.isEmpty()) continue;
-			if (needsTool && !s.isCorrectToolForDrops(state)) continue;
-			float sp = s.getDestroySpeed(state);
-			if (!needsTool && (sp <= 1.01f || (s.is(ItemTags.SWORDS) && sp < 10f))) continue;
-			if (bestIdx < 0 || sp > bestSpeed + 0.01f) {
-				bestIdx = i;
-				bestSpeed = sp;
-			}
-		}
+		boolean canSwap = p.containerMenu == p.inventoryMenu && p.inventoryMenu.getCarried().isEmpty();
+		int bestIdx = findDefaultMiningTool(p, state, canSwap ? MAIN_SIZE : 9);
 		if (bestIdx < 0) return -1;
 		if (bestIdx < 9) return bestIdx;
-		if (p.containerMenu != p.inventoryMenu) return -1;
 		boolean[] occupied = new boolean[9];
 		boolean[] damageable = new boolean[9];
 		for (int i = 0; i < 9; i++) {
@@ -155,6 +238,37 @@ public final class Inv {
 		}
 		int targetSlot = chooseHotbarSwapSlot(occupied, damageable, null, inv.getSelectedSlot());
 		click(mc, p.inventoryMenu, menuSlot(bestIdx), targetSlot, ContainerInput.SWAP);
+		return targetSlot;
+	}
+
+	/**
+	 * 快捷列目前挑到的是珍貴／附魔工具，但主背包裡有保護層級更低(更適合日常消耗，例如無附魔鐵鎬)的合格工具時，
+	 * 把主背包那把換上快捷列並回傳新槽位；不需要或不能換時回傳 -1(供 ToolSetMixin 在 client thread 呼叫)。
+	 */
+	public static int pullBetterDefaultHotbarTool(Minecraft mc, BlockState state, int hotbarSlot, ItemMatcher protectMatcher) {
+		Player p = mc.player;
+		if (hotbarSlot < 0 || hotbarSlot >= 9 || p.containerMenu != p.inventoryMenu || !p.inventoryMenu.getCarried().isEmpty()) {
+			return -1;
+		}
+		Inventory inv = p.getInventory();
+		DefaultToolScore cur = scoreDefaultMiningTool(hotbarSlot, inv.getItem(hotbarSlot), state);
+		if (cur == null || cur.tier() == 0) return -1;
+		DefaultToolScore mainBest = findBestDefaultMiningToolInRange(inv, state, 9, MAIN_SIZE);
+		if (mainBest == null || mainBest.tier() >= cur.tier()) return -1;
+		boolean[] occupied = new boolean[9];
+		boolean[] damageable = new boolean[9];
+		boolean hasProtect = protectMatcher != null && !protectMatcher.isAny();
+		boolean[] protectedSlot = hasProtect ? new boolean[9] : null;
+		for (int i = 0; i < 9; i++) {
+			ItemStack s = inv.getItem(i);
+			occupied[i] = !s.isEmpty();
+			damageable[i] = occupied[i] && s.isDamageableItem();
+			if (hasProtect && occupied[i] && protectMatcher.matches(infoOf(s))) protectedSlot[i] = true;
+		}
+		int fallback = hasProtect && protectedSlot[hotbarSlot] ? -1 : hotbarSlot;
+		int targetSlot = chooseHotbarSwapSlot(occupied, damageable, protectedSlot, fallback);
+		if (targetSlot < 0) return -1;
+		click(mc, p.inventoryMenu, menuSlot(mainBest.slot()), targetSlot, ContainerInput.SWAP);
 		return targetSlot;
 	}
 

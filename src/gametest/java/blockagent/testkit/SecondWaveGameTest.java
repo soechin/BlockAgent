@@ -344,7 +344,66 @@ public class SecondWaveGameTest implements FabricClientGameTest {
 		k.setBlock(stone2, Blocks.AIR.defaultBlockState());
 		k.setBlock(dia1, Blocks.AIR.defaultBlockState());
 		k.setBlock(dia2, Blocks.AIR.defaultBlockState());
-		System.out.println("[ok] T17(e) break_block 與 mine 的 tool_match(silk_touch / fortune)");
+
+		// 預設保護珍貴工具：快捷列有附魔鑽石鎬、主背包有普通鐵鎬時，未指定 tool_match 挖地獄岩應改用鐵鎬，挖黑曜石才用鑽石鎬
+		k.cmd("tp @p " + TestKit.pos(c));
+		k.clearInventory();
+		k.onServer(s -> {
+			var p = k.me(s);
+			var enchReg = s.registryAccess().lookupOrThrow(Registries.ENCHANTMENT);
+			ItemStack enchDia = new ItemStack(Items.DIAMOND_PICKAXE);
+			enchDia.enchant(enchReg.getOrThrow(Enchantments.EFFICIENCY), 4);
+			p.getInventory().setItem(0, enchDia);
+			p.getInventory().setItem(15, new ItemStack(Items.IRON_PICKAXE));
+		});
+		BlockPos rack0 = c.east(2);
+		BlockPos rack1 = c.west(2);
+		BlockPos rack2 = c.west(2).above();
+		k.setBlock(rack0, Blocks.NETHERRACK.defaultBlockState());
+		k.setBlock(rack1, Blocks.NETHERRACK.defaultBlockState());
+		k.setBlock(rack2, Blocks.NETHERRACK.defaultBlockState());
+		k.ctx.waitTicks(4);
+
+		String brkRack = finishTask(k, k.ai.call(k.ctx, "break_block",
+			args("x", rack0.getX(), "y", rack0.getY(), "z", rack0.getZ())));
+		check(brkRack.contains("broken"), "T17(e) 預設挖地獄岩應成功：" + brkRack);
+		String mineRack = finishTask(k, k.ai.call(k.ctx, "mine",
+			args("block", "netherrack", "count", 2, "radius", 16)));
+		check(mineRack.contains("mined=2/2"), "T17(e) 預設 mine 地獄岩應成功：" + mineRack);
+		check(k.server.computeOnServer(s -> {
+			var p = k.me(s);
+			int ironDmg = -1;
+			int diaDmg = -1;
+			for (int i = 0; i < 36; i++) {
+				ItemStack st = p.getInventory().getItem(i);
+				if (st.is(Items.IRON_PICKAXE)) ironDmg = st.getDamageValue();
+				if (st.is(Items.DIAMOND_PICKAXE)) diaDmg = st.getDamageValue();
+			}
+			return ironDmg == 3 && diaDmg == 0;
+		}), "T17(e) 挖地獄岩應優先用鐵鎬並讓附魔鑽石鎬無損");
+
+		k.cmd("tp @p " + TestKit.pos(c));
+		k.setBlock(rack0, Blocks.OBSIDIAN.defaultBlockState());
+		k.ctx.waitTicks(4);
+		String brkObs = finishTask(k, k.ai.call(k.ctx, "break_block",
+			args("x", rack0.getX(), "y", rack0.getY(), "z", rack0.getZ())));
+		check(brkObs.contains("broken"), "T17(e) 挖黑曜石應自動改用鑽石鎬：" + brkObs);
+		check(k.server.computeOnServer(s -> {
+			var p = k.me(s);
+			int ironDmg = -1;
+			int diaDmg = -1;
+			for (int i = 0; i < 36; i++) {
+				ItemStack st = p.getInventory().getItem(i);
+				if (st.is(Items.IRON_PICKAXE)) ironDmg = st.getDamageValue();
+				if (st.is(Items.DIAMOND_PICKAXE)) diaDmg = st.getDamageValue();
+			}
+			return ironDmg == 3 && diaDmg == 1;
+		}), "T17(e) 挖黑曜石應使用附魔鑽石鎬(損耗 1)且不再耗損鐵鎬");
+		k.setBlock(rack0, Blocks.AIR.defaultBlockState());
+		k.setBlock(rack1, Blocks.AIR.defaultBlockState());
+		k.setBlock(rack2, Blocks.AIR.defaultBlockState());
+
+		System.out.println("[ok] T17(e) break_block 與 mine 的 tool_match(silk_touch / fortune) 與預設珍貴工具保護");
 	}
 
 	/** T17(f)：smelt 同料剩餘自動選燃料(原木燒木炭)與 dig_tunnel 全場景(護欄、火把、礦脈、岩漿、保護、階梯)。 */
