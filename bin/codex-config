@@ -66,8 +66,9 @@ if [ -n "${PROMPT_FILE:-}" ]; then
 
 ## Codex 工具呼叫注意
 
-- 查詢 `ALL_TOOLS` 時，先用 `ALL_TOOLS.map(t => t.name)` 看名稱清單，再只取出當下要用的少數工具；不要一次把整個 `ALL_TOOLS` 印出來(避免脈絡暴增與截斷)。
-- 呼叫長任務(`mine`、`smelt`、`build_*`、`goto`)或 `wait_events` 時，在 `exec` 第一行加上 `// @exec: {"yield_time_ms": 120000}`，並讓 `wait_sec`/`max_wait_sec` 用預設值或 60–90 秒，不必縮短成 20 秒反覆輪詢。
+- 查詢 `ALL_TOOLS` 時，先用 `ALL_TOOLS.map(t => t.name)` 看名稱清單，再按目前階段分組一次取出當下會用到的相關工具(例如移動、採礦、整理合成各一組，維持在數支工具的精簡範圍內)，兼顧脈絡精簡與查閱效率。
+- 確定性的連續步驟(例如沿既定礦道中繼點分段 `goto` 往返、連續 `craft` 木板→木棍→火把/工具、一次檢查多個箱子，或取裝後依序 `equip`)，優先在同一個 `exec` 腳本裡依序 `await` 完成；每步檢查回傳結果，遇失敗、危險或中斷事件就提前停止並回報。
+- 呼叫長任務(`mine`、`smelt`、`build_*`、`goto`)、多段連續移動或 `wait_events` 時，在 `exec` 第一行加上 `// @exec: {"yield_time_ms": 120000}`，並讓 `wait_sec`/`max_wait_sec` 維持預設值或 60–90 秒，讓單次等待涵蓋完整動作。
 CODEX_HINTS
 	printf "'''\n"
 fi
