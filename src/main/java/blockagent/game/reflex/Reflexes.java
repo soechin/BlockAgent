@@ -309,7 +309,8 @@ public final class Reflexes {
 				}
 			}
 			case ON_FIRE -> {
-				if (p.isOnFire() && !p.isInWater() && !p.isInLava() && !p.hasEffect(MobEffects.FIRE_RESISTANCE)) return "on_fire";
+				String why = fireReason(mc);
+				if (why != null) return why;
 			}
 			case LAVA_AVOID -> {
 				if (p.isInLava()) return "in_lava";
@@ -573,12 +574,29 @@ public final class Reflexes {
 		return null;
 	}
 
+	/**
+	 * 著火時有沒有事可做(S9.1)：站在火裡就走開，附近 8 格有水就去泡水；都沒有的話跑也沒用
+	 * (例如地獄被烈焰使者的火球打中)，讓任務和自衛照常進行，等火自己熄。
+	 */
+	private String fireReason(Minecraft mc) {
+		LocalPlayer p = mc.player;
+		if (!p.isOnFire() || p.isInWater() || p.isInLava() || p.hasEffect(MobEffects.FIRE_RESISTANCE)) return null;
+		BlockPos feet = p.blockPosition();
+		if (isFire(mc.level.getBlockState(feet)) || isFire(mc.level.getBlockState(feet.below()))) return "on_fire in_fire";
+		if (waterWorks(mc) && !Moves.scan(mc, List.of(Blocks.WATER), 8, 1, null).isEmpty()) return "on_fire water_near";
+		return null;
+	}
+
+	private static boolean isFire(BlockState st) {
+		return st.is(Blocks.FIRE) || st.is(Blocks.SOUL_FIRE);
+	}
+
 	private boolean done(Minecraft mc) {
 		LocalPlayer p = mc.player;
 		return switch (active) {
 			// 頭一露出水面就結束的話，浮浮沉沉會一直重新觸發：等氧氣回滿(M14)
 			case DROWNING -> p.getAirSupply() >= p.getMaxAirSupply();
-			case ON_FIRE -> !p.isOnFire();
+			case ON_FIRE -> fireReason(mc) == null;
 			case LAVA_AVOID -> !p.isInLava() && lavaNear(mc, 3).isEmpty();
 			// 放了水就要舀回來(身上本來有幾桶水就回到幾桶)；落地 2 秒還舀不回來就算了(M14)
 			case FALL -> p.onGround() && (!bucketPlaced || Inv.count(p, Items.WATER_BUCKET) >= bucketsBefore

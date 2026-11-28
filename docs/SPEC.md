@@ -65,6 +65,7 @@
   | `freeLook` | 平常 `false`；使用者 3 秒內用滑鼠轉過視角時 `true` | 平常鏡頭跟著 AI 的前進方向；使用者在看別的地方時，Baritone 只改移動方向、不轉鏡頭(S8.2a)。這個值每個 tick 由 `Control` 同步，不在 20 tick 的檢查裡 |
   | `chatDebug`, `desktopNotifications` | `false` | 不在聊天框或系統通知顯示除錯訊息 |
   | `useSwordToMine` | `false` | 不拿劍挖方塊，白白耗損耐久 |
+  | `blocksToAvoid` | 平常 `[nether_portal]`；`nether_portal(action=enter)` 期間清空 | Baritone 把傳送門方塊當空氣，一般走路會誤穿傳送門換到另一個維度(S4.2k)。由目前任務的 `crossesDimensions()` 決定，20 tick 的檢查也照這個判斷 |
   | `allowBreak`, `allowPlace` | 平常 `true`；清空區域(S4.8c)、建造時拆鷹架的期間 `false` | 由目前任務決定(`Task.adjustBaritone`)，20 tick 的檢查重設時也照任務的需要，不會在拆鷹架途中被改回 `true`；任務被反射暫停時照平常的設定 |
 
   - 啟動時確認 Baritone 的內部類別存在(`CalculationContext`、`BuilderProcess`、`ToolSet`)。找不到表示裝的是混淆版(`baritone-standalone-fabric`)，S1.5 的 Mixin 會靜默失效：記錄錯誤，並在進入世界時於聊天欄(只顯示在自己的畫面)用紅字提醒改裝 unoptimized 版(docs/REVIEW.md H10)。
@@ -184,7 +185,7 @@ flowchart TD
 | 工具 | 內容 | 需求 |
 |---|---|---|
 | `get_self` | 位置、所在維度、傳送門冷卻剩餘 tick(`portal_cooldown`，冷卻中需先停在門外)、生態域、面朝方向(`face=`，八方位)；遊戲模式(創造模式另外提醒「挖掉的方塊不會掉落，要材料用 creative_take」，飛行中也會標出)；血量、飢餓度、飽和度、氧氣；經驗等級；狀態效果(`effects=poison:1:12s,...`，等級和剩餘秒數)；手上和副手物品、盔甲(耐久、附魔、藥水內容、書名、自訂名稱，S3.0b 的物品寫法)；背包(同種物品合併計數，標出可吃、可當燃料的物品；附魔書、藥水這類同 id 也不同的物品另外列在 `special=`)；目前任務與暫停狀態；啟用中的反射 | M1.1 |
-| `get_surroundings(radius=16, detail=false)` | 腳下方塊與光線；地形概要(地表、洞穴、水邊、高度落差)、面朝方向與周圍已載入生態域方向；**重要方塊**依種類分組，列出最近的位置和數量(礦石、原木、水、岩漿、工作台、熔爐、箱子、床、門，以及有寫字的告示牌 `sign`，附文字摘要)，每組標出所有權(`own`/`other`/`nat`)；危險(岩漿、懸崖、火)；生物依 `hostile`、`neutral`、`protected`、`passive` 分組，每種列出數量與最近個體的 id 和方向(`detail=true` 展開多隻)；**物品展示框**(`frame`，非空展示框的物品、位置與貼附方向，S3.2a)；**載具**(船、礦車：id、位置、誰在上面，`mount` 用)；**地上的掉落物**(依物品 id 合併計數，列最近那一堆的位置)；主世界的時間與天氣 | M1.2 |
+| `get_surroundings(radius=16, detail=false)` | 腳下方塊與光線；地形概要(地表、洞穴、水邊、高度落差)、面朝方向與周圍已載入生態域方向；**重要方塊**依種類分組，列出最近的位置和數量(礦石、原木、水、岩漿、工作台、熔爐、箱子、床、門、黑曜石、傳送門，堡壘線索 `nether_bricks`(地獄磚、地獄磚柵欄與樓梯)、生怪磚 `spawner`、地獄疙瘩，以及有寫字的告示牌 `sign`，附文字摘要)，每組標出所有權(`own`/`other`/`nat`)；危險(岩漿、懸崖、火)；生物依 `hostile`、`neutral`、`protected`、`passive` 分組，每種列出數量與最近個體的 id 和方向(`detail=true` 展開多隻)；**物品展示框**(`frame`，非空展示框的物品、位置與貼附方向，S3.2a)；**載具**(船、礦車：id、位置、誰在上面，`mount` 用)；**地上的掉落物**(依物品 id 合併計數，列最近那一堆的位置)；主世界的時間與天氣 | M1.2 |
 | `inspect_area(from, to, mode=auto, type?, offset=0, limit=32)` | 讀取目前維度的長方體(含兩端，最多 32,768 格)。小範圍或指定方塊時預設列出座標、狀態與所有權(遇到告示牌時附上非空的正面/背面文字，S3.2a)，其他範圍預設統計方塊種類。分開標示空氣、未載入及超出世界範圍。 | M1.2, M1.7 |
 | `find_blocks(type, radius=48, max=10, min_y?, max_y?, source_only=false)` | 在已載入的區塊中找指定方塊，回傳最近的 N 個位置與所有權標記。`type` 可用逗號列出最多 8 種，各自回報。高度是含端點的範圍，`source_only` 只保留流體來源。篩選後才取各類最近的結果，全部找不到才回傳 `NOT_FOUND` | M1.2 |
 | `get_players` | 附近其他玩家：名稱、座標(`pos=`，可以直接拿去 `goto`)、距離方向、手上物品、盔甲、最近的行為(S3.4) | M1.3, M1.4 |
@@ -307,6 +308,7 @@ flowchart TD
 | `sleep(x?,y?,z?)` | 走到床邊睡。可以指定床；不指定就用附近 32 格最近、沒人在睡的(別人的也可以) | 目前時段和位置的床規則是否允許睡覺(主世界為晚上或雷雨)，會引爆的床直接拒絕；指定的格子是不是 32 格內的床、有沒有人在睡，或附近有沒有空床 | M2.2, M5.3 |
 | `follow(player, distance=3, max_sec=60)` | 跟著一位玩家走，保持距離並檢查高度差(最多 600 秒)。反覆找不到路或無進展時提早回報 `PATH_BLOCKED`，附雙方座標和高度差。時間到、對方不見、stop、暫停或接手就停 | 附近有沒有這位玩家 | M2.1, M2.5 |
 | `use_on_entity(target, item?)` | 走到生物旁邊，拿著物品按右鍵(剪羊毛、餵食繁殖、拴繩、擠奶)，省略 item 就空手；撿起互動後掉在旁邊的東西。村民和流浪商人一律不能互動(不做交易，S7.7、A3) | 背包有這個物品；目標是否受保護(S7.7 的 `interact`) | M2.2, M5.1 |
+| `nether_portal(action, x?, y?, z?, axis?)` | 蓋好並點燃地獄傳送門(`build`)，或走進傳送門站到換維度(`enter`)(S4.2k) | build：打火石或火焰彈、10 個黑曜石、4 個墊角方塊、格子沒被擋；enter：附近有亮著的傳送門、沒有傳送門冷卻 | M2.1、M2.2、M2.8、M2.9 |
 | `mount(target)` | 走過去坐上船、礦車等載具。不會自己開船；乘坐中不能開始走路的任務，要先 `dismount` | 目標是否受保護(馴服的馬算寵物，不分主人，自己的也擋；村民和流浪商人一律擋下) | M2.1 |
 | `fish(count=1, max_sec=120)` | 走到 16 格內的水邊拋竿，浮標被咬住就收竿，釣到 count 次或時間到 | 背包有釣竿；附近有沒有上方是空氣的水源 | M2.1, M2.8 |
 | `chest(action, x,y,z, items?)` | 走到箱子、木桶、界伏盒或終界箱前：`list` 看內容，`put` 放東西(含副手)，`take` 拿東西(別人的和自然生成的也可以)。`items` 鍵支援純 id 或 `id[屬性]` 篩選語法(S4.2d)。結果都附上關上前的內容(`contents=id:數量,... free=空格數`，附魔書等另外列在 `special=`) | `put` 時背包(含副手)有符合條件的東西；目標是不是箱子 | M2.2, M5.3 |
@@ -399,6 +401,17 @@ flowchart TD
     - 通過檢查後，以原版挖掘操作(同 `BreakTask`，走守門員最後防線)逐格挖除並走進新節點(短距離移動／對齊)，順手撿起掉落物；若 `torch_every > 0` 且距上次插火把已達 `torch_every` 格、且該格方塊光照(`LightLayer.BLOCK`)≤ 7，在腳下或側牆自動放置 1 根 `torch`(經守門員與所有權記帳)。
     - **沿途礦脈回報**：不論是否指定 `stop_on`，每步皆記錄隧道周圍 1 格露出的所有礦石(`#*_ores`)，任務結束時於結果附上 `ores=<種類>:<數量>@<最近座標>;...`(無則省略)，搭配 `dug=<步數>/<目標>`、`pos=`、`torches_placed=` 與 `stopped=` 原因。
     - 反射暫停後恢復：回到最後完成的節點座標重檢並續挖；計時器照 S4.3 扣除暫停期間。
+- **S4.2k 地獄傳送門(`nether_portal`)**(2026-11-28，生存進程地獄階段)：[M2.1, M2.2, M2.8, M2.9, M5.2]
+  - 參數：`action` 必填(`build` 或 `enter`)；`x,y,z` 可省略；`axis`(`x` 或 `z`)只給 `build`。
+  - **build**：框架寬 4 高 5，`x,y,z` 是左下角(底框那一層)，沿 `axis` 往正方向展開；省略時放在面前 3 格、正對自己，`axis` 依面向。格子配置由純邏輯 `blockagent.core.PortalPlanner` 算：10 格黑曜石(不含四角)、四角、門裡 2×3。
+    - 四角原版不在乎是什麼，但施工要有地方貼著放(S4.4c 懸空檢查)，所以空著的角落用背包裡的一般方塊墊上(圓石、深板岩圓石、地獄石、黑石、石頭、深板岩、泥土、木板依序挑)；都沒有時用多出來的黑曜石。已經是實心方塊的角落不動。
+    - 事前檢查：在終界回 `INVALID_ARGUMENT`(終界點不了地獄門)；沒有打火石或火焰彈回 `MISSING_TOOL`；墊角方塊或黑曜石不夠回 `MISSING_MATERIALS`(附 `missing=`)；有格子被擋或懸空回 `PATH_BLOCKED`(附 `skipped_at=`)。門已經亮著時直接 `OK done note="already lit"`。
+    - 蓋框用和藍圖相同的施工(`BuildTask`；創造模式有指令權限時用 `CommandBuildTask`)，門裡的天然方塊先清掉，設計裡的格子不拿來墊腳；規矩和 Baritone mixin 透過 `TaskRunner.build()` 看到這個內含的施工任務。蓋好後拿打火石(沒有就用火焰彈)點構得到的框塊朝門裡的那一面(原版門框裡任何一格起火都會亮；底框朝上優先，站在框頂時點頂框朝下)，構不到就走近；最多試 3 次、每次等 2 秒門亮起來。點火照 S7.3d 檢查。點火和下框架期間，框架和墊角不准尋路、脫困拆掉(`RULE_PROTECTED_BLOCK kept by the portal being lit`)。
+    - 門亮了但自己站在框頂(高於底框 1.5 格以上)：暫時把 Baritone 的 `maxFallHeightNoWater` 放寬到 6 走下來，結束或被打斷時還原；2 秒走不了就照樣完成，附 `note="still on top of the frame; goto the ground nearby"`。
+    - 結果：`portal=<門裡最下面那格> axis=<x|z> lit=true`。點了沒亮回 `INVALID_ARGUMENT`(門裡要空、10 格黑曜石要齊)。
+  - **enter**：`x,y,z` 是傳送門的任一格(往下找到那一欄最底下站得進去的格子)，省略時找 16 格內最近的亮著的傳送門。有傳送門冷卻回 `INVALID_ARGUMENT`(附 `portal_cooldown`)；找不到回 `NOT_FOUND`。
+    - 只有這個任務期間 Baritone 准許穿過傳送門方塊(S1.4 `blocksToAvoid`)。走進門格後放開所有按鍵站著；被推出門外就再走回去；站了 15 秒還沒換維度回 `TIMEOUT`。
+    - 換到另一個維度時結束：`from=<原維度> dim=<新維度> arrived=<抵達點> left=<出發點> linked_xz=<抵達點在原維度的對應 x,z>`(地獄乘 8、主世界除以 8)，附提示把兩邊的門連同維度記進記憶、先走出門再做下一件事。
 - **S4.2a** 工具整併(使用者決定，2026-11-23，`docs/REVIEW.md` A7)：`preview_build` 併入 `build_wall`/`build_house`/`build_blueprint` 的 `dry_run`(唯讀、暫停時也能用，阻擋明細用 `offset` 分頁)；`chest_put`、`chest_take` 併成 `chest(action=list|put|take)`。`memory_*` 和 `list_reflexes`/`set_reflex` 保持獨立：依 `action` 改變必填參數的工具容易讓模型填錯，這兩組又不是重複的 schema。區域工具的兩個端點一律叫 `from`/`to`(`"x,y,z"`)；舊藍圖記下的 `corner1`/`corner2` 照樣讀得懂。
 - **S4.2** 工具清單裡**沒有**：自動跟隨、自動幫忙、連線伺服器、切換世界、離開世界、執行指令、Baritone 指令轉送。`follow` 只在 AI 自己呼叫時才跟，不會因為看到朋友就自己開始。[M2.5, M2.6]
 - 尋路避開怪物：Baritone `avoidance=true`，8 格內有敵對生物的路線成本較高(Baritone 內建排除沒生氣的終界使者、殭屍化豬布林和亮處的蜘蛛)。
@@ -414,6 +427,7 @@ flowchart TD
   - 反射(脫困以外)正在接手時不開始新任務，回 `BUSY reflex=<名稱>`、`hint=wait_events a few seconds until the reflex event, then try again`，免得跟反射搶 Baritone 和按鍵(docs/REVIEW.md H7)。換掉任務時，舊任務的脫困反射也一起結束。
   - 被反射暫停(自衛、進食)的期間不算進任務的時間上限和「多久沒進展」。恢復時每個任務自己接著做：重新打開熔爐、工作台、箱子(關掉畫面時合成格已清空，這一批重來；熔爐回到原本的階段)，重新拿起工具或食物，被帶離原處的先走回去；釣魚站不到岸邊就先走回去再拋竿。暫停、恢復出錯時任務以 `INTERNAL` 結束。
   - 任務狀態：`running` → `done` / `failed` / `cancelled`。結束時發出事件 `task_done`、`task_failed` 或 `task_cancelled`，內容包含：哪個任務、**做到哪裡**(例如 `mined=4/10`、`blocks=18/30`)、結果，最後附上自己的血量、飢餓度、位置和精簡時間(`hp=15/20 food=13/20 pos=x,y,z time=day`；2 分鐘內要換階段時再加倒數，例如 `time=day dusk_in=90s`)，AI 不必為此再呼叫 `get_self`。失敗和停止的事件照 S3.0d 接上 `| <原因> | hint=<下一步>`，錯誤碼寫在 `code=`。
+  - 任務記下開始時的維度。中途換了維度(誤穿傳送門、被傳送)，原本的座標和目標都不適用了，除了 `nether_portal(action=enter)` 以外的任務一律以 `INTERRUPTED` 結束，原因寫 `moved to another dimension (<維度>)`。
   - 每個任務有時間上限，預設 10 分鐘(`search=true` 的 mine 也算在內)，超過就是 `TIMEOUT`。
   - 每 15 秒發一次 `task_progress`，屬於合併類事件(S5.2)。任務結束時，還沒送出的 `task_progress` 會被移除，因為結果事件已經附上最後的進度。
 
@@ -589,6 +603,8 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
   - 陶土只算惡地會生成的顏色(`#minecraft:badlands_terracotta`)，其他染色陶土是人造的。
   - 流體：水、岩漿。
   - **算人造**(不在白名單)：木板、玻璃、磚塊、羊毛、床、門、火把、作物(小麥、胡蘿蔔、馬鈴薯、甜菜，這些是有人種的)、耕地、圓石(通常是玩家放的)、各種台座與容器。
+  - 只在某個維度才算天然的方塊(`natural_in_dimension`)：地獄裡長的地獄疙瘩(`nether_wart`)是堡壘花圃生成的，算天然；主世界的是有人種的，照作物算人造(使用者決定，2026-11-28：規則簡單好解釋，代價是朋友在地獄種的疙瘩田分不出來)。
+  - 傳送門框：六面任一面貼著 `nether_portal` 的黑曜石不算天然，不是自己放的就不能拆；尋路和脫困連自己放的也不拆(`RuleGuard.canPathBreak`)，免得回程的門被拆掉。自己蓋的門要拆，用 `break_block`。
   - 已知漏洞(需求已列)：別人用天然方塊蓋的東西分辨不出來。
 - **S7.3b** 能不能放置：目標格是空氣或可替換方塊(草、雪層、水)→ 可以。會覆蓋其他方塊的放置，比照「破壞」判斷；被別人的方塊擋住時，訊息寫「x,y,z 已經有別人的 X，放不下去」。蹲下時也一樣(例如蹲下拿半磚點別人的半磚會疊成雙層，要擋)。門、床、高植物會連帶占用另一格(門和高植物的上半格、床頭)，那一格也要能放。
 - **S7.3c** 用工具改變方塊比照「破壞」判斷：別人的方塊(不是天然、也不是自己的)不能用下列物品按右鍵(`RuleGuard.toolWouldChange`)：
@@ -733,7 +749,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
   |---|---|---|---|---|---|
   | `drowning` | 保命 | 頭在水裡，而且氧氣 < 40%(120/300) | 按住跳鍵往上游；上方 3 格內有固體擋住時，用 Baritone 找最近的空氣格 | 氧氣恢復到 100%(頭一露出水面就結束的話，浮浮沉沉會一直重新觸發) | M7.1 |
   | `lava_avoid` | 保命 | 腳下或相鄰格子是岩漿，或下一步的路徑會進入岩漿 | 立刻停止移動，往遠離岩漿的方向退 3 格；路徑規劃的成本掛勾本來就避開岩漿 | 3 格內沒有岩漿 | M7.1 |
-  | `on_fire` | 保命 | 著火(`isOnFire`)，而且不在水裡也不在岩漿裡(在岩漿裡由 `lava_avoid` 處理) | 8 格內有水就走進去；沒有就離開火所在的格子，往遠離火源的方向走 | 火熄滅 | M7.1 |
+  | `on_fire` | 保命 | 著火(`isOnFire`)，不在水裡也不在岩漿裡(在岩漿裡由 `lava_avoid` 處理)，沒有抗火效果，而且站在火裡，或 8 格內有水(水會蒸發的維度不算)。都沒有時跑也沒用(例如地獄被烈焰使者的火球打中)，不觸發，任務和自衛照常(2026-11-28) | 8 格內有水就走進去；沒有就離開火所在的格子，往遠離火源的方向走 | 火熄滅，或觸發條件不再成立 | M7.1 |
   | `fall` | 保命 | 可放水的地方快速下墜超過 4 格，而且背包有水桶 | 暫停任務，落地前在腳下放水，落地後把水舀回來。Baritone 不規劃水桶跳落 | 落地後舀回水或等 2 秒，接著恢復原任務；無法確認落地時回報中斷 | M7.1 |
   | `retreat` | 撤退 | 血量 ≤ 6，而且 12 格內有敵對生物或 16 格內有看得到的射手。困難模式可依下一輪預估傷害提前觸發。正在吃東西而且 3 格內沒怪時不觸發(讓這一口吃完)；因為回不了血而放棄後 20 秒內不觸發，除非之後又被打 | 暫停任務，分兩段(2026-11-26，docs/REVIEW.md R3)：**跑開**——4 格內沒有近戰怪時，優先找能切斷遠程射線的掩體；沒有合適掩體時往遠離敵對生物的方向走，目標是 20 格外；每 2 秒依怪物的新位置重新規劃，有怪物追到 4 格內時半秒一次；4 格內沒有近戰怪、而且有箭要擋時停下舉盾擋完再跑。**回血**——16 格內沒有看得到自己的威脅時停下，飢餓度 < 20 就吃(血量 ≤ 6 時金蘋果優先)；有威脅走進 12 格就回到跑開。困難模式的跑開與回血條件見 S9.1b | 血量 > 10(`recovered`，接著做原本的任務；同一個任務第二次撤退時改成取消任務，`outcome=retreated_twice`)；回血階段 10 秒都回不了血(飢餓度 < 18 又沒食物，`cannot_heal`，取消任務)；最多 60 秒 | M7.2 |
   | `self_defense` | 自衛 | 16 格內有該處理的怪物，條件依 S9.1b 的分類；要避開的以外都要看得到牠。收手時目標還活著的，那一隻 10 秒內不再觸發(除非牠又打了自己)，免得隔牆的怪物每幾秒就打斷任務 | 依 S9.1b 的戰術應對(走近打、打了就退、跑開、舉盾、用弓射、躲起來；打不贏就拉開距離)；每半秒重新挑目標，更危險的優先；目標死亡時若仍有立即威脅，在同一次自衛內換目標。**攻擊前做 S7.7 的射線檢查，射箭前做拋物線檢查**，路線上有玩家或受保護生物就不出手，改為後退 | 目標死亡且無立即威脅、超過 18 格、3 秒看不到牠；近戰類離開 8 格、苦力怕離開 10 格、要避開的離開 24 格；或血量觸發 `retreat` | M7.3 |
@@ -745,7 +761,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
   | 分類 | 生物 | 自衛反射觸發 | 戰術 |
   |---|---|---|---|
   | 爆炸 | creeper | 3.5 格內；或 6 格內而且在膨脹、盯上自己、朝自己走來或打過自己 | 走近，一進攻擊距離就打(擊退讓牠來不及引爆)，打完後退 12 tick；開始膨脹(`getSwellDir() > 0`)就跑到 8 格外，太近又快爆(< 4.5 格、膨脹 > 50%)而且有盾牌時改成舉盾；有弓、5 格以上而且看得到就用射的 |
-  | 遠程 | 拿弓或弩的生物(skeleton、stray、bogged、pillager、敵對弩手 piglin…)、拿三叉戟的 drowned、witch、blaze、breeze、shulker、guardian；有弓時的 ghast | 16 格內看得到自己，而且在拉弓、盯上自己(`isAggressive`)或打過自己 | 有弓、有安全彈道、勝算夠且無近戰怪貼近，超過 8 格時對射；只有弓可用或 3 秒走不近時，超過 5 格即可對射；走近近戰的勝算夠時：有盾牌就在牠拉弓或箭飛來時舉盾擋、兩輪射擊之間往前衝(`shield_advance`)，沒盾牌就直接衝(`charge`)，3 秒走不近就躲到掩體後埋伏(`ambush_from_cover`，牠繞過來走進攻擊距離就砍；附近沒掩體就重新往前推)；勝算不夠(例如空手)就脫身(見下方)。「走不近」在砍中或擋箭時重算 |
+  | 遠程 | 拿弓或弩的生物(skeleton、stray、bogged、pillager、敵對弩手 piglin…)、拿三叉戟的 drowned、witch、blaze、breeze、shulker、guardian；有弓時的 ghast | 16 格內看得到自己，而且在拉弓、盯上自己(`isAggressive`)或打過自己 | 要走近浮在半空(比自己高 1.5 格以上)的 blaze 時，走到牠正下方 2 格內舉盾等牠降下來再砍，不往空中的座標走(2026-11-28)；有弓、有安全彈道、勝算夠且無近戰怪貼近，超過 8 格時對射；只有弓可用或 3 秒走不近時，超過 5 格即可對射；走近近戰的勝算夠時：有盾牌就在牠拉弓或箭飛來時舉盾擋、兩輪射擊之間往前衝(`shield_advance`)，沒盾牌就直接衝(`charge`)，3 秒走不近就躲到掩體後埋伏(`ambush_from_cover`，牠繞過來走進攻擊距離就砍；附近沒掩體就重新往前推)；勝算不夠(例如空手)就脫身(見下方)。「走不近」在砍中或擋箭時重算 |
   | 近戰 | 其他敵對生物(zombie 類、cave_spider、vindicator、slime、wither_skeleton、piglin_brute、敵對近戰 piglin…)；會飛的 phantom、vex | 打過自己；6 格內盯上自己而且看得到；或 3.5 格內朝自己走來 | 走近，冷卻滿才打，等冷卻時舉盾；會飛的不追，等牠飛近再打，有弓就射。自衛時勝算不夠就脫身(`disengage_outmatched`，見下方)；`hunt` 照打 |
   | 中立 | enderman、zombified_piglin、對自己無敵意且穿金甲時的普通 piglin、spider | 只在打過自己或生氣了(終界使者 `isCreepy`、`isAggressive`、在拉弩)而且 6 格內 | 跟近戰一樣 |
   | 避開 | warden、wither、ender_dragon；沒有弓時的 ghast | 16 格內 | 不打，往 24 格外跑 |
@@ -773,7 +789,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 - **S9.1c** 戰前評估(2026-11-26)：模組算出危險程度和備戰程度給 AI 看，要不要收工、回家、點火把或挖洞躲起來由 AI 決定。
   - 備戰程度 `gear`：沒有傷害 ≥ 4 的武器，或護甲 < 5 又沒有盾牌是 `weak`；石劍以上 + 盾 + 護甲 ≥ 15 是 `strong`；其他是 `ok`。`missing` 依序列出 `sword`、`shield`、`armor`、`bow`、`food`。
   - 危險程度 `danger`：3 隻以上威脅、或血量 ≤ 10 而且有威脅時是 `high`；其餘有 `dark` 或有威脅是 `medium`；其他是 `low`。威脅統計範圍為 24 格。腳下方塊光照為 0，而且處於主世界戶外夜間或有遮蔽處的天空光 ≤ 7 時標記 `dark`。`gear_weak` 顯示備戰資訊。
-  - `get_self`(和規劃服務的 `[self]`)回報 `danger`、`reasons`、`gear`、`missing` 和腳下的 `block_light`、`sky_light`、`sky_visible`。`medium` 下連續昏暗 60 tick 時發一次 `low_light`，回到亮處後重新計時。升到 `high` 時發 `danger_rising`，依威脅判斷。兩種事件都附觸發座標與光照。`night_falling` 附上 `gear`、`missing`。創造模式不評估。
+  - `get_self`(和規劃服務的 `[self]`)回報 `danger`、`reasons`、`gear`、`missing` 和腳下的 `block_light`、`sky_light`、`sky_visible`。沒有天空光的維度(地獄、終界：天空光永遠是 0，怪物生成也不看亮度)不算昏暗。`medium` 下連續昏暗 60 tick 時發一次 `low_light`，回到亮處後重新計時。升到 `high` 時發 `danger_rising`，依威脅判斷。兩種事件都附觸發座標與光照。`night_falling` 附上 `gear`、`missing`。創造模式不評估。
 - **S9.1a** 創造模式(2026-11-20 試玩發現：AI 站在踏台上蓋屋頂時，自衛反射把它拉下去打殭屍，屋頂就搆不到了)：玩家無敵(`abilities.invulnerable`，創造和旁觀模式)時不會受傷也不會餓，所以只有 `unstuck` 會觸發，其他反射都不評估；正在執行的其他反射也會立刻結束(「已經是創造模式，不需要」)。反射狀態的摘要會註明這件事。[M7.1–M7.5, M2.4]
 - **S9.2** 優先順序：保命 > 撤退 > 自衛 > 進食 > 脫困。同一時間只執行一個反射，高優先的可以打斷低優先的。[M7.1–M7.5]
   - 岩漿排在著火前面：碰到岩漿一定也著火，著火反射只會原地找水，留在岩漿裡會燒死。
@@ -1037,6 +1053,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 | M7.8、M7.9 | 單元測試+遊戲測試：紀錄的 `source` 欄位；關掉 `eat` 後肚子餓不會吃；被鎖定的反射關不掉 |
 | M1.2、M2.1、M2.2(底層體檢與日常擴充，S3.2a、S4.2b–S4.2e) | T16(單元測試 + 遊戲測試)：(a) 單元測試：`ItemMatcher` 解析/比對/耐久排序、`Recipes` 載入 `blasting`/`smoking` 與爐種優先順序、`inventory_full` 觸發去重、`ToolsSnapshotTest` 同步更新 `tools-snapshot.json`；(b) `eat` 喝抗火藥水(`match=fire_resistance`)與牛奶桶(清除中毒效果)，確認 `effects=` 回報與不影響食物自動選擇；(c) `equip(item="none", slot=head/offhand)` 純卸裝、`chest` 用 `id[屬性]` 精準取放附魔書/藥水/高耐久工具、副手持有材料時的 `smelt`/`drop`/`chest(put)`/`place_block`；(d) `inspect_area` 與 `get_surroundings` 讀出雙面告示牌文字與非空物品展示框，`use_block` 讀書台並確認自動關閉介面，`use_item` 讀背包成書分頁且不開書本 GUI；(e) `smelt` 優先用高爐燒鐵礦、煙燻爐烤肉，以及 `action=list`/`take` 查看與取出既有成品；(f) `place_block` 設 `half=top` 放上半磚/倒置樓梯，設 `sneak=true` 貼著箱子放漏斗與火把，並驗證放完後放開 `keyShift` 且無法蹲下覆蓋或疊合他人半磚(S7.3b) |
 | M2.1、M2.2、M2.8、M2.9、M5.2、M5.3(中盤挖礦與附魔修裝，S4.2f–S4.2j) | T17 `SecondWaveGameTest`(單元測試 + 遊戲測試)：(a) 單元測試：`TunnelPlanner` 階梯/水平切片座標、安全前瞻(岩漿/水流/深坑/受保護方塊/`stop_on`)、`torch_every=0` 限 12 格規則、附魔預覽格式化、鐵砧輸入預檢、`smelt` 同料剩餘自動選燃料與 `ToolsSnapshotTest` 同步更新 `tools-snapshot.json`；(b) `enchant`：無書架與 15 書架附魔台 `preview` 驗證 `max_level=30` 且收包不掉物，`apply` 消耗等級與青金石成功附魔，等級或青金石不足回 `MISSING_MATERIALS`；(c) `anvil`：`preview` 與 `apply` 合併附魔書到鑽石鎬、用鐵錠修補裝備、幫 `name_tag` 改名、經驗不足回 `MISSING_MATERIALS` 與 `Too Expensive` 回 `INVALID_ARGUMENT`，並驗證允許使用他人鐵砧(優先自有)；(d) `grindstone`：單件拆附魔回經驗與兩件同種裝備合修；(e) `tool_match`：`break_block` 與 `mine` 指定 `silk_touch` 挖玻璃/礦石保留原塊、`fortune` 挖鑽石礦且開路普通石頭不誤用時運鎬，缺少指定附魔工具回 `MISSING_TOOL`；(f) `dig_tunnel`：`stairs_down` 下挖 1×3 階梯、`stairs_up` 上挖 1×3 階梯與 `flat` 1×2 水平礦道自動插火把並回報沿途 `ores=`；遇岩漿、深坑、他人方塊(`RULE_PROTECTED_BLOCK`)與 `stop_on=diamond_ore` 在動鎬前安全停下；`torch_every=8` 缺火把擋下並提示燒木炭，`torch_every=0` 超過 12 格拒跑、12 格內完成並回報 `unlit=` |
+| M2.1、M2.2、M2.8、M2.9、M5.2、M7.1(生存進程地獄階段，S4.2k、S4.3、S7.3a、S9.1) | T18 `NetherGameTest`(單元測試 + 遊戲測試)：(a) 單元測試：`PortalPlanner` 框架/角落/門裡格子與 8:1 對應座標、`BlockClassifier` 依維度判斷地獄疙瘩、`ToolsSnapshotTest` 同步更新；遊戲測試 `nether_portal build` 只有 9 個黑曜石回 `MISSING_MATERIALS`，補齊後蓋框、墊圓石角、點火，門裡是傳送門方塊；(b) `goto` 直線穿過傳送門時繞過去不換維度；`goto` 進行中被傳回主世界，任務以 `INTERRUPTED`(`another dimension`)結束；(c) `nether_portal enter` 走進門到地獄，結果有 `dim=the_nether`、`from=overworld`、`linked_xz=`；(d) 地獄生成的出口門框 `break_block` 回 `RULE_PROTECTED_BLOCK`；(e) 地獄暗處站 5 秒不發 `low_light`，`mine nether_wart` 採到地獄疙瘩，主世界的地獄疙瘩 `break_block` 回 `RULE_PROTECTED_BLOCK`；(f) `CombatGameTest`(`-PtestCase=blaze_melee`)：沒弓拿劍 `hunt` 浮空的烈焰使者，走到牠底下等牠靠近再砍，被火球點燃也不觸發 `on_fire` |
 
 ---
 
@@ -1075,15 +1092,15 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 | M1.5 | S3.5、S3.5a | T3 |
 | M1.6 | S3.6、S4.5 | T1、T11 |
 | M1.7 | S3.1、S3.2、S3.2a | 12.3 ObservationTest、T16 |
-| M2.1 | S4.2、S4.2c、S4.2d、S4.2i、S4.2j | T11、T2、T16、T17 |
-| M2.2 | S4.2、S4.2b、S4.2d、S4.2e、S4.2f–S4.2h、S4.8b、S4.8c | T2、T15、T16、T17 |
+| M2.1 | S4.2、S4.2c、S4.2d、S4.2i、S4.2j、S4.2k | T11、T2、T16、T17、T18 |
+| M2.2 | S4.2、S4.2b、S4.2d、S4.2e、S4.2f–S4.2h、S4.2k、S4.8b、S4.8c | T2、T15、T16、T17、T18 |
 | M2.3 | S4.8、S4.8c | 12.3 MemoryTest、T15 |
 | M2.4 | S4.6a–S4.6e、S4.5a、S6.3、S7.2、S9.1a | T1、T4、T12、T14 |
 | M2.5 | S3.5a、S4.2、S4.7、S9.1 | T3 |
 | M2.6 | S4.2、S8.1、S8.7 | T7 |
-| M2.7 | S4.3 | T11、T5 |
-| M2.8 | S4.1、S4.2、S4.2f–S4.2j、S4.4b、S4.5a、S4.8b、S4.8c | T11、T13、T14、T15、T17 |
-| M2.9 | S4.4、S4.2f–S4.2j、S4.4c、S4.8b、S4.8c | T11、T14、T15、T17 |
+| M2.7 | S4.3 | T11、T5、T18 |
+| M2.8 | S4.1、S4.2、S4.2f–S4.2k、S4.4b、S4.5a、S4.8b、S4.8c | T11、T13、T14、T15、T17、T18 |
+| M2.9 | S4.4、S4.2f–S4.2k、S4.4c、S4.8b、S4.8c | T11、T14、T15、T17、T18 |
 | M2.10 | S4.3、S4.5 | T11 |
 | M3.1 | S3.3、S5.1、S5.2、S5.4 | T3、T7、T10 |
 | M3.2 | S5.1、S5.3 | 12.3 單元測試 |
@@ -1094,7 +1111,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 | M4.4 | S6.4 | T4 |
 | M4.5 | S6.5 | T4 |
 | M5.1 | S7.2、S7.7 | T1 |
-| M5.2 | S7.3、S7.3a、S7.3b、S7.3c、S7.4、S1.5、S4.2j | T1、T17 |
+| M5.2 | S7.3、S7.3a、S7.3b、S7.3c、S7.4、S1.5、S4.2j、S4.2k | T1、T17、T18 |
 | M5.3 | S7.3c、S7.5、S7.6、S4.2f–S4.2h | T2、T17 |
 | M5.4 | S7.1、S7.2 | T1、T1b |
 | M6.1 | S8.2、S2.2 | T5、T11(d) |
@@ -1107,7 +1124,7 @@ MCP 是「AI 呼叫工具，模組回應」的模式，模組沒辦法主動叫�
 | ~~M6.8~~ | S8.6(已移除) | — |
 | M6.9 | S8.7 | T7 |
 | M6.10 | S8.8 | T10b(`CombatGameTest.respawn`) |
-| M7.1 | S9.1 | T10 |
+| M7.1 | S9.1 | T10、T18 |
 | M7.2 | S9.1 | T10 |
 | M7.3 | S9.1、S7.7 | T10 |
 | M7.4 | S9.1 | T10 |

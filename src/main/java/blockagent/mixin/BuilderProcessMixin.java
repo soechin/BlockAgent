@@ -17,7 +17,7 @@ public abstract class BuilderProcessMixin {
 	private static void blockagent$matchBlueprintMaterial(Collection<BlockState> available, BlockState desired,
 														CallbackInfoReturnable<Boolean> cir) {
 		Agent agent = Agent.get();
-		if (agent != null && agent.tasks.current() instanceof BuildTask build && build.isBlueprint()) {
+		if (agent != null && agent.tasks.build() instanceof BuildTask build && build.isBlueprint()) {
 			cir.setReturnValue(available.stream().anyMatch(state -> state.is(desired.getBlock())));
 		}
 	}

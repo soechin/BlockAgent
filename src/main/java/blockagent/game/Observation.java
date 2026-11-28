@@ -171,7 +171,8 @@ public final class Observation {
 		int blockLight = mc.level.getBrightness(LightLayer.BLOCK, feet);
 		int skyLight = mc.level.getBrightness(LightLayer.SKY, feet);
 		boolean night = mc.level.dimension().equals(Level.OVERWORLD) && DayClock.phase(mc.level.getOverworldClockTime()).equals("night");
-		boolean dark = blockLight == 0 && (outdoors ? night : skyLight <= 7);
+		// 沒有天空光的維度(地獄、終界)天空光永遠是 0，怪物生成也不看亮度，不算黑暗(S3.2)
+		boolean dark = blockLight == 0 && mc.level.dimensionType().hasSkyLight() && (outdoors ? night : skyLight <= 7);
 		return new LocalLight(feet, outdoors, blockLight, skyLight, dark);
 	}
 
@@ -323,7 +324,13 @@ public final class Observation {
 			new Group("chest", List.of(Blocks.CHEST, Blocks.TRAPPED_CHEST, Blocks.BARREL)),
 			new Group("bed", tagged(BlockTags.BEDS)),
 			new Group("door", tagged(BlockTags.DOORS)),
-			new Group("sign", tagged(BlockTags.ALL_SIGNS))
+			new Group("sign", tagged(BlockTags.ALL_SIGNS)),
+			new Group("obsidian", List.of(Blocks.OBSIDIAN)),
+			new Group("nether_portal", List.of(Blocks.NETHER_PORTAL)),
+			// 地獄堡壘的線索(S3.3)：地獄磚、烈焰使者生怪磚、堡壘花圃的地獄疙瘩
+			new Group("nether_bricks", List.of(Blocks.NETHER_BRICKS, Blocks.NETHER_BRICK_FENCE, Blocks.NETHER_BRICK_STAIRS)),
+			new Group("spawner", List.of(Blocks.SPAWNER)),
+			new Group("nether_wart", List.of(Blocks.NETHER_WART))
 		);
 	}
 

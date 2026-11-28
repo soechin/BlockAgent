@@ -303,6 +303,12 @@ class CoreLogicTest {
 		assertFalse(c.isNatural("minecraft:wheat", Set.of("minecraft:crops")));
 		assertFalse(c.isNatural("minecraft:farmland", Set.of()));
 		assertFalse(c.isNatural("somemod:unknown", Set.of()), "不認得的方塊算人造");
+		// 地獄疙瘩只在地獄算天然(堡壘生成)；主世界的是別人種的
+		assertTrue(c.isNatural("minecraft:nether_wart", Set.of(), "minecraft:the_nether"));
+		assertFalse(c.isNatural("minecraft:nether_wart", Set.of(), "minecraft:overworld"));
+		assertFalse(c.isNatural("minecraft:nether_wart", Set.of()));
+		assertFalse(c.isNatural("minecraft:nether_bricks", Set.of(), "minecraft:the_nether"), "堡壘的地獄磚仍是人造");
+		assertTrue(c.isNatural("minecraft:netherrack", Set.of("minecraft:base_stone_nether"), "minecraft:overworld"));
 	}
 
 	// ---- OwnershipLedger(S7.4、S7.6) ----

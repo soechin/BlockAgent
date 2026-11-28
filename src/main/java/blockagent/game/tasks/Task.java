@@ -31,6 +31,8 @@ public abstract class Task {
 	/** 被反射暫停的 tick(恢復時把暫停的時間從逾時裡扣掉)。 */
 	long suspendedAt;
 	boolean openedContainer;
+	/** 開始時所在的維度；跨維度後不是 {@link #crossesDimensions()} 的任務會被結束。 */
+	net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> startDim;
 	private baritone.api.pathing.goals.Goal lastGoal;
 
 	protected Task(Agent agent, String name) {
@@ -95,6 +97,11 @@ public abstract class Task {
 
 	/** 有移動的任務才需要脫困反射(S9.1 unstuck)。 */
 	public boolean moves() {
+		return false;
+	}
+
+	/** 任務本身就是要換維度(進傳送門)：尋路可以穿過傳送門，換維度後也不會被結束。 */
+	public boolean crossesDimensions() {
 		return false;
 	}
 

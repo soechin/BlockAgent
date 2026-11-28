@@ -94,16 +94,33 @@ public final class RuleGuard {
 		return dim(Minecraft.getInstance().level);
 	}
 
-	/** 方塊 → 是否天然。Baritone 尋路每格都會問，所以快取起來；tag 重新載入或換世界時清掉(M15)。 */
-	private final Map<Block, Boolean> naturalCache = new ConcurrentHashMap<>();
+	/** (維度 →) 方塊 → 是否天然。Baritone 尋路每格都會問，所以快取起來；tag 重新載入或換世界時清掉(M15)。 */
+	private final Map<String, Map<Block, Boolean>> naturalCache = new ConcurrentHashMap<>();
 
 	public void clearCache() {
 		naturalCache.clear();
 		TaggedBlocks.clear();
 	}
 
+	/** 目前所在維度裡，這種方塊算不算天然(地獄疙瘩只在地獄算，S7.3a)。 */
 	public boolean isNatural(BlockState state) {
-		return naturalCache.computeIfAbsent(state.getBlock(), b -> agent.classifier.isNatural(blockId(state), blockTags(state)));
+		String dim = currentDim();
+		return naturalCache.computeIfAbsent(dim, d -> new ConcurrentHashMap<>())
+			.computeIfAbsent(state.getBlock(), b -> agent.classifier.isNatural(blockId(state), blockTags(state), dim));
+	}
+
+	/**
+	 * 傳送門的黑曜石框(S7.3a)：六面任一面貼著 nether_portal 的黑曜石。不是自己放的不能拆，
+	 * 尋路和脫困連自己的也不拆，免得回程的門被拆掉。Baritone 尋路執行緒會呼叫，只讀世界。
+	 */
+	public static boolean isPortalFrame(Level level, int x, int y, int z, BlockState state) {
+		if (level == null || !state.is(Blocks.OBSIDIAN)) return false;
+		BlockPos.MutableBlockPos n = new BlockPos.MutableBlockPos();
+		for (Direction d : Direction.values()) {
+			n.set(x + d.getStepX(), y + d.getStepY(), z + d.getStepZ());
+			if (level.getBlockState(n).is(Blocks.NETHER_PORTAL)) return true;
+		}
+		return false;
 	}
 
 	/** 目前維度的這格是不是自己的。 */
@@ -126,10 +143,17 @@ public final class RuleGuard {
 
 	private Verdict canBreak(String dim, int x, int y, int z, BlockState state) {
 		if (state.isAir()) return Verdict.ALLOW;
-		if (agent.tasks.current() instanceof BuildTask build && build.protects(x, y, z)) {
+		if (agent.tasks.build() instanceof BuildTask build && build.protects(x, y, z)) {
 			return Verdict.deny(ErrorCode.RULE_PROTECTED_BLOCK, "kept by the current build (doorway or existing block)");
 		}
+		if (agent.tasks.current() instanceof blockagent.game.tasks.NetherPortalTask portal && portal.keeps(x, y, z)) {
+			return Verdict.deny(ErrorCode.RULE_PROTECTED_BLOCK, "kept by the portal being lit");
+		}
 		if (agent.ledger.isOwned(dim, OwnershipLedger.pack(x, y, z))) return Verdict.ALLOW;
+		if (isPortalFrame(Minecraft.getInstance().level, x, y, z, state)) {
+			return Verdict.deny(ErrorCode.RULE_PROTECTED_BLOCK, "obsidian at " + x + "," + y + "," + z
+				+ " is part of a nether portal frame; cannot break", "keep portal frames intact so the way back stays open");
+		}
 		if (isNatural(state)) return Verdict.ALLOW;
 		return Verdict.deny(ErrorCode.RULE_PROTECTED_BLOCK,
 			shortId(state) + " at " + x + "," + y + "," + z + " was placed by someone else (owner=other); cannot break");
@@ -143,8 +167,9 @@ public final class RuleGuard {
 	public boolean canPathBreak(int x, int y, int z, BlockState state) {
 		if (state.isAir()) return true;
 		if (!canBreak(x, y, z, state).allowed()) return false;
+		if (isPortalFrame(Minecraft.getInstance().level, x, y, z, state)) return false;
 		var t = agent.tasks.current();
-		if (t instanceof BuildTask build && build.isClearing(x, y, z)) return true;
+		if (agent.tasks.build() instanceof BuildTask build && build.isClearing(x, y, z)) return true;
 		if (t instanceof blockagent.game.tasks.MineTask mine && mine.isMineTarget(state)) return true;
 		return isNatural(state);
 	}
@@ -160,7 +185,7 @@ public final class RuleGuard {
 		// 放置會覆蓋那格，規則比照破壞；但被別人的方塊擋住時，訊息要說「放不下去」而不是「不能拆」
 		Verdict v = canBreak(level, pos);
 		boolean othersBlock = !v.allowed() && !isOwned(level, pos) && !isNatural(cur)
-			&& !(agent.tasks.current() instanceof BuildTask build && build.protects(pos.getX(), pos.getY(), pos.getZ()));
+			&& !(agent.tasks.build() instanceof BuildTask build && build.protects(pos.getX(), pos.getY(), pos.getZ()));
 		if (!othersBlock) return v;
 		return Verdict.deny(ErrorCode.RULE_PROTECTED_BLOCK, pos.getX() + "," + pos.getY() + "," + pos.getZ() + " is occupied by someone else's " + shortId(cur) + "; cannot place");
 	}
@@ -200,7 +225,7 @@ public final class RuleGuard {
 	}
 
 	public Verdict canPlaceForBuild(Level level, BlockPos pos, Item item) {
-		if (agent.tasks.current() instanceof BuildTask build && !build.permitsPlacement(level, pos, item)) {
+		if (agent.tasks.build() instanceof BuildTask build && !build.permitsPlacement(level, pos, item)) {
 			return Verdict.deny(ErrorCode.RULE_PROTECTED_BLOCK, "kept by the current build (doorway, empty cell, existing block or planned material)");
 		}
 		return Verdict.ALLOW;

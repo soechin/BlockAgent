@@ -44,6 +44,15 @@ public final class TaskRunner {
 		return current;
 	}
 
+	/**
+	 * 正在施工的 {@link BuildTask}：目前任務本身，或傳送門任務蓋框時內含的那一個(S4.2k)。
+	 * 規矩、Baritone mixin 判斷「正在蓋東西」都用這個，不要直接 instanceof current()。
+	 */
+	public Task build() {
+		Task t = current;
+		return t instanceof NetherPortalTask portal ? portal.inner() : t;
+	}
+
 	public Task pendingResult() {
 		return pendingResult;
 	}
@@ -97,6 +106,7 @@ public final class TaskRunner {
 		agent.reflexes.dropUnstuck(mc, "task_replaced");
 		t.startTick = agent.tick();
 		t.lastProgressTick = t.startTick;
+		t.startDim = mc.level == null ? null : mc.level.dimension();
 		current = t;
 		pendingResult = t;
 		try {
@@ -127,7 +137,11 @@ public final class TaskRunner {
 	public void tick(Minecraft mc) {
 		Task t = current;
 		if (t == null || t.suspended) return;
-		if (t.elapsed() > t.timeoutTicks) {
+		if (!t.crossesDimensions() && t.startDim != null && mc.level != null && !mc.level.dimension().equals(t.startDim)) {
+			// 誤穿傳送門或被傳送：原本的座標和目標在新維度都不適用了(S4.3)
+			t.fail(ErrorCode.INTERRUPTED, "moved to another dimension (" + mc.level.dimension().identifier() + ")",
+				"targets from the previous dimension no longer apply; check get_surroundings before the next step");
+		} else if (t.elapsed() > t.timeoutTicks) {
 			t.fail(ErrorCode.TIMEOUT, "task exceeded " + agent.config.taskTimeoutMinutes + " min");
 		} else {
 			try {

@@ -67,6 +67,8 @@ public final class Combat {
 	private static final double MELEE_RANGE = 8;
 	/** 走不近：這麼多 tick 沒有更接近(砍中或擋箭時重算，R2)。 */
 	private static final int STALL_TICKS = 60;
+	/** 烈焰使者浮在空中時，站到牠正下方幾格內等牠。 */
+	private static final double BLAZE_UNDER = 2.0;
 
 	private final Agent agent;
 	private final ActionLog.Source source;
@@ -1265,6 +1267,19 @@ public final class Combat {
 	private void approach(Minecraft mc) {
 		boolean visible = mc.player.hasLineOfSight(target);
 		BlockPos at = target.blockPosition();
+		if (target instanceof net.minecraft.world.entity.monster.Blaze && target.getY() > mc.player.getY() + 1.5) {
+			// 烈焰使者浮在半空：走到牠底下等牠靠近再砍，不要往空中的座標走(尋路會搭柱子或找不到路，S9.1b)
+			double dx = target.getX() - mc.player.getX(), dz = target.getZ() - mc.player.getZ();
+			if (dx * dx + dz * dz <= BLAZE_UNDER * BLAZE_UNDER) {
+				halt();
+				tactic("wait_under_blaze");
+				Moves.lookAt(mc.player, target.getBoundingBox().getCenter());
+				raiseShield(mc);
+				return;
+			}
+			goTo(new blockagent.game.tasks.GotoTask.GoalNearXZ(at.getX(), at.getZ(), (int) BLAZE_UNDER), at.atY(0));
+			return;
+		}
 		goTo(new GoalNear(at, visible ? 1 : 0), at);
 	}
 

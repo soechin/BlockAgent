@@ -31,7 +31,7 @@ public abstract class CalculationContextMixin {
 	private void blockagent$preserveDoorway(int x, int y, int z, BlockState current, CallbackInfoReturnable<Double> cir) {
 		Agent a = Agent.get();
 		// 門口和藍圖設計裡的格子都不准拿來墊腳(S4.8c；M14：原本只擋門口)
-		if (a != null && a.tasks.current() instanceof BuildTask build && build.forbidsScaffold(x, y, z)) {
+		if (a != null && a.tasks.build() instanceof BuildTask build && build.forbidsScaffold(x, y, z)) {
 			cir.setReturnValue(baritone.api.pathing.movement.ActionCosts.COST_INF);
 		}
 	}

@@ -3,6 +3,9 @@ package blockagent.game;
 import baritone.api.BaritoneAPI;
 import baritone.api.IBaritone;
 import baritone.api.Settings;
+import net.minecraft.world.level.block.Blocks;
+
+import java.util.List;
 
 /** Baritone 的存取與固定設定(docs/SPEC.md S1.4)。 */
 public final class Bari {
@@ -39,7 +42,18 @@ public final class Bari {
 		s.avoidance.value = true;
 		// 任務自己要的設定(清空區域、拆鷹架時不准挖和放；docs/REVIEW.md H10：重設時不能把它們改回去)
 		var task = agent == null ? null : agent.tasks.current();
+		// 傳送門方塊 Baritone 當成空氣，一般走路不准穿過，只有進門任務可以(S4.2k)
+		s.blocksToAvoid.value = avoidPortal(task) ? List.of(Blocks.NETHER_PORTAL) : List.of();
 		if (task != null) task.adjustBaritone(s);
+	}
+
+	private static blockagent.game.tasks.Task currentTask() {
+		Agent agent = Agent.get();
+		return agent == null ? null : agent.tasks.current();
+	}
+
+	private static boolean avoidPortal(blockagent.game.tasks.Task task) {
+		return task == null || !task.crossesDimensions();
 	}
 
 	/** 每 20 tick 檢查一次，被改動就改回去。 */
@@ -49,7 +63,7 @@ public final class Bari {
 		if (s.chatControl.value || s.chatControlAnyway.value || s.prefixControl.value || s.allowInventory.value
 			|| !s.buildIgnoreExisting.value || s.allowParkour.value || s.allowParkourPlace.value || s.allowWaterBucketFall.value
 			|| s.breakCorrectBlockPenaltyMultiplier.value < 1_000_000d || s.blockBreakAdditionalPenalty.value != 16.0d
-			|| !s.avoidance.value
+			|| !s.avoidance.value || s.blocksToAvoid.value.contains(Blocks.NETHER_PORTAL) != avoidPortal(currentTask())
 			|| s.chatDebug.value || s.desktopNotifications.value || s.useSwordToMine.value) {
 			applySettings();
 		}

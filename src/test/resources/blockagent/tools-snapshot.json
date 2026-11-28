@@ -1657,6 +1657,59 @@
     }
   },
   {
+    "name": "nether_portal",
+    "description": "Build and light a nether portal, or walk into one and wait to change dimension. build: needs 10 obsidian, 4 plain blocks for the corners (cobblestone, netherrack, dirt…) and flint_and_steel; x,y,z \u003d lower-left frame corner at ground level (default: 3 blocks ahead, facing you), axis \u003d direction the frame extends. enter: the portal at x,y,z or the nearest within 16 blocks; the result has the arrival pos and linked_xz (the matching x,z in the other dimension). Other walking never passes through portals.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "build",
+            "enter"
+          ]
+        },
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "z": {
+          "type": "integer"
+        },
+        "axis": {
+          "type": "string",
+          "description": "build only; default from your facing",
+          "enum": [
+            "x",
+            "z"
+          ]
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "dismount",
     "description": "Get off a boat, minecart or similar (usually under 1 s).",
     "inputSchema": {

@@ -92,7 +92,7 @@ public abstract class MultiPlayerGameModeMixin {
 			// 尋路順手拆掉自己的建築(R10)：不是 break_block、施工、清空區域、收成或主動開採目標造成的就記一筆，方便事後追查
 			var t = a.tasks.current();
 			if (a.guard.active() && !before.isAir() && !a.guard.isNatural(before)
-				&& !(t instanceof blockagent.game.tasks.BreakTask) && !(t instanceof blockagent.game.tasks.BuildTask)
+				&& !(t instanceof blockagent.game.tasks.BreakTask) && !(a.tasks.build() instanceof blockagent.game.tasks.BuildTask)
 				&& !(t instanceof ClearAreaTask) && !(t instanceof blockagent.game.tasks.FarmTask)
 				&& !(t instanceof blockagent.game.tasks.DigTunnelTask)
 				&& !(t instanceof blockagent.game.tasks.MineTask mine && mine.isMineTarget(before))) {

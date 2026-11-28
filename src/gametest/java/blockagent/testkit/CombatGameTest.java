@@ -87,6 +87,7 @@ public class CombatGameTest implements FabricClientGameTest {
 			if (TestKit.runCase("enderman")) doNotShootEnderman(k, c);
 			if (TestKit.runCase("crossbow")) useLoadedCrossbow(k, c);
 			if (TestKit.runCase("piglin")) respondToPiglinCrossbow(k, c);
+			if (TestKit.runCase("blaze_melee")) huntBlazeWithoutBow(k, c);
 			if (TestKit.runCase("deep_water")) avoidDeepWaterPursuit(k, c);
 			if (TestKit.runCase("shallow_water")) canHuntInShallowWater(k, c);
 			if (TestKit.runCase("blast_priority")) avoidCreeperWhileDisengaging(k, c);
@@ -1007,6 +1008,29 @@ public class CombatGameTest implements FabricClientGameTest {
 			"弩的命中也應連到實際射出的箭：" + since(k, mark));
 		check(since(k, mark).split("weapon=crossbow", -1).length == 2, "單支箭的弩只能記一次發射：" + since(k, mark));
 		System.out.println("[ok] R18 可射擊已裝單支箭的弩");
+	}
+
+	/**
+	 * T18(f)：沒弓用劍 hunt 浮在空中的烈焰使者——走到牠底下等牠靠近再砍(不往空中座標走)，
+	 * 被火球點燃時附近沒水也不觸發著火反射中斷打獵(S9.1、S9.1b)。
+	 */
+	private void huntBlazeWithoutBow(TestKit k, BlockPos c) throws Exception {
+		reset(k, c);
+		k.difficulty("normal");
+		k.give("minecraft:diamond_sword", 1);
+		k.give("minecraft:iron_chestplate", 1);
+		k.give("minecraft:iron_helmet", 1);
+		k.give("minecraft:shield", 1);
+		int mark = mark(k);
+		k.cmd("execute as @p at @s run summon minecraft:blaze ~6 ~3 ~ {PersistenceRequired:1b}");
+		k.ctx.waitTicks(5);
+		var r = k.ai.call(k.ctx, "hunt", args("target", "blaze", "wait_sec", 60));
+		boolean dead = waitFor(k, 20 * 30, () -> count(k, EntityTypes.BLAZE) == 0);
+		String log = since(k, mark);
+		check(dead && alive(k), "沒弓也應打死烈焰使者並活著：" + r.text() + "\n" + log);
+		check(log.contains("hunt_attack") && !log.contains("on_fire"), "應近戰命中，且著火不觸發反射：" + log);
+		k.difficulty("easy");
+		System.out.println("[ok] T18(f) 沒弓近戰打死烈焰使者");
 	}
 
 	private void respondToPiglinCrossbow(TestKit k, BlockPos c) throws Exception {

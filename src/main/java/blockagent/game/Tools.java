@@ -1147,6 +1147,33 @@ public final class Tools {
 					return a.tasks.start(new MountTask(a, e), g.bool("replace", false), null);
 				});
 			});
+		taskTool(t, a, "nether_portal", "Build and light a nether portal, or walk into one and wait to change dimension. "
+				+ "build: needs 10 obsidian, 4 plain blocks for the corners (cobblestone, netherrack, dirt…) and flint_and_steel; "
+				+ "x,y,z = lower-left frame corner at ground level (default: 3 blocks ahead, facing you), axis = direction the frame "
+				+ "extends. enter: the portal at x,y,z or the nearest within 16 blocks; the result has the arrival pos and linked_xz "
+				+ "(the matching x,z in the other dimension). Other walking never passes through portals.",
+			Hints.ACTION, Schema.object().enumString("action", null, true, "build", "enter")
+				.integer("x", null, false).integer("y", null, false).integer("z", null, false)
+				.enumString("axis", "build only; default from your facing", false, "x", "z"),
+			args -> {
+				Args g = new Args(args);
+				String action = g.str("action");
+				boolean hasPos = g.has("x") || g.has("y") || g.has("z");
+				BlockPos p = hasPos ? pos(g, "") : null;
+				boolean replace = g.bool("replace", false);
+				return switch (action) {
+					case "build" -> {
+						String axis = g.has("axis") ? g.str("axis") : null;
+						if (axis != null && !axis.equals("x") && !axis.equals("z")) throw new Args.BadArgument("axis must be x or z");
+						yield act(a, "nether_portal", args, mc -> NetherPortals.build(a, mc, p, axis, replace));
+					}
+					case "enter" -> {
+						if (g.has("axis")) throw new Args.BadArgument("axis is only for action=build");
+						yield act(a, "nether_portal", args, mc -> NetherPortals.enter(a, mc, p, replace));
+					}
+					default -> throw new Args.BadArgument("action must be build or enter");
+				};
+			});
 		taskTool(t, a, "dismount", "Get off a boat, minecart or similar (usually under 1 s).", Hints.IDEMPOTENT, Schema.object(),
 			args -> act(a, "dismount", args, mc -> a.tasks.start(new DismountTask(a), new Args(args).bool("replace", false), null)));
 		t.register("use_item", "Use an item (incl. offhand): on the block at x,y,z within reach (fill/pour bucket, flint_and_steel, "

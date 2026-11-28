@@ -32,5 +32,9 @@
     "minecraft:nether_wart_block", "minecraft:warped_wart_block", "minecraft:shroomlight", "minecraft:glowstone",
     "minecraft:water", "minecraft:lava", "minecraft:bubble_column", "minecraft:fire", "minecraft:soul_fire",
     "minecraft:cobweb", "minecraft:sculk", "minecraft:sculk_vein"
-  ]
+  ],
+  "_comment_natural_in_dimension": "只在該維度算天然的方塊 id：地獄裡長的地獄疙瘩是堡壘生成的，主世界的是別人種的(S7.3a)。",
+  "natural_in_dimension": {
+    "minecraft:the_nether": ["minecraft:nether_wart"]
+  }
 }
