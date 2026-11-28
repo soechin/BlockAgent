@@ -308,4 +308,29 @@ class CombatPolicyTest {
 		assertFalse(CombatPolicy.shouldDirectWaterChase(true, false, true));
 		assertFalse(CombatPolicy.shouldDirectWaterChase(true, true, false));
 	}
+
+	@Test
+	void defenseLootWaitsForSpawnCollectsNearbyAndTimesOutCleanly() {
+		// 有可撿掉落物時即使空格為 0(可疊加)仍應啟動；沒有掉落物但剛在近處擊殺且有空格時也應短暫等待生成
+		assertTrue(CombatPolicy.shouldStartDefenseLoot(true, false, 0));
+		assertTrue(CombatPolicy.shouldStartDefenseLoot(false, true, 1));
+		assertFalse(CombatPolicy.shouldStartDefenseLoot(false, true, 0));
+		assertFalse(CombatPolicy.shouldStartDefenseLoot(false, false, 10));
+
+		// 擊殺後尚未見掉落物且在生成時間窗內：等待生成
+		assertEquals(CombatPolicy.DefenseLootAction.WAIT_SPAWN,
+			CombatPolicy.defenseLootAction(5, 10, false, true, false));
+		// 出現符合條件的掉落物：立刻前往撿取
+		assertEquals(CombatPolicy.DefenseLootAction.COLLECT,
+			CombatPolicy.defenseLootAction(22, 22, true, true, true));
+		// 撿完且已看過掉落物：立刻結束，不必苦等時間窗
+		assertEquals(CombatPolicy.DefenseLootAction.DONE,
+			CombatPolicy.defenseLootAction(24, 24, false, true, true));
+		// 無掉落物超過生成時間窗：立刻結束
+		assertEquals(CombatPolicy.DefenseLootAction.DONE,
+			CombatPolicy.defenseLootAction(CombatPolicy.DEFENSE_LOOT_SPAWN_TICKS, CombatPolicy.DEFENSE_LOOT_SPAWN_TICKS, false, true, false));
+		// 超過總拾取上限(3 秒)：強制結束，避免卡住原任務
+		assertEquals(CombatPolicy.DefenseLootAction.DONE,
+			CombatPolicy.defenseLootAction(CombatPolicy.DEFENSE_LOOT_TIMEOUT_TICKS, 10, true, true, true));
+	}
 }

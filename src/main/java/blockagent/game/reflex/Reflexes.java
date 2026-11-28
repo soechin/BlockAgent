@@ -2,6 +2,7 @@ package blockagent.game.reflex;
 
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalBlock;
+import baritone.api.pathing.goals.GoalNear;
 import baritone.api.pathing.goals.GoalRunAway;
 import blockagent.core.CombatPolicy;
 import blockagent.core.Event;
@@ -31,6 +32,7 @@ import net.minecraft.world.attribute.EnvironmentAttributes;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.food.FoodProperties;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -42,7 +44,9 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -109,6 +113,21 @@ public final class Reflexes {
 	private Combat.Threat pendingThreat;
 	/** 目前目標被挑中時的優先度(越小越危險)，換目標時比較用。 */
 	private int engagedPriority;
+	/** 自衛擊殺後短時間順手撿取戰利品的狀態(R40)。 */
+	private record DefenseKill(Vec3 pos, long tick) {
+	}
+
+	private static final double DEFENSE_DROP_RADIUS_SQ = 3.0 * 3.0;
+	private static final int DEFENSE_LOOT_REPATH_TICKS = 5;
+	private final List<DefenseKill> defenseKills = new ArrayList<>();
+	private final Map<Integer, Vec3> defenseDrops = new HashMap<>();
+	private final LinkedHashMap<String, Integer> defensePicked = new LinkedHashMap<>();
+	private boolean defenseDropsSeen;
+	private boolean collectingLoot;
+	private long lootStartTick;
+	private long lootLastPathTick;
+	private BlockPos lootDest;
+	private String defenseTactics;
 	private boolean bucketPlaced;
 	/** fall：放水前身上的水桶數；落地的 tick(還沒落地是 -1)。 */
 	private int bucketsBefore;
@@ -200,6 +219,34 @@ public final class Reflexes {
 
 	public Kind active() {
 		return active;
+	}
+
+	/** 追蹤自衛交戰期間於目標或擊殺點附近新生成的戰利品(R40)。 */
+	public synchronized void onItemSpawn(ItemEntity item) {
+		if (active != Kind.SELF_DEFENSE) return;
+		long now = agent.tick();
+		boolean nearTarget = combat != null && combat.engaged() && combat.target() != null
+			&& item.distanceToSqr(combat.target()) <= DEFENSE_DROP_RADIUS_SQ;
+		boolean nearKill = false;
+		if (!nearTarget) {
+			for (DefenseKill kill : defenseKills) {
+				if (now - kill.tick() <= CombatPolicy.DEFENSE_LOOT_SPAWN_TICKS + 10
+					&& item.position().distanceToSqr(kill.pos()) <= DEFENSE_DROP_RADIUS_SQ) {
+					nearKill = true;
+					break;
+				}
+			}
+		}
+		if (!nearTarget && !nearKill) return;
+		defenseDrops.put(item.getId(), item.position());
+		if (collectingLoot) defenseDropsSeen = true;
+	}
+
+	public synchronized void onItemPickedUp(ItemEntity item, int amount) {
+		if (active != Kind.SELF_DEFENSE) return;
+		if (defenseDrops.remove(item.getId()) != null) {
+			defensePicked.merge(Inv.id(item.getItem()), amount, Integer::sum);
+		}
 	}
 
 	/** 目前任務無進展期間已觸發的脫困次數(MCP 執行緒可讀)。 */
@@ -400,10 +447,127 @@ public final class Reflexes {
 		agent.log.log(ActionLog.Source.reflex, "self_defense_retarget", threat.why());
 	}
 
+	private void startDefenseCombat(Combat.Threat threat) {
+		combat = new Combat(agent, ActionLog.Source.reflex, "self_defense", new Combat.Mover() {
+			@Override
+			public void path(Goal goal) {
+				Reflexes.this.path(goal);
+			}
+
+			@Override
+			public void stop() {
+				Bari.stopAll();
+			}
+		}, false);
+		if (threat != null) {
+			combat.engage(threat.entity());
+			engagedPriority = threat.priority();
+		}
+	}
+
+	private void recordDefenseKill(Vec3 pos, long tick) {
+		defenseKills.add(new DefenseKill(pos, tick));
+		defenseDropsSeen = false;
+	}
+
+	private long latestNearbyKillTick(Minecraft mc) {
+		LocalPlayer p = mc.player;
+		if (p == null) return -1;
+		double maxSq = (CombatPolicy.DEFENSE_LOOT_MAX_RANGE + 2.0) * (CombatPolicy.DEFENSE_LOOT_MAX_RANGE + 2.0);
+		long latest = -1;
+		for (DefenseKill kill : defenseKills) {
+			if (Math.abs(kill.pos().y - p.getY()) <= CombatPolicy.DEFENSE_LOOT_MAX_DY + 1.0
+				&& kill.pos().distanceToSqr(p.position()) <= maxSq && kill.tick() > latest) {
+				latest = kill.tick();
+			}
+		}
+		return latest;
+	}
+
+	private void startDefenseLoot(Minecraft mc) {
+		if (combat != null) {
+			defenseTactics = combat.summary();
+			combat.release(mc, "done");
+			combat = null;
+		}
+		collectingLoot = true;
+		lootStartTick = agent.tick();
+		lootLastPathTick = 0;
+		lootDest = null;
+	}
+
+	private ItemEntity eligibleDefenseDrop(Minecraft mc) {
+		LocalPlayer p = mc.player;
+		if (p == null || mc.level == null) return null;
+		ItemEntity closest = null;
+		double bestSq = CombatPolicy.DEFENSE_LOOT_MAX_RANGE * CombatPolicy.DEFENSE_LOOT_MAX_RANGE;
+		var it = defenseDrops.keySet().iterator();
+		while (it.hasNext()) {
+			int id = it.next();
+			if (!(mc.level.getEntity(id) instanceof ItemEntity item) || !item.isAlive()) {
+				it.remove();
+				continue;
+			}
+			if (item.isInLava() || mc.level.getFluidState(item.blockPosition()).is(FluidTags.LAVA)
+				|| isFire(mc.level.getBlockState(item.blockPosition()))) continue;
+			if (Math.abs(item.getY() - p.getY()) > CombatPolicy.DEFENSE_LOOT_MAX_DY) continue;
+			if (!Inv.canFit(p, item.getItem())) continue;
+			double sq = item.distanceToSqr(p);
+			if (sq <= bestSq) {
+				bestSq = sq;
+				closest = item;
+			}
+		}
+		return closest;
+	}
+
+	private void actDefenseLoot(Minecraft mc) {
+		ItemEntity closest = eligibleDefenseDrop(mc);
+		if (closest == null) {
+			if (lootDest != null) {
+				Bari.stopAll();
+				lootDest = null;
+			}
+			return;
+		}
+		long now = agent.tick();
+		BlockPos targetPos = closest.blockPosition();
+		if (now - lootLastPathTick < DEFENSE_LOOT_REPATH_TICKS) return;
+		if (targetPos.equals(lootDest) && Bari.busy()) return;
+		lootDest = targetPos;
+		lootLastPathTick = now;
+		path(new GoalNear(targetPos, 0));
+	}
+
+	private void stopDefenseLootMoving() {
+		if (lootDest != null || collectingLoot) {
+			try {
+				Bari.stopAll();
+			} catch (RuntimeException ignored) {
+				// 斷線或離開世界時 Baritone 可能不可用
+			}
+		}
+		lootDest = null;
+		collectingLoot = false;
+	}
+
+	private void resetDefenseLoot() {
+		defenseKills.clear();
+		defenseDrops.clear();
+		defensePicked.clear();
+		defenseDropsSeen = false;
+		collectingLoot = false;
+		lootStartTick = 0;
+		lootLastPathTick = 0;
+		lootDest = null;
+		defenseTactics = null;
+	}
+
 	private void begin(Minecraft mc, Kind k, String why) {
 		active = k;
 		activeReason = why;
 		activeTicks = 0;
+		resetDefenseLoot();
 		bucketPlaced = false;
 		landedAt = -1;
 		unstuckShore.stop(mc);
@@ -466,23 +630,7 @@ public final class Reflexes {
 					UseKey.startEating(mc);
 				}
 			}
-			case SELF_DEFENSE -> {
-				combat = new Combat(agent, ActionLog.Source.reflex, "self_defense", new Combat.Mover() {
-					@Override
-					public void path(Goal goal) {
-						Reflexes.this.path(goal);
-					}
-
-					@Override
-					public void stop() {
-						Bari.stopAll();
-					}
-				}, false);
-				if (pendingThreat != null) {
-					combat.engage(pendingThreat.entity());
-					engagedPriority = pendingThreat.priority();
-				}
-			}
+			case SELF_DEFENSE -> startDefenseCombat(pendingThreat);
 			case UNSTUCK -> {
 				if (t != null) unstuckProgressCount = t.progressCount();
 				unstuckAttempts++;
@@ -603,12 +751,38 @@ public final class Reflexes {
 				|| (landedAt >= 0 && activeTicks - landedAt > 40));
 			case RETREAT -> false;
 			case SELF_DEFENSE -> {
+				if (collectingLoot) {
+					Combat.Threat next = nextThreat(mc);
+					if (next != null) {
+						stopDefenseLootMoving();
+						startDefenseCombat(next);
+						agent.log.log(ActionLog.Source.reflex, "self_defense_retarget", next.why());
+						yield false;
+					}
+					long now = agent.tick();
+					long lastKill = latestNearbyKillTick(mc);
+					boolean hasNearbyKill = lastKill >= 0;
+					long ticksSinceKill = hasNearbyKill ? now - lastKill : Long.MAX_VALUE;
+					boolean hasEligibleDrop = eligibleDefenseDrop(mc) != null;
+					yield CombatPolicy.defenseLootAction(now - lootStartTick, ticksSinceKill, hasEligibleDrop,
+						hasNearbyKill, defenseDropsSeen) == CombatPolicy.DefenseLootAction.DONE;
+				}
 				if (combat == null) yield true;
 				if (!combat.finished(mc)) yield false;
 				if (combat.targetDied()) {
+					if (combat.engaged() && combat.target() != null) {
+						recordDefenseKill(combat.target().position(), agent.tick());
+					}
 					Combat.Threat next = nextThreat(mc);
 					if (next != null) {
 						retarget(next);
+						yield false;
+					}
+					long lastKill = latestNearbyKillTick(mc);
+					boolean hasNearbyRecentKill = lastKill >= 0 && agent.tick() - lastKill < CombatPolicy.DEFENSE_LOOT_SPAWN_TICKS;
+					boolean hasEligibleDrop = eligibleDefenseDrop(mc) != null;
+					if (CombatPolicy.shouldStartDefenseLoot(hasEligibleDrop, hasNearbyRecentKill, Inv.freeSlots(p))) {
+						startDefenseLoot(mc);
 						yield false;
 					}
 				}
@@ -675,6 +849,10 @@ public final class Reflexes {
 				}
 			}
 			case SELF_DEFENSE -> {
+				if (collectingLoot) {
+					actDefenseLoot(mc);
+					return;
+				}
 				if (combat == null) return;
 				// 每半秒重新看一次：更危險的(例如苦力怕摸過來)就先處理
 				if (activeTicks % 10 == 0) {
@@ -921,9 +1099,15 @@ public final class Reflexes {
 		}
 		eatingFood = null;
 		String action = describeAction(k);
-		if (k == Kind.SELF_DEFENSE && combat != null) {
-			action += " tactics=" + combat.summary();
-			combat.release(mc, how);
+		if (k == Kind.SELF_DEFENSE) {
+			if (combat != null) {
+				defenseTactics = combat.summary();
+				combat.release(mc, how);
+			}
+			stopDefenseLootMoving();
+			if (defenseTactics != null) action += " tactics=" + defenseTactics;
+			if (!defensePicked.isEmpty()) action += " picked=" + blockagent.mcp.Kv.counts(defensePicked);
+			resetDefenseLoot();
 		}
 		combat = null;
 		pendingThreat = null;
@@ -1017,6 +1201,8 @@ public final class Reflexes {
 		unstuckOriginPos = null;
 		suspendedTask = false;
 		if (combat != null) combat.release(mc, "paused");
+		stopDefenseLootMoving();
+		resetDefenseLoot();
 		combat = null;
 		pendingThreat = null;
 		eatingFood = null;

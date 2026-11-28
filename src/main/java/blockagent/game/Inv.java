@@ -80,6 +80,20 @@ public final class Inv {
 		return n;
 	}
 
+	/** 主背包是否還能容納這個物品(有空格，或可疊進既有未滿堆疊)。 */
+	public static boolean canFit(Player p, ItemStack stack) {
+		if (freeSlots(p) > 0) return true;
+		if (stack.isEmpty()) return false;
+		Inventory inv = p.getInventory();
+		for (int i = 0; i < MAIN_SIZE; i++) {
+			ItemStack cur = inv.getItem(i);
+			if (!cur.isEmpty() && ItemStack.isSameItemSameComponents(cur, stack) && cur.getCount() < cur.getMaxStackSize()) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	public static Map<String, Integer> summary(Player p) {
 		Map<String, Integer> m = new LinkedHashMap<>();
 		for (int i = 0; i < MAIN_SIZE; i++) {

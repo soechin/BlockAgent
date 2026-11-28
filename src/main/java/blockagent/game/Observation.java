@@ -6,6 +6,7 @@ import blockagent.core.DayClock;
 import blockagent.core.Event;
 import blockagent.mcp.Kv;
 import blockagent.game.reflex.Reflexes;
+import blockagent.game.tasks.FarmTask;
 import blockagent.game.tasks.Moves;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.AbstractClientPlayer;
@@ -327,6 +328,8 @@ public final class Observation {
 			new Group("sign", tagged(BlockTags.ALL_SIGNS)),
 			new Group("obsidian", List.of(Blocks.OBSIDIAN)),
 			new Group("nether_portal", List.of(Blocks.NETHER_PORTAL)),
+			// 自有且已成熟的農作物(R39)：只列 FarmTask.harvestable 可採收者
+			new Group("ripe_crops", List.of(Blocks.WHEAT, Blocks.CARROTS, Blocks.POTATOES, Blocks.BEETROOTS, Blocks.MELON, Blocks.PUMPKIN)),
 			// 地獄堡壘的線索(S3.3)：地獄磚、烈焰使者生怪磚、堡壘花圃的地獄疙瘩
 			new Group("nether_bricks", List.of(Blocks.NETHER_BRICKS, Blocks.NETHER_BRICK_FENCE, Blocks.NETHER_BRICK_STAIRS)),
 			new Group("spawner", List.of(Blocks.SPAWNER)),
@@ -397,7 +400,7 @@ public final class Observation {
 	 * 一次掃完所有固體方塊組(H12)：Baritone 的掃描主要花在走過區塊，16 組各掃一次太慢。
 	 * 水和岩漿各自掃。每組依距離取最近的 cap 個。
 	 */
-	private static Map<String, List<BlockPos>> scanGroups(Minecraft mc, List<Group> groups, int radius, int cap) {
+	private Map<String, List<BlockPos>> scanGroups(Minecraft mc, List<Group> groups, int radius, int cap) {
 		Map<Block, String> owner = new HashMap<>();
 		List<Block> solid = new ArrayList<>();
 		Map<String, List<BlockPos>> out = new HashMap<>();
@@ -413,10 +416,13 @@ public final class Observation {
 		Map<String, Integer> counts = new HashMap<>();
 		// 已依距離排序：每組只留最近的 cap 個；上限用總數，讓 Moves.scan 不夠時自己加大範圍重掃
 		for (BlockPos pos : Moves.scan(mc, solid, radius, MAX_SOLID_HITS, null)) {
-			String label = owner.get(mc.level.getBlockState(pos).getBlock());
+			BlockState state = mc.level.getBlockState(pos);
+			String label = owner.get(state.getBlock());
 			if (label == null) continue;
 			// 告示牌只列有寫字的(S3.2a)，空白牌不佔名額
 			if ("sign".equals(label) && signTexts(mc.level, pos) == null) continue;
+			// 農作物只列自有且已成熟、可直接 harvest 的格子(R39)
+			if ("ripe_crops".equals(label) && !FarmTask.harvestable(agent, mc.level, pos, state)) continue;
 			if (counts.merge(label, 1, Integer::sum) > cap) continue;
 			out.computeIfAbsent(label, k -> new ArrayList<>()).add(pos);
 		}
@@ -470,6 +476,17 @@ public final class Observation {
 			}
 			BlockPos n = found.getFirst();
 			BlockState st = mc.level.getBlockState(n);
+			if ("ripe_crops".equals(g.label())) {
+				Map<String, Integer> kinds = new TreeMap<>();
+				for (BlockPos b : found) kinds.merge(RuleGuard.shortId(mc.level.getBlockState(b)), 1, Integer::sum);
+				Kv line = Kv.of(g.label()).put("n", found.size() + (found.size() >= cap ? "+" : "")).put("nearest", RuleGuard.shortId(st))
+					.put("pos", Fmt.pos(n));
+				Fmt.rel(line, eye, Vec3.atCenterOf(n)).put("owner", "own");
+				if (kinds.size() > 1) line.put("kinds", Kv.counts(kinds));
+				sb.append("\n- ").append(line);
+				groupsShown++;
+				continue;
+			}
 			Map<String, Integer> owners = new TreeMap<>();
 			for (BlockPos b : found) owners.merge(ownerLabel(b, mc.level.getBlockState(b)), 1, Integer::sum);
 			Kv line = Kv.of(g.label()).put("n", found.size() + (found.size() >= cap ? "+" : "")).put("nearest", RuleGuard.shortId(st))

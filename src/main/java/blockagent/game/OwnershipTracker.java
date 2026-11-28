@@ -141,7 +141,10 @@ public final class OwnershipTracker {
 	// ---- 掉落物(S7.6：撿到就是自己的) ----
 
 	public void onEntityLoad(Entity e) {
-		if (e instanceof ItemEntity item && agent.tasks.current() instanceof HuntTask hunt) hunt.onItemSpawn(item);
+		if (e instanceof ItemEntity item) {
+			if (agent.tasks.current() instanceof HuntTask hunt) hunt.onItemSpawn(item);
+			agent.reflexes.onItemSpawn(item);
+		}
 	}
 
 	/** 伺服器告訴我們有人撿起了物品(ClientboundTakeItemEntityPacket，實體還沒被移除)。 */
@@ -149,7 +152,9 @@ public final class OwnershipTracker {
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.player == null || mc.level == null || playerId != mc.player.getId()) return;
 		if (!(mc.level.getEntity(itemEntityId) instanceof ItemEntity ie) || ie.getItem().isEmpty()) return; // 經驗球等
-		if (agent.tasks.current() instanceof HuntTask hunt) hunt.onItemPickedUp(ie, Math.max(1, amount));
+		int n = Math.max(1, amount);
+		if (agent.tasks.current() instanceof HuntTask hunt) hunt.onItemPickedUp(ie, n);
+		agent.reflexes.onItemPickedUp(ie, n);
 	}
 
 	/** ClientboundPlayerCombatKillPacket：自己的死亡訊息，例如「Steve was shot by Skeleton」。 */

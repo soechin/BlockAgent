@@ -6,12 +6,15 @@ import net.fabricmc.fabric.api.client.gametest.v1.context.TestSingleplayerContex
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.tags.FluidTags;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.Pose;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.CropBlock;
 import net.minecraft.world.level.block.state.properties.BedPart;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 
@@ -38,6 +41,8 @@ public class ReviewToolsGameTest implements FabricClientGameTest {
 			equipAndSwitches(k, c);
 			sleepingFriendAndFollow(k, c, friend);
 			farmingAndHeightFilter(k, c);
+			buildWallFromMainInventory(k, c);
+			selfDefenseCollectsNearbyDrops(k, c);
 			smeltUsesAnnouncedFurnace(k, c);
 			craftInShelter(k, c);
 			dimensionChange(k, c);
@@ -151,11 +156,31 @@ public class ReviewToolsGameTest implements FabricClientGameTest {
 		k.ctx.waitTicks(45);
 		k.setBlock(fruit, Blocks.MELON.defaultBlockState());
 		k.setBlock(stem, Blocks.ATTACHED_MELON_STEM.defaultBlockState().setValue(BlockStateProperties.HORIZONTAL_FACING, Direction.WEST));
+		BlockPos ownRipe = c.north(3), ownUnripe = c.north(3).east(), otherRipe = c.north(3).east(2);
+		for (BlockPos p : new BlockPos[]{ownRipe, ownUnripe, otherRipe}) {
+			k.setBlock(p.below(), Blocks.FARMLAND.defaultBlockState());
+		}
+		k.setBlock(ownRipe, Blocks.WHEAT.defaultBlockState().setValue(CropBlock.AGE, CropBlock.MAX_AGE));
+		k.setBlock(ownUnripe, Blocks.WHEAT.defaultBlockState().setValue(CropBlock.AGE, 3));
+		k.setBlock(otherRipe, Blocks.WHEAT.defaultBlockState().setValue(CropBlock.AGE, CropBlock.MAX_AGE));
 		k.ctx.waitTicks(5);
+		k.ctx.runOnClient(mc -> {
+			k.agent().tracker.markOwned(ownRipe, mc.level.getBlockState(ownRipe));
+			k.agent().tracker.markOwned(ownUnripe, mc.level.getBlockState(ownUnripe));
+		});
+		var around = k.ai.call(k.ctx, "get_surroundings", args("radius", 12));
+		check(around.ok() && around.text().contains("ripe_crops n=2 ")
+			&& around.text().contains("kinds=melon:1,wheat:1") && around.text().contains("owner=own"),
+			"R39 應只列出自有成熟作物(含自有藤蔓西瓜)，排除未成熟與他人作物：" + around.text());
+		for (BlockPos p : new BlockPos[]{ownRipe, ownUnripe, otherRipe}) {
+			k.setBlock(p, Blocks.AIR.defaultBlockState());
+			k.setBlock(p.below(), Blocks.STONE.defaultBlockState());
+		}
 		String at = blockagent.game.Fmt.pos(fruit);
 		var harvest = k.ai.call(k.ctx, "harvest", args("from", at, "to", at));
 		check(harvest.ok() && k.waitUntil(100, mc -> mc.level.getBlockState(fruit).isAir() && mc.level.getBlockState(stem).is(Blocks.MELON_STEM)),
 			"R28 應收果實並保留藤蔓：" + harvest.text());
+		System.out.println("[ok] R39 觀察摘要回報自有成熟農作物");
 
 		BlockPos near = c.east(2), high = c.east(5).above(3);
 		k.setBlock(near, Blocks.GOLD_ORE.defaultBlockState());
@@ -175,6 +200,62 @@ public class ReviewToolsGameTest implements FabricClientGameTest {
 		k.setBlock(log, Blocks.AIR.defaultBlockState());
 		System.out.println("[ok] R32 徒手挖原木提示缺斧");
 		System.out.println("[ok] R28/R37 種西瓜、收果實、方塊搜尋高度篩選");
+	}
+
+	private void buildWallFromMainInventory(TestKit k, BlockPos c) {
+		k.cmd("tp @p " + TestKit.pos(c));
+		k.clearInventory();
+		// 佔滿快捷列 0–8，將建材放在主背包 slot 9(inventory.0)，驗證 build_wall 會自動補料到快捷列(R38)
+		for (int i = 0; i < 9; i++) k.cmd("item replace entity @p hotbar." + i + " with minecraft:stick 1");
+		k.cmd("item replace entity @p inventory.0 with minecraft:oak_fence 5");
+		k.ctx.waitTicks(5);
+		BlockPos from = c.north(4), to = from.east(3);
+		var wall = k.ai.call(k.ctx, "build_wall", args("from", blockagent.game.Fmt.pos(from),
+			"to", blockagent.game.Fmt.pos(to), "height", 1, "material", "oak_fence", "wait_sec", 20));
+		boolean built = k.ctx.computeOnClient(mc -> {
+			for (int x = from.getX(); x <= to.getX(); x++) {
+				if (!mc.level.getBlockState(new BlockPos(x, from.getY(), from.getZ())).is(Blocks.OAK_FENCE)) return false;
+			}
+			return true;
+		});
+		check(wall.ok() && wall.text().contains("task_done: task=build_wall") && built,
+			"R38 建材在主背包時 build_wall 應自動換上快捷列並蓋完：" + wall.text());
+		for (int x = from.getX(); x <= to.getX(); x++) {
+			k.setBlock(new BlockPos(x, from.getY(), from.getZ()), Blocks.AIR.defaultBlockState());
+		}
+		System.out.println("[ok] R38 build_wall 建材在主背包可自動補料並完成");
+	}
+
+	private void selfDefenseCollectsNearbyDrops(TestKit k, BlockPos c) {
+		k.cmd("tp @p " + TestKit.pos(c));
+		k.cmd("time set 1000");
+		k.clearInventory();
+		for (String part : new String[]{"helmet", "chestplate", "leggings", "boots"}) {
+			k.give("minecraft:iron_" + part, 1);
+		}
+		k.give("minecraft:iron_sword", 1);
+		k.ctx.waitTicks(5);
+		// 先啟動往西走的 goto；若自衛未順手撿取，結束後立刻往西走開就會漏掉東側骷髏掉落的骨頭(R40)
+		BlockPos westGoal = c.west(12);
+		var go = k.ai.call(k.ctx, "goto", gotoArgs(westGoal, 0));
+		check(go.ok(), "R40 測試 goto 無法啟動：" + go.text());
+		k.cmd("summon minecraft:skeleton " + TestKit.pos(c.east(3)) + " {NoAI:1b,Health:6.0f,PersistenceRequired:1b}");
+		k.onServer(s -> s.overworld().getEntities(EntityTypes.SKELETON, mob -> mob.isAlive()).forEach(mob -> {
+			mob.setItemSlot(EquipmentSlot.MAINHAND, new ItemStack(Items.BOW));
+			mob.setItemSlot(EquipmentSlot.HEAD, new ItemStack(Items.LEATHER_HELMET));
+			mob.setDropChance(EquipmentSlot.HEAD, 0.0f);
+			mob.setItemSlot(EquipmentSlot.OFFHAND, new ItemStack(Items.BONE));
+			mob.setGuaranteedDrop(EquipmentSlot.OFFHAND);
+			mob.setAggressive(true);
+		}));
+		k.cmd("damage @p 1 minecraft:mob_attack by @e[type=minecraft:skeleton,limit=1]");
+		check(k.waitUntil(20 * 12, mc -> mc.player.getInventory().countItem(Items.BONE) >= 1
+			&& k.agent().reflexes.active() == null),
+			"R40 自衛擊殺近處骷髏後應順手撿起骨頭再結束反射");
+		k.ai.call(k.ctx, "stop");
+		k.cmd("kill @e[type=minecraft:skeleton]");
+		k.cmd("kill @e[type=minecraft:item]");
+		System.out.println("[ok] R40 自衛擊殺後安全順手撿取戰利品");
 	}
 
 	private void smeltUsesAnnouncedFurnace(TestKit k, BlockPos c) {

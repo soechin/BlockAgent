@@ -421,6 +421,35 @@ public final class CombatPolicy {
 		return playerInOpenWater && hasLineOfSight && targetOnWaterSurface;
 	}
 
+	/** 自衛擊殺後等候原版死亡動畫產生掉落物的時間窗(25 tick = 1.25 秒)。 */
+	public static final int DEFENSE_LOOT_SPAWN_TICKS = 25;
+	/** 自衛擊殺後順手撿取戰利品的總時間上限(60 tick = 3 秒)，避免拖延原本任務。 */
+	public static final int DEFENSE_LOOT_TIMEOUT_TICKS = 60;
+	/** 自衛擊殺後只順手撿取此距離內的掉落物(格)。 */
+	public static final double DEFENSE_LOOT_MAX_RANGE = 6.0;
+	/** 自衛擊殺後只撿取垂直落差在此範圍內的掉落物，避免為了撿骨頭跳下深坑。 */
+	public static final double DEFENSE_LOOT_MAX_DY = 2.5;
+
+	public enum DefenseLootAction {
+		WAIT_SPAWN, COLLECT, DONE
+	}
+
+	/** 自衛擊殺且周圍已無立即威脅時，是否值得進入短時間的戰利品拾取階段(R40)。 */
+	public static boolean shouldStartDefenseLoot(boolean hasEligibleDrop, boolean hasNearbyRecentKill, int freeSlots) {
+		return hasEligibleDrop || (hasNearbyRecentKill && freeSlots > 0);
+	}
+
+	/** 自衛拾取階段每 tick 的狀態決策(R40)。 */
+	public static DefenseLootAction defenseLootAction(long elapsedTicks, long ticksSinceLastNearbyKill,
+		boolean hasEligibleDrop, boolean hasNearbyKill, boolean dropsSeen) {
+		if (elapsedTicks >= DEFENSE_LOOT_TIMEOUT_TICKS) return DefenseLootAction.DONE;
+		if (hasEligibleDrop) return DefenseLootAction.COLLECT;
+		if (!dropsSeen && hasNearbyKill && ticksSinceLastNearbyKill < DEFENSE_LOOT_SPAWN_TICKS) {
+			return DefenseLootAction.WAIT_SPAWN;
+		}
+		return DefenseLootAction.DONE;
+	}
+
 	/**
 	 * 自衛反射收手後的單隻生物冷卻表(H8、P3-M2)：
 	 * <ul>

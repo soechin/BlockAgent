@@ -21,11 +21,13 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.Property;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -44,6 +46,8 @@ public final class BuildTask extends Task {
 	private final BlockPos origin;
 	private final int sx, sy, sz;
 	private final Map<BlockPos, BuildTarget> targets; // 絕對座標；挖不掉的格子會移除(僅在 client thread 讀寫)
+	/** Baritone 尋路與放置執行緒會讀(建構後不可變)：設計裡每種目標方塊明確要求比對的屬性集合(R38)。 */
+	private final Map<Block, Set<Property<?>>> requiredProperties;
 	private final Set<BlockPos> protectedCells;
 	/** Baritone 尋路執行緒會讀：藍圖裡要保持空著(不能墊鷹架)的格子(P3-H3，不碰 LinkedHashMap targets)。 */
 	private final Set<BlockPos> forbiddenScaffolds = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -198,6 +202,14 @@ public final class BuildTask extends Task {
 		this.sy = max.getY() - min.getY() + 1;
 		this.sz = max.getZ() - min.getZ() + 1;
 		this.targets = new LinkedHashMap<>(targets);
+		Map<Block, Set<Property<?>>> req = new HashMap<>();
+		for (BuildTarget target : this.targets.values()) {
+			if (target.state().isAir()) continue;
+			req.computeIfAbsent(target.state().getBlock(), _ -> new HashSet<>()).addAll(target.properties());
+		}
+		Map<Block, Set<Property<?>>> frozen = new HashMap<>();
+		req.forEach((block, props) -> frozen.put(block, Set.copyOf(props)));
+		this.requiredProperties = Map.copyOf(frozen);
 		this.protectedCells = Set.copyOf(protectedCells);
 		for (BlockPos p : this.protectedCells) {
 			BuildTarget t = this.targets.get(p);
@@ -227,7 +239,7 @@ public final class BuildTask extends Task {
 
 	/** 依最低尚未完成的一層準備快捷列，保留一格給鷹架。使用玩家背包的交換操作。 */
 	private void stageMaterials(Minecraft mc) {
-		if (protectedCells.isEmpty() || mc.player.containerMenu != mc.player.inventoryMenu) return;
+		if (targets.isEmpty() || mc.player.containerMenu != mc.player.inventoryMenu) return;
 		var inv = mc.player.getInventory();
 		Set<Item> wanted = new LinkedHashSet<>();
 		Set<Item> unavailable = new HashSet<>();
@@ -300,6 +312,22 @@ public final class BuildTask extends Task {
 		return !protectedCells.isEmpty();
 	}
 
+	/**
+	 * Baritone 尋路與放置執行緒會讀(只讀不可變 {@link #requiredProperties})：
+	 * 目標方塊只比對設計明確指定的屬性，容許柵欄、玻璃片、石牆、樓梯等隨鄰接自動更新的屬性(R38)。
+	 * 非本次目標方塊回傳 {@code null}，交回 Baritone 原生比對。
+	 */
+	public Boolean sameTargetState(BlockState a, BlockState b) {
+		if (a == null || b == null) return null;
+		Set<Property<?>> props = requiredProperties.get(b.getBlock());
+		if (props == null) return null;
+		if (!a.is(b.getBlock())) return false;
+		for (Property<?> p : props) {
+			if (!a.getValue(p).equals(b.getValue(p))) return false;
+		}
+		return true;
+	}
+
 	public boolean permitsPlacement(Level level, BlockPos pos, Item item) {
 		if (occupiedDoorways.contains(pos)) return false;
 		BlockState cur = level.getBlockState(pos);
@@ -351,7 +379,7 @@ public final class BuildTask extends Task {
 			@Override
 			public BlockState desiredState(int x, int y, int z, BlockState current, List<BlockState> approxPlaceable) {
 				BuildTarget target = targets.get(origin.offset(x, y, z));
-				return target == null || (!protectedCells.isEmpty() && target.matches(current)) ? current : target.state();
+				return target == null || target.matches(current) ? current : target.state();
 			}
 
 			@Override

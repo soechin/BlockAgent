@@ -299,3 +299,35 @@
 
   - **部分處理(2026-11-26)**：缺斧或鏟時在 `mine` 啟動回應附提醒。
   - **處理(2026-11-27)**：擊殺後若已有立即威脅，在同一次自衛中更換目標。固定混戰只觸發一次自衛，摘要累計兩次擊殺。
+
+## 2026-11-28 正式環境試玩審查(Prism Launcher)
+
+來源：Prism Launcher 正式試玩 `sp-Live_2026_11_27-7bbae4ff`(`20261128-103252.jsonl`、`20261128-155644.jsonl`)。
+
+### High(建造失效)
+
+- [x] **R38. `build_wall` 跳過 `stageMaterials()` 快捷列補料，且 Baritone 比對連線方塊狀態過嚴，建材在主背包或蓋柵欄時卡住誤報 `PATH_BLOCKED`**
+  - **位置**：`src/main/java/blockagent/game/tasks/BuildTask.java:176-179,229-231,343-355`、`src/main/java/blockagent/mixin/BuilderProcessMixin.java:14-31`
+  - **證據**：兩場共呼叫 3 次 `build_wall` 全部失敗且 1 塊未放，皆發生在剛合成或剛從箱子取出建材後：
+    - `20261128-103252.jsonl` `11:39:48` 羊欄 `build_wall(from=-179,66,1110 to=-175,66,1110, height=1, material=oak_fence)`(剛合成 `oak_fence:15`)：連觸發 2 次 `unstuck`、停滯 30 秒後失敗 `PATH_BLOCKED blocks=0/5`。
+    - `20261128-155644.jsonl` `16:22:16` 麥田 `build_wall(from=-191,65,1109 to=-186,65,1109, height=1, material=dirt)`(剛 `chest(take dirt:24)`)：連觸發 2 次 `unstuck`、停滯 30 秒後失敗 `PATH_BLOCKED blocks=0/6`。
+    - `20261128-155644.jsonl` `17:18:40` 牛欄 `build_wall(from=-149,64,1154 to=-145,64,1154, height=1, material=birch_fence)`(剛 `chest(take birch_fence:18)`)：連觸發 2 次 `unstuck`、停滯 30 秒後失敗 `PATH_BLOCKED blocks=0/5`。
+    - 羊欄與牛欄在失敗後改由 AI 手動 `goto`+`place_block` 均在約 30 秒內直接蓋完，證明該處地形與建材皆無障礙。
+  - **問題**：
+    1. `build_wall` 呼叫的 `BuildTask` 建構子傳入空的 `protectedCells=Set.of()`，而 `stageMaterials(mc)` 開頭以 `if (protectedCells.isEmpty() || ...) return;` 提前返回，導致主背包(slots 9–35)的建材完全沒換上快捷列(slots 0–8)。
+    2. `BuildTask.schematic().desiredState()` 與 `BuilderProcessMixin` 僅對 `isBlueprint()` 放寬方塊屬性比對，且未攔截 Baritone 的 `sameBlockstate()`；用 `build_wall` 蓋柵欄等自動相連方塊時，緊鄰既有柵欄那格的 `getStateForPlacement()` 會帶出 `east=true`/`west=true`，被 Baritone 判定不符合預設狀態而拒絕放置。
+  - **處理(2026-11-28)**：`stageMaterials()` 改檢查 `targets.isEmpty()`；`desiredState()` 凡符合 `target.matches(current)` 即回傳 `current`；`BuildTask` 建構不可變的 `requiredProperties` 並由 `BuilderProcessMixin` 同時攔截 `containsBlockState` 與 `sameBlockstate`，只檢核設計明確指定的屬性；已於 `ReviewToolsGameTest` 補上主背包 `oak_fence` 蓋牆回歸測試並通過。
+
+### Medium(觀測與戰利品拾取)
+
+- [x] **R39. `Observation.get_surroundings` 未回報自有成熟農作物，AI 經過農田無法察覺可收成**
+  - **位置**：`src/main/java/blockagent/game/Observation.java:308-337,403-490`、`src/main/java/blockagent/game/tasks/FarmTask.java:50-62`
+  - **證據**：`20261128-103252.jsonl` 與 `20261128-155644.jsonl` 兩場期間 AI 多次往返麥田與房屋周邊，但 `get_surroundings` 的 `notableGroups()` 僅掃描礦物、原木、流體、工作台、箱子、床、門、告示牌與地獄堡壘線索，未納入成熟作物；除非 AI 刻意想起並對田地座標呼叫 `inspect_area`，否則無法得知小麥已熟，整兩場僅執行 2 次有效 `harvest`(`16:21` 收 7 株、`17:20` 收 1 株)。
+  - **問題**：AI 缺乏被動感知成熟作物的訊號，導致農田種下後長期被遺忘；且田內若混有他人作物(`owner=other`)，若不區分所有權亦容易白跑一趟。
+  - **處理(2026-11-28)**：`Observation.notableGroups()` 新增 `ripe_crops` 組，於 `scanGroups()` 複用 `FarmTask.harvestable()` 只保留自有且已成熟作物(含自有藤蔓西瓜/南瓜)，以 `owner=own`(多品種附 `kinds=...`)回報；已於 `ReviewToolsGameTest` 驗證排除未成熟與他人作物並通過。
+
+- [x] **R40. `SELF_DEFENSE` 擊殺敵怪後立刻結束反射切回原任務，未在安全時拾取掉落物(如骨頭、箭矢)**
+  - **位置**：`src/main/java/blockagent/core/CombatPolicy.java:424-452`、`src/main/java/blockagent/game/reflex/Reflexes.java`、`src/main/java/blockagent/game/OwnershipTracker.java:143-155`、`src/main/java/blockagent/game/Inv.java:83-95`
+  - **證據**：`20261128-103252.jsonl` 中 AI 與骷髏交戰 6 次，擊殺後 `get_surroundings` 曾 9 次回報地上有 `drop bone`(`10:37–10:39`、`11:32–11:35`)；`20261128-155644.jsonl` `16:02:15` 在廢棄傳送門旁自衛擊殺骷髏後亦立刻回去挖黑曜石，未撿任何骨頭。整場 `155644` 背包與箱子皆無骨頭可合成骨粉。
+  - **問題**：主動狩獵 `HuntTask` 在目標死亡後會執行 `collect(mc)` 拾取戰利品，但被動自衛 `Reflexes.SELF_DEFENSE` 在 `combat.finished(mc)` 且無下一立即威脅時直接回傳完成並恢復原任務，導致原任務(如 `goto`、`mine`)立即將角色帶離現場，錯過骨頭、箭矢、線、火藥等實用資源。
+  - **處理(2026-11-28)**：抽出 `CombatPolicy.shouldStartDefenseLoot()`/`defenseLootAction()` 與 `Inv.canFit()`，並由 `OwnershipTracker` 同步轉發掉落生成與拾取給 `Reflexes`；`SELF_DEFENSE` 確認擊殺且周圍無立即威脅、背包可容納時，先結算 `fight_summary`，再於 6 格內(高度差 ≤ 2.5 格、避開岩漿/火、上限 3 秒)順手撿取戰利品，遇新威脅立即切回戰鬥；已補 `CombatPolicyTest` 單元測試與 `ReviewToolsGameTest` 實機回歸測試並通過。
